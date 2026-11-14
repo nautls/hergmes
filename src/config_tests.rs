@@ -115,6 +115,10 @@ fn bad_values_name_their_variable() {
         (vars::ALLOW_TOKENS, "abcd"),
         (vars::ALLOW_TOKENS, " , "),
         (vars::ALLOW_TOKENS, &format!("{NFT},NONE")),
+        (vars::ALLOW_ADDRESSES, "any,p2pk"),
+        (vars::ALLOW_TOKENS, "any,none"),
+        (vars::ALLOW_TOKENS, &format!("{NFT},Any")),
+        (vars::DENY_ADDRESSES, "any"),
         (vars::BOX_CACHE_MB, "-1"),
         (vars::BOX_CACHE_MB, "18446744073709551615"),
         (vars::MAX_BOXES_PER_KEY, "0"),
@@ -257,4 +261,21 @@ fn allowing_and_denying_an_address_stops_startup() {
     ])
     .unwrap();
     assert!(config.key_policy(Network::Mainnet, &[]).is_ok());
+}
+
+/// `any` names the default, so writing it is the same as leaving the variable unset.
+#[test]
+fn any_is_the_default_written_down() {
+    for value in ["any", " ANY ", "any,", ", Any"] {
+        let config = config(&[
+            (vars::NODE_URL, "http://node"),
+            (vars::ALLOW_ADDRESSES, value),
+            (vars::ALLOW_TOKENS, value),
+        ])
+        .unwrap();
+        assert_eq!(config.allow_addresses, None, "{value:?}");
+        assert_eq!(config.allow_tokens, None, "{value:?}");
+        let policy = config.key_policy(Network::Mainnet, &[]).unwrap();
+        assert_eq!(policy.to_string(), "addresses: any; tokens: any", "{value:?}");
+    }
 }

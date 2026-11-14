@@ -40,12 +40,12 @@ pub mod vars {
     /// Token ids tracked for the life of the process, comma-separated.
     pub const TRACK_TOKENS: &str = "HERGMES_TRACK_TOKENS";
     /// The addresses clients may name: `p2pk`, `p2sh`, `p2s` or addresses, comma-separated,
-    /// or `none`. Unset allows every address.
+    /// or `none`, or `any`, the default.
     pub const ALLOW_ADDRESSES: &str = "HERGMES_ALLOW_ADDRESSES";
     /// Addresses clients may not name, comma-separated. Deny wins over allow.
     pub const DENY_ADDRESSES: &str = "HERGMES_DENY_ADDRESSES";
-    /// The token ids clients may name, comma-separated, or `none`. Unset allows any token
-    /// within the supply limit.
+    /// The token ids clients may name, comma-separated, or `none`, or `any`, the default:
+    /// any token within the supply limit.
     pub const ALLOW_TOKENS: &str = "HERGMES_ALLOW_TOKENS";
     /// The box cache's budget, in MiB. 0 disables the cache.
     pub const BOX_CACHE_MB: &str = "HERGMES_BOX_CACHE_MB";
@@ -298,9 +298,11 @@ fn list<T>(
         .collect()
 }
 
-/// An allowlist: `None` when unset, which allows everything, and empty for `none`. `none`
-/// is the only way to allow nothing, so a list that is only commas is refused rather than
-/// read as `none`. Empty entries are skipped as in any list, so `none,` is `none`.
+/// An allowlist: `None` when unset or `any`, which allows everything, and empty for `none`.
+/// `any` names the default, so it can be written down, as `.env.example` and the startup
+/// log do. `none` is the only way to allow nothing, so a list that is only commas is refused
+/// rather than read as `none`. Either word stands alone, and empty entries are skipped as in
+/// any list, so `none,` is `none`.
 fn allowlist<T>(
     var: &'static str,
     value: Option<String>,
@@ -312,12 +314,17 @@ fn allowlist<T>(
         .map(str::trim)
         .filter(|e| !e.is_empty())
         .collect();
-    let none = entries.iter().any(|e| e.eq_ignore_ascii_case("none"));
-    match (none, entries.len()) {
-        (true, 1) => Ok(Some(Vec::new())),
-        (true, _) => Err(invalid(var, "`none` can't be combined with other entries")),
-        (false, 0) => Err(invalid(var, "no entries; use `none` to allow nothing")),
-        (false, _) => entries
+    let word = ["any", "none"]
+        .into_iter()
+        .find(|word| entries.iter().any(|e| e.eq_ignore_ascii_case(word)));
+    match (word, entries.len()) {
+        (Some("any"), 1) => Ok(None),
+        (Some(_), 1) => Ok(Some(Vec::new())),
+        (Some(word), _) => {
+            Err(invalid(var, &format!("`{word}` can't be combined with other entries")))
+        }
+        (None, 0) => Err(invalid(var, "no entries; use `none` to allow nothing")),
+        (None, _) => entries
             .into_iter()
             .map(|e| parse(e).map_err(|error| invalid(var, &format!("{e:?}: {error}"))))
             .collect::<Result<_, _>>()

@@ -47,15 +47,15 @@ cargo run
 | `HERGMES_TOKEN_SUPPLY_LIMIT` | 100            | Largest token emission that can be tracked                                        |
 | `HERGMES_TRACK_ADDRESSES`    |                | Addresses tracked for the life of the process, comma-separated                    |
 | `HERGMES_TRACK_TOKENS`       |                | Token ids tracked for the life of the process, comma-separated                    |
-| `HERGMES_ALLOW_ADDRESSES`    |                | Addresses clients may name: `p2pk`, `p2sh`, `p2s`, addresses or `none`            |
+| `HERGMES_ALLOW_ADDRESSES`    | any            | Addresses clients may name: `p2pk`, `p2sh`, `p2s`, addresses or `none`            |
 | `HERGMES_DENY_ADDRESSES`     |                | Addresses clients may not name; deny wins over allow                              |
-| `HERGMES_ALLOW_TOKENS`       |                | Token ids clients may name, or `none`                                             |
+| `HERGMES_ALLOW_TOKENS`       | any            | Token ids clients may name, or `none`                                             |
 | `HERGMES_BOX_CACHE_MB`       | 128            | Memory for full boxes kept to serve pages, in MiB; 0 disables it                  |
 | `HERGMES_MAX_BOXES_PER_KEY`  | 50000          | Most boxes an address or token can have to be tracked                             |
 | `HERGMES_MAX_TRACKED_BOXES`  | 2000000        | Most boxes tracked over all keys (about 110 bytes each)                           |
 | `HERGMES_LISTEN_ADDR`        | 127.0.0.1:8080 | IP and port of the REST API                                                       |
 
-Unset, the relay serves any address and any token within the supply limit. The allow and deny
+By default (`any`), the relay serves any address and any token within the supply limit. The allow and deny
 lists narrow that, for an instance run for one dapp or one wallet; a refused key is
 `403 key_not_allowed`, on every route. Keys in `HERGMES_TRACK_*` are always allowed. Denying one,
 or denying an address the allow list names, stops the relay at startup. The startup log shows the
