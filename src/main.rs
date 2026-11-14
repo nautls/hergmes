@@ -2,7 +2,11 @@ use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use dotenvy::dotenv;
 use hergmes::{
-    adapters::{BoxCache, Follower, TokenChecker, loader::Loader},
+    adapters::{BoxCache, BoxFetcher, Follower, TokenChecker, loader::Loader},
+    api::{
+        Balances, Pages,
+        http::{self, Api},
+    },
     clients::NodeClient,
     config::Config,
     engine::Engine,
@@ -10,7 +14,7 @@ use hergmes::{
     runtime::{self, Keeper},
     trace::{self, default_subscriber},
 };
-use tokio::task::JoinSet;
+use tokio::{net::TcpListener, task::JoinSet};
 use tracing::{error, info, warn};
 
 #[tokio::main]
@@ -27,13 +31,18 @@ async fn main() -> Result<(), AppError> {
     result
 }
 
-/// Starts the engine task, the follower and a keeper per configured key, and runs until the
-/// engine is gone. The engine task ends only by panicking, which can leave it half-changed,
+/// Binds the REST API's address, starts the engine task, the follower, a keeper per
+/// configured key and the server, and runs until the engine is gone or the server stops. The engine task ends only by panicking, which can leave it half-changed,
 /// and the follower and keepers then stop with `EngineGone`: nothing can serve, so the
 /// process exits, and a restart reloads every key from the node. A keeper that gives up its
 /// key (logged), or panics, leaves the relay running: one key's trouble never stops it.
 async fn run() -> Result<(), AppError> {
     let config = Config::from_env()?;
+    // Bound first, so a port conflict stops the process before anything starts.
+    let addr = config.listen_addr;
+    let listener = TcpListener::bind(addr)
+        .await
+        .map_err(|source| AppError::Listen { addr, source })?;
     let http_client = reqwest::Client::builder()
         .timeout(Duration::from_secs(30))
         .build()
@@ -42,7 +51,7 @@ async fn run() -> Result<(), AppError> {
     let keys = config.tracked_keys(node.network())?;
 
     let (engine, mut engine_task) = runtime::spawn(Engine::new(config.engine));
-    // Seeded by every first load; the box fetcher reads it once pages are served.
+    // Seeded by every first load, and read by the box fetcher to fill in pages.
     let cache = BoxCache::new(config.box_cache_bytes);
     info!(
         network = ?node.network(),
@@ -53,20 +62,26 @@ async fn run() -> Result<(), AppError> {
     );
 
     let follower = Follower::new(node.clone(), config.follower);
+    let synced = follower.synced();
     let mut follower = tokio::spawn({
         let engine = engine.clone();
         async move { follower.run(&engine).await }
     });
 
-    // Shared by the keepers and, from step 8d, the page service, so their loads of one key
-    // coalesce.
-    let loader = Arc::new(Loader::new(node.clone(), config.loader).seeding(cache));
-    let keeper = Arc::new(Keeper::new(
-        engine,
-        loader,
-        Arc::new(TokenChecker::new(node, config.token_supply_limit)),
-        Default::default(),
-    ));
+    // Shared by the keepers and the page service, so their loads of one key coalesce.
+    let loader = Arc::new(Loader::new(node.clone(), config.loader).seeding(cache.clone()));
+    let tokens = Arc::new(TokenChecker::new(node.clone(), config.token_supply_limit));
+    let api = Arc::new(Api {
+        engine: engine.clone(),
+        pages: Pages::new(loader.clone(), tokens.clone(), BoxFetcher::new(node.clone(), cache)),
+        balances: Balances::new(node.clone(), Default::default()),
+        network: node.network(),
+        synced,
+    });
+    let mut server = tokio::spawn(axum::serve(listener, http::router(api)).into_future());
+    info!(%addr, "Serving the REST API");
+
+    let keeper = Arc::new(Keeper::new(engine, loader, tokens, Default::default()));
     let mut keepers = JoinSet::new();
     let mut kept = HashMap::new();
     for key in keys {
@@ -88,6 +103,13 @@ async fn run() -> Result<(), AppError> {
                 return Err(follower.await?.into());
             }
             gone = &mut follower => break gone?,
+            // It holds an engine handle, so it returns at once rather than wait for the
+            // engine task below, which would not end.
+            served = &mut server => {
+                return Err(AppError::Server(served?.err().unwrap_or_else(|| {
+                    std::io::Error::other("it returned without an error")
+                })));
+            }
             Some(stopped) = keepers.join_next_with_id() => match stopped {
                 Ok((id, Ok(()))) => {
                     kept.remove(&id);

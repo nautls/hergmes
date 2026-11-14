@@ -6,7 +6,10 @@
 //! The cap on subscriptions per connection is not here yet: nothing reads it until the
 //! WebSocket (step 9).
 
-use std::time::Duration;
+use std::{
+    net::{IpAddr, Ipv4Addr, SocketAddr},
+    time::Duration,
+};
 
 use crate::{
     adapters::{follower, loader, mempool, tokens::SUPPLY_LIMIT},
@@ -41,7 +44,13 @@ pub mod vars {
     pub const MAX_BOXES_PER_KEY: &str = "HERGMES_MAX_BOXES_PER_KEY";
     /// The most boxes tracked over all keys, checked when a key is loaded.
     pub const MAX_TRACKED_BOXES: &str = "HERGMES_MAX_TRACKED_BOXES";
+    /// The IP address and port the REST API listens on.
+    pub const LISTEN_ADDR: &str = "HERGMES_LISTEN_ADDR";
 }
+
+/// Loopback by default, so a fresh install is not exposed until the operator chooses: usually
+/// behind a reverse proxy, or `0.0.0.0:8080` in a container.
+pub const LISTEN_ADDR: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 8080);
 
 /// The box cache's default budget: about 32k to 1.2M boxes, at 100 B to 4 KB each.
 pub const BOX_CACHE_MB: u64 = 128;
@@ -58,6 +67,7 @@ pub struct Config {
     pub track_tokens: Vec<TokenId>,
     /// The box cache's budget in bytes, read in MiB; 0 disables the cache.
     pub box_cache_bytes: u64,
+    pub listen_addr: SocketAddr,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -134,6 +144,7 @@ impl Config {
                 t.parse::<TokenId>().map_err(|e| e.to_string())
             })?,
             box_cache_bytes,
+            listen_addr: number(vars::LISTEN_ADDR, get(vars::LISTEN_ADDR), LISTEN_ADDR)?,
         })
     }
 

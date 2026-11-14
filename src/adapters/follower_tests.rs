@@ -66,6 +66,29 @@ fn the_mempool_waits_while_the_engine_is_behind() {
     assert_eq!(engine_snapshot(&engine).map(|s| s.1), Some(tip));
 }
 
+#[test]
+fn synced_says_whether_the_last_tick_reached_the_nodes_tip() {
+    let sim = SimChain::new(new_chain());
+    let engine = engine();
+    let mut follower = Follower::new(sim.clone(), Config::default());
+    let synced = follower.synced();
+    assert!(!*synced.borrow(), "not before the first tick");
+    ready(follower.tick(&engine, Instant::now())).unwrap();
+    assert!(*synced.borrow());
+
+    sim.lock().set_indexer_lag(1);
+    sim.lock().mine(0, 1, 1);
+    let tick = ready(follower.tick(&engine, Instant::now())).unwrap();
+    assert!(matches!(tick.blocks, Ok(Sync::WaitingForIndexer { .. })), "{tick:?}");
+    assert!(!*synced.borrow(), "the engine is behind");
+
+    sim.lock().settle_indexer();
+    ready(follower.tick(&engine, Instant::now())).unwrap();
+    assert!(*synced.borrow());
+    ready(follower.tick(&engine, Instant::now())).unwrap();
+    assert!(*synced.borrow(), "an idle tick is still at the tip");
+}
+
 #[tokio::test(start_paused = true)]
 async fn run_follows_the_node() {
     let sim = SimChain::new(new_chain());
@@ -197,5 +220,24 @@ mod node {
         let mut follower = Follower::new(client, Config::default());
         let error = follower.tick(&engine(), Instant::now()).await.unwrap_err();
         assert!(matches!(error, AdapterError::Node(NodeError::Api { .. })), "{error:?}");
+    }
+
+    #[tokio::test]
+    async fn a_failed_info_read_is_not_synced() {
+        let server = node(recorded("mempool")).await;
+        let client = NodeClient::new(reqwest::Client::new(), &server.uri(), Network::Mainnet);
+        let engine = engine();
+        let mut follower = Follower::new(client, Config::default());
+        follower.tick(&engine, Instant::now()).await.unwrap();
+        assert!(*follower.synced().borrow());
+
+        server.reset().await;
+        Mock::given(method("GET"))
+            .and(path("/info"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+        follower.tick(&engine, Instant::now()).await.unwrap_err();
+        assert!(!*follower.synced().borrow(), "the node's tip is unknown");
     }
 }

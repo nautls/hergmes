@@ -4,7 +4,7 @@
 //! key's box ids from the engine, loading the key first if it is not tracked, and fills in
 //! full boxes; the balance service answers an address's balance, from the engine if it is
 //! tracked and from the indexer and the engine's mempool snapshot if not. The HTTP layer
-//! parses, calls them and serializes.
+//! (`http`) parses, calls them and serializes through the wire types (`wire`).
 
 use std::time::Duration;
 
@@ -16,8 +16,10 @@ use crate::{
 
 pub mod balances;
 pub mod cursor;
+pub mod http;
 pub mod keys;
 pub mod pages;
+pub mod wire;
 
 pub use balances::{AddressBalance, Balances};
 pub use cursor::Cursor;

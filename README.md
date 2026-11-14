@@ -8,9 +8,8 @@ key's current boxes and an address's balance, then receives live updates: new bo
 boxes, pending mempool activity, balance changes and reorgs. Pending activity shows in the balance as a signed
 change on top of the confirmed amount ("10 ERG incoming", "10 ERG leaving").
 
-> **Status:** early development. The engine, the adapters that feed it from the node and the
-> runtime that wires them together are in place: the relay follows the node and tracks the keys
-> named in its configuration. The REST and WebSocket layers are still being built.
+> **Status:** early development. The relay follows the node, tracks the keys named in its
+> configuration and serves the REST API. The WebSocket layer is still being built.
 
 ## How it works
 
@@ -38,21 +37,44 @@ cp .env.example .env
 cargo run
 ```
 
-| Variable                     | Default | Description                                                      |
-| ---------------------------- | ------- | ---------------------------------------------------------------- |
-| `ERGO_NODE_URL`              |         | URL of an indexed Ergo node (required)                           |
-| `HERGMES_WINDOW_BLOCKS`      | 720     | Blocks of deltas kept for replays, rollbacks and pinned pages    |
-| `HERGMES_GRACE_BLOCKS`       | 5       | Blocks a key with no subscribers stays tracked                   |
-| `HERGMES_POLL_INTERVAL_MS`   | 1000    | How often `/info` is read                                        |
-| `HERGMES_MEMPOOL_REFRESH_MS` | 10000   | How often the mempool is fetched even if `/info` shows no change |
-| `HERGMES_TOKEN_SUPPLY_LIMIT` | 100     | Largest token emission that can be tracked                       |
-| `HERGMES_TRACK_ADDRESSES`    |         | Addresses tracked for the life of the process, comma-separated   |
-| `HERGMES_TRACK_TOKENS`       |         | Token ids tracked for the life of the process, comma-separated   |
-| `HERGMES_BOX_CACHE_MB`       | 128     | Memory for full boxes kept to serve pages, in MiB; 0 disables it |
-| `HERGMES_MAX_BOXES_PER_KEY`  | 50000   | Most boxes an address or token can have to be tracked            |
-| `HERGMES_MAX_TRACKED_BOXES`  | 2000000 | Most boxes tracked over all keys (about 110 bytes each)          |
+| Variable                     | Default        | Description                                                      |
+| ---------------------------- | -------------- | ---------------------------------------------------------------- |
+| `ERGO_NODE_URL`              |                | URL of an indexed Ergo node (required)                           |
+| `HERGMES_WINDOW_BLOCKS`      | 720            | Blocks of deltas kept for replays, rollbacks and pinned pages    |
+| `HERGMES_GRACE_BLOCKS`       | 5              | Blocks a key with no subscribers stays tracked                   |
+| `HERGMES_POLL_INTERVAL_MS`   | 1000           | How often `/info` is read                                        |
+| `HERGMES_MEMPOOL_REFRESH_MS` | 10000          | How often the mempool is fetched even if `/info` shows no change |
+| `HERGMES_TOKEN_SUPPLY_LIMIT` | 100            | Largest token emission that can be tracked                       |
+| `HERGMES_TRACK_ADDRESSES`    |                | Addresses tracked for the life of the process, comma-separated   |
+| `HERGMES_TRACK_TOKENS`       |                | Token ids tracked for the life of the process, comma-separated   |
+| `HERGMES_BOX_CACHE_MB`       | 128            | Memory for full boxes kept to serve pages, in MiB; 0 disables it |
+| `HERGMES_MAX_BOXES_PER_KEY`  | 50000          | Most boxes an address or token can have to be tracked            |
+| `HERGMES_MAX_TRACKED_BOXES`  | 2000000        | Most boxes tracked over all keys (about 110 bytes each)          |
+| `HERGMES_LISTEN_ADDR`        | 127.0.0.1:8080 | IP and port of the REST API                                      |
+
+The API listens on loopback by default, so a fresh install is not exposed until you choose. Put
+it behind a reverse proxy for TLS and rate limiting, or set `HERGMES_LISTEN_ADDR=0.0.0.0:8080` in
+a container. The relay does not compress responses: Cloudflare does it on its own, and behind
+nginx or Caddy turn it on there (`gzip on; gzip_types application/json;`, or `encode gzip`); a
+500-box page shrinks about five times. Addresses travel in the URL path, and the longest P2S address is about 5,600
+characters: that fits nginx's default 8 KB request line and Cloudflare's 16 KB URL limit, so keep
+any lower proxy limit above it.
 
 Logging uses `tracing`; set `RUST_LOG` (e.g. `RUST_LOG=hergmes=debug`) to adjust verbosity.
+
+## REST API
+
+| Route                                 | What                                              |
+| ------------------------------------- | ------------------------------------------------- |
+| `GET /v1/addresses/{address}/boxes`   | A page of an address's unspent boxes              |
+| `GET /v1/tokens/{tokenId}/boxes`      | A page of a small-supply token's unspent boxes    |
+| `GET /v1/addresses/{address}/balance` | An address's confirmed balance and pending change |
+| `GET /v1/status`                      | Version, network, tip and readiness               |
+
+Box pages take `limit` (default 500, at most 1000) and the `cursor` from the previous page's
+`nextCursor`; every page of a snapshot is pinned to the first page's block (`asOf`). Boxes are in
+Fleet SDK's `Box<string>` shape plus `inclusionHeight`, and every amount is a base-10 integer
+string. Errors are `{ "error": "<code>", "message": "..." }`, and a `503` carries `Retry-After`.
 
 ## Development
 
@@ -74,14 +96,14 @@ cargo test
 
 ## Project layout
 
-| Path              | Contents                                                     |
-| ----------------- | ------------------------------------------------------------ |
-| `src/clients/`    | Ergo node HTTP client and the `NodeSource` trait             |
-| `src/types/`      | Wire types and the address codec                             |
-| `src/engine/`     | The engine: a pure state machine with no I/O and no clock    |
-| `src/adapters/`   | Node I/O feeding the engine                                  |
-| `src/runtime/`    | The engine task, output routing, configured keys             |
-| `src/config.rs`   | Configuration from environment variables                     |
-| `src/api/`        | REST and WebSocket transport (in progress)                   |
-| `src/sim/`        | Simulated chain for tests (`sim` feature)                    |
-| `tests/fixtures/` | Recorded node responses                                      |
+| Path              | Contents                                                  |
+| ----------------- | --------------------------------------------------------- |
+| `src/clients/`    | Ergo node HTTP client and the `NodeSource` trait          |
+| `src/types/`      | Wire types and the address codec                          |
+| `src/engine/`     | The engine: a pure state machine with no I/O and no clock |
+| `src/adapters/`   | Node I/O feeding the engine                               |
+| `src/runtime/`    | The engine task, output routing, configured keys          |
+| `src/config.rs`   | Configuration from environment variables                  |
+| `src/api/`        | REST routes and their services; WebSocket (in progress)   |
+| `src/sim/`        | Simulated chain for tests (`sim` feature)                 |
+| `tests/fixtures/` | Recorded node responses                                   |

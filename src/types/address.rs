@@ -25,6 +25,16 @@ pub enum Network {
     Testnet = 0x10,
 }
 
+impl Network {
+    /// The name the node reports in `/info`, which the relay reports too.
+    pub fn name(self) -> &'static str {
+        match self {
+            Network::Mainnet => "mainnet",
+            Network::Testnet => "testnet",
+        }
+    }
+}
+
 impl FromStr for Network {
     type Err = UnknownNetwork;
 

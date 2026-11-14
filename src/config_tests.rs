@@ -36,6 +36,7 @@ fn only_the_node_url_is_required() {
     assert_eq!(config.token_supply_limit, SUPPLY_LIMIT);
     assert!(config.track_addresses.is_empty() && config.track_tokens.is_empty());
     assert_eq!(config.box_cache_bytes, 128 * 1024 * 1024);
+    assert_eq!(config.listen_addr.to_string(), "127.0.0.1:8080", "loopback until chosen");
 
     assert!(matches!(self::config(&[]), Err(ConfigError::Missing(vars::NODE_URL))));
     let empty = self::config(&[(vars::NODE_URL, "  ")]);
@@ -56,6 +57,7 @@ fn every_setting_is_read() {
         (vars::BOX_CACHE_MB, "3"),
         (vars::MAX_BOXES_PER_KEY, "40"),
         (vars::MAX_TRACKED_BOXES, "900"),
+        (vars::LISTEN_ADDR, "0.0.0.0:9000"),
     ])
     .unwrap();
     assert_eq!(config.engine, engine::Config { window: 30, grace: 0, max_tracked_boxes: 900 });
@@ -66,6 +68,7 @@ fn every_setting_is_read() {
     assert_eq!(config.track_addresses, vec![Address::decode(MAINNET).unwrap()]);
     assert_eq!(config.track_tokens, vec![NFT.parse().unwrap(), TOKEN.parse().unwrap()]);
     assert_eq!(config.box_cache_bytes, 3 * 1024 * 1024);
+    assert_eq!(config.listen_addr.to_string(), "0.0.0.0:9000");
 }
 
 #[test]
@@ -92,6 +95,9 @@ fn bad_values_name_their_variable() {
         (vars::MAX_BOXES_PER_KEY, "1e6"),
         (vars::MAX_TRACKED_BOXES, "0"),
         (vars::MAX_TRACKED_BOXES, "-5"),
+        (vars::LISTEN_ADDR, "localhost:8080"),
+        (vars::LISTEN_ADDR, "127.0.0.1"),
+        (vars::LISTEN_ADDR, "127.0.0.1:65536"),
     ] {
         assert_eq!(invalid_var(config(&[url, (var, value)])), var, "{var}={value}");
     }

@@ -12,7 +12,10 @@
 
 use std::time::Duration;
 
-use tokio::time::{Instant, MissedTickBehavior, sleep};
+use tokio::{
+    sync::watch,
+    time::{Instant, MissedTickBehavior, sleep},
+};
 use tracing::{info, warn};
 
 use crate::{
@@ -52,6 +55,8 @@ pub struct Follower<S> {
     blocks: BlockConsumer<S>,
     mempool: MempoolPoller<S>,
     config: Config,
+    /// Whether the last tick left the engine at the node's tip, for `/v1/status`.
+    synced: watch::Sender<bool>,
 }
 
 impl<S: NodeSource + Clone> Follower<S> {
@@ -61,7 +66,15 @@ impl<S: NodeSource + Clone> Follower<S> {
             mempool: MempoolPoller::new(source.clone(), config.mempool),
             source,
             config,
+            synced: watch::Sender::new(false),
         }
+    }
+
+    /// Whether the last tick left the engine at the node's tip: `false` before the first
+    /// tick, after a failed `/info` read, and while the engine is behind (the indexer lags,
+    /// a block sync failed). Read by the status route, which makes no node call of its own.
+    pub fn synced(&self) -> watch::Receiver<bool> {
+        self.synced.subscribe()
     }
 
     /// One tick at `now`: read `/info`, bring the engine to its tip, then, if it got there,
@@ -72,7 +85,13 @@ impl<S: NodeSource + Clone> Follower<S> {
         engine: &impl EngineHandle,
         now: Instant,
     ) -> Result<Tick, AdapterError> {
-        let info = self.source.info().await?;
+        let info = match self.source.info().await {
+            Ok(info) => info,
+            Err(error) => {
+                self.synced.send_replace(false);
+                return Err(error.into());
+            }
+        };
         let blocks = match best_full_block(&info) {
             Some(tip) => match self.blocks.sync(engine, tip).await {
                 Ok(sync) => Ok(sync),
@@ -80,7 +99,9 @@ impl<S: NodeSource + Clone> Follower<S> {
             },
             None => Ok(Sync::Idle),
         };
-        if !matches!(blocks, Ok(Sync::Idle | Sync::Synced { .. })) {
+        let synced = matches!(blocks, Ok(Sync::Idle | Sync::Synced { .. }));
+        self.synced.send_replace(synced);
+        if !synced {
             return Ok(Tick { blocks, mempool: None });
         }
         let mempool = self.mempool.poll(info, now).await;
