@@ -27,7 +27,7 @@ reorg is either rolled back to the fork point or told to resync, never left sile
 - An Ergo node with the **extra indexer** enabled (`extraIndex = true`, for the `/blockchain/*`
   endpoints) and a UTXO state (`stateType = "utxo"`, the default): in digest mode the node
   resolves no mempool inputs and serves no `/utxo/withPool` boxes
-- Node.js 23.6+, if you want to re-record test fixtures
+- **Optional:** Node.js 23.6+, if you want to re-record test fixtures
 
 ## Getting started
 
@@ -37,20 +37,20 @@ cp .env.example .env
 cargo run
 ```
 
-| Variable                     | Default        | Description                                                      |
-| ---------------------------- | -------------- | ---------------------------------------------------------------- |
-| `ERGO_NODE_URL`              |                | URL of an indexed Ergo node (required)                           |
-| `HERGMES_WINDOW_BLOCKS`      | 720            | Blocks of deltas kept for replays, rollbacks and pinned pages    |
-| `HERGMES_GRACE_BLOCKS`       | 5              | Blocks a key with no subscribers stays tracked                   |
-| `HERGMES_POLL_INTERVAL_MS`   | 1000           | How often `/info` is read                                        |
-| `HERGMES_MEMPOOL_REFRESH_MS` | 10000          | How often the mempool is fetched even if `/info` shows no change |
-| `HERGMES_TOKEN_SUPPLY_LIMIT` | 100            | Largest token emission that can be tracked                       |
-| `HERGMES_TRACK_ADDRESSES`    |                | Addresses tracked for the life of the process, comma-separated   |
-| `HERGMES_TRACK_TOKENS`       |                | Token ids tracked for the life of the process, comma-separated   |
-| `HERGMES_BOX_CACHE_MB`       | 128            | Memory for full boxes kept to serve pages, in MiB; 0 disables it |
-| `HERGMES_MAX_BOXES_PER_KEY`  | 50000          | Most boxes an address or token can have to be tracked            |
-| `HERGMES_MAX_TRACKED_BOXES`  | 2000000        | Most boxes tracked over all keys (about 110 bytes each)          |
-| `HERGMES_LISTEN_ADDR`        | 127.0.0.1:8080 | IP and port of the REST API                                      |
+| Variable                     | Default        | Description                                                         |
+| ---------------------------- | -------------- | ------------------------------------------------------------------- |
+| `ERGO_NODE_URL`              |                | URL of an indexed Ergo node (required)                              |
+| `HERGMES_WINDOW_BLOCKS`      | 720            | Blocks of deltas kept for replays, rollbacks and pinned pages       |
+| `HERGMES_GRACE_BLOCKS`       | 5              | Blocks a key with no subscribers stays tracked                      |
+| `HERGMES_POLL_INTERVAL_MS`   | 1000           | How often the blockchain state is soft-checked                      |
+| `HERGMES_MEMPOOL_REFRESH_MS` | 10000          | How often the mempool is fetched even if soft-check shows no change |
+| `HERGMES_TOKEN_SUPPLY_LIMIT` | 100            | Largest token emission that can be tracked                          |
+| `HERGMES_TRACK_ADDRESSES`    |                | Addresses tracked for the life of the process, comma-separated      |
+| `HERGMES_TRACK_TOKENS`       |                | Token ids tracked for the life of the process, comma-separated      |
+| `HERGMES_BOX_CACHE_MB`       | 128            | Memory for full boxes kept to serve pages, in MiB; 0 disables it    |
+| `HERGMES_MAX_BOXES_PER_KEY`  | 50000          | Most boxes an address or token can have to be tracked               |
+| `HERGMES_MAX_TRACKED_BOXES`  | 2000000        | Most boxes tracked over all keys (about 110 bytes each)             |
+| `HERGMES_LISTEN_ADDR`        | 127.0.0.1:8080 | IP and port of the REST API                                         |
 
 The API listens on loopback by default, so a fresh install is not exposed until you choose. Put
 it behind a reverse proxy for TLS and rate limiting, or set `HERGMES_LISTEN_ADDR=0.0.0.0:8080` in
