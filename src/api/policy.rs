@@ -5,7 +5,7 @@
 //! can carry a P2PK or P2SH tree, and both encodings are one key, so judging the header
 //! would let a client re-encode an address to get past a rule.
 
-use std::collections::HashSet;
+use std::{collections::HashSet, fmt};
 
 use crate::{
     engine::TrackingKey,
@@ -113,6 +113,46 @@ impl KeyPolicy {
                 .is_none_or(|classes| classes.contains(&AddressType::of_tree(&tree.0))),
             TrackingKey::Token(_) => self.any_token,
         }
+    }
+}
+
+/// One line for the startup log, so an operator sees which rules are in force, and a
+/// misspelled variable, which leaves its rule out, shows as `any`. Keys named in the rules
+/// are counted, not listed: which keys an instance serves is no business of its log.
+impl fmt::Display for KeyPolicy {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let named = |tree: bool| {
+            self.allowed
+                .iter()
+                .filter(|k| matches!(k, TrackingKey::Tree(_)) == tree)
+                .count()
+        };
+        let mut addresses = match &self.classes {
+            None => vec!["any".to_owned()],
+            Some(classes) => classes
+                .iter()
+                .map(|class| match class {
+                    AddressType::P2PK => "p2pk".to_owned(),
+                    AddressType::P2SH => "p2sh".to_owned(),
+                    AddressType::P2S => "p2s".to_owned(),
+                })
+                .collect(),
+        };
+        if self.classes.is_some() && named(true) > 0 {
+            addresses.push(format!("{} by name", named(true)));
+        }
+        if addresses.is_empty() {
+            addresses.push("none".to_owned());
+        }
+        if !self.denied.is_empty() {
+            addresses.push(format!("{} denied", self.denied.len()));
+        }
+        let tokens = match (self.any_token, named(false)) {
+            (true, _) => "any".to_owned(),
+            (false, 0) => "none".to_owned(),
+            (false, n) => format!("{n} by name"),
+        };
+        write!(f, "addresses: {}; tokens: {tokens}", addresses.join(", "))
     }
 }
 

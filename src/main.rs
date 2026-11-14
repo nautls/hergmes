@@ -51,6 +51,7 @@ async fn run() -> Result<(), AppError> {
     let node = NodeClient::connect(http_client, &config.node_url).await?;
     let keys = config.tracked_keys(node.network())?;
     let policy = config.key_policy(node.network(), &keys)?;
+    info!(%policy, "Key policy");
 
     let (engine, mut engine_task) = runtime::spawn(Engine::new(config.engine));
     // Seeded by every first load, and read by the box fetcher to fill in pages.

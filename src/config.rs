@@ -181,8 +181,9 @@ impl Config {
 
     /// The key policy, admitting the configured `keys` ([`Config::tracked_keys`]) always.
     /// Fails if a listed address is for another network than the node's, or if a deny rule
-    /// names a configured address: that is a typo or a conflict, better seen at startup than
-    /// as refused requests.
+    /// names a configured or an allowed address: that is a typo or a conflict, better seen at
+    /// startup than as refused requests. Addresses are compared by tree, so two encodings of
+    /// one tree conflict too.
     pub fn key_policy(
         &self,
         network: Network,
@@ -196,10 +197,12 @@ impl Config {
                 AddressRule::Address(address) => Some(address),
                 AddressRule::Class(_) => None,
             });
+        let mut allowed_trees = Vec::new();
         for address in allowed {
             address
                 .check_network(network)
                 .map_err(|e| invalid(vars::ALLOW_ADDRESSES, &format!("{address}: {e}")))?;
+            allowed_trees.push(address.ergo_tree());
         }
         for address in &self.deny_addresses {
             address
@@ -209,6 +212,12 @@ impl Config {
                 return Err(invalid(
                     vars::DENY_ADDRESSES,
                     &format!("{address} is tracked through {}", vars::TRACK_ADDRESSES),
+                ));
+            }
+            if allowed_trees.contains(&address.ergo_tree()) {
+                return Err(invalid(
+                    vars::DENY_ADDRESSES,
+                    &format!("{address} is also allowed through {}", vars::ALLOW_ADDRESSES),
                 ));
             }
         }
@@ -290,27 +299,30 @@ fn list<T>(
 }
 
 /// An allowlist: `None` when unset, which allows everything, and empty for `none`. `none`
-/// alone is the only way to allow nothing, so a list that is only commas is refused rather
-/// than read as `none`.
+/// is the only way to allow nothing, so a list that is only commas is refused rather than
+/// read as `none`. Empty entries are skipped as in any list, so `none,` is `none`.
 fn allowlist<T>(
     var: &'static str,
     value: Option<String>,
     parse: impl Fn(&str) -> Result<T, String>,
 ) -> Result<Option<Vec<T>>, ConfigError> {
     let Some(value) = value else { return Ok(None) };
-    if value.eq_ignore_ascii_case("none") {
-        return Ok(Some(Vec::new()));
+    let entries: Vec<&str> = value
+        .split(',')
+        .map(str::trim)
+        .filter(|e| !e.is_empty())
+        .collect();
+    let none = entries.iter().any(|e| e.eq_ignore_ascii_case("none"));
+    match (none, entries.len()) {
+        (true, 1) => Ok(Some(Vec::new())),
+        (true, _) => Err(invalid(var, "`none` can't be combined with other entries")),
+        (false, 0) => Err(invalid(var, "no entries; use `none` to allow nothing")),
+        (false, _) => entries
+            .into_iter()
+            .map(|e| parse(e).map_err(|error| invalid(var, &format!("{e:?}: {error}"))))
+            .collect::<Result<_, _>>()
+            .map(Some),
     }
-    let entries = list(var, Some(value), |entry| {
-        if entry.eq_ignore_ascii_case("none") {
-            return Err("`none` can't be combined with other entries".to_owned());
-        }
-        parse(entry)
-    })?;
-    if entries.is_empty() {
-        return Err(invalid(var, "no entries; use `none` to allow nothing"));
-    }
-    Ok(Some(entries))
 }
 
 #[cfg(test)]

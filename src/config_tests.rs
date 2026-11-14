@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use super::*;
-use crate::types::address::AddressType;
+use crate::types::address::{AddressType, encode_as_p2s};
 
 const MAINNET: &str = "9fRusAarL1KkrWQVsxSRVYnvWxaAT2A96cKtNn9tvPh5XUyCisr";
 const MAINNET_TREE: &str =
@@ -166,6 +166,12 @@ fn none_allows_nothing() {
     .unwrap();
     assert_eq!(config.allow_addresses, Some(vec![]));
     assert_eq!(config.allow_tokens, Some(vec![]));
+
+    // Empty entries are skipped, as in any list.
+    for value in ["none,", " , NONE ,"] {
+        let config = self::config(&[(vars::NODE_URL, "http://node"), (vars::ALLOW_TOKENS, value)]);
+        assert_eq!(config.unwrap().allow_tokens, Some(vec![]), "{value:?}");
+    }
 }
 
 #[test]
@@ -205,12 +211,7 @@ fn listed_addresses_must_be_on_the_node_network() {
 /// even when the two name the tree through different encodings.
 #[test]
 fn denying_a_configured_address_stops_startup() {
-    let p2pk_tree = hex::decode(MAINNET_TREE).unwrap();
-    let mut bytes = vec![0x03];
-    bytes.extend(&p2pk_tree);
-    let checksum = <blake2::Blake2b256 as blake2::Digest>::digest(&bytes);
-    bytes.extend_from_slice(&checksum[..4]);
-    let as_p2s = bs58::encode(bytes).into_string();
+    let as_p2s = encode_as_p2s(&hex::decode(MAINNET_TREE).unwrap(), Network::Mainnet);
 
     for denied in [MAINNET, as_p2s.as_str()] {
         let config = config(&[
@@ -227,4 +228,33 @@ fn denying_a_configured_address_stops_startup() {
             "{denied}: {error}"
         );
     }
+}
+
+/// An address both allowed and denied would be refused on every request, so it stops
+/// startup like a denied configured key, through either encoding of its tree.
+#[test]
+fn allowing_and_denying_an_address_stops_startup() {
+    let as_p2s = encode_as_p2s(&hex::decode(MAINNET_TREE).unwrap(), Network::Mainnet);
+    for denied in [MAINNET, as_p2s.as_str()] {
+        let config = config(&[
+            (vars::NODE_URL, "http://node"),
+            (vars::ALLOW_ADDRESSES, &format!("p2s,{MAINNET}")),
+            (vars::DENY_ADDRESSES, denied),
+        ])
+        .unwrap();
+        let error = config.key_policy(Network::Mainnet, &[]).unwrap_err();
+        assert!(
+            matches!(&error, ConfigError::Invalid { var: vars::DENY_ADDRESSES, reason }
+                if reason.contains(vars::ALLOW_ADDRESSES)),
+            "{denied}: {error}"
+        );
+    }
+    // Denying an address of an allowed class is what deny is for.
+    let config = config(&[
+        (vars::NODE_URL, "http://node"),
+        (vars::ALLOW_ADDRESSES, "p2pk"),
+        (vars::DENY_ADDRESSES, MAINNET),
+    ])
+    .unwrap();
+    assert!(config.key_policy(Network::Mainnet, &[]).is_ok());
 }

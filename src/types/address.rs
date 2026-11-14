@@ -208,6 +208,13 @@ pub fn encode(ergo_tree: &[u8], network: Network) -> String {
     encode_raw(network as u8 | address_type as u8, body)
 }
 
+/// A P2S address carrying any tree, as a client can write one for a P2PK or P2SH tree; the
+/// encoder never does.
+#[cfg(test)]
+pub fn encode_as_p2s(ergo_tree: &[u8], network: Network) -> String {
+    encode_raw(network as u8 | AddressType::P2S as u8, ergo_tree)
+}
+
 fn encode_raw(head: u8, body: &[u8]) -> String {
     let mut bytes = Vec::with_capacity(1 + body.len() + CHECKSUM_LENGTH);
     bytes.push(head);

@@ -1,8 +1,6 @@
 //! The key policy: classes judged by tree, deny winning, `none`, and configured keys always
 //! admitted.
 
-use blake2::{Blake2b256, Digest};
-
 use super::*;
 use crate::{
     api::{
@@ -11,7 +9,7 @@ use crate::{
     },
     types::{
         HexBytes,
-        address::{Network, encode},
+        address::{Network, encode, encode_as_p2s},
     },
 };
 
@@ -39,11 +37,7 @@ fn address(hex: &str) -> String {
 /// A mainnet P2S address carrying any tree, as a client can write one for a P2PK or P2SH
 /// tree.
 fn as_p2s(hex: &str) -> String {
-    let mut bytes = vec![0x03];
-    bytes.extend(hex::decode(hex).unwrap());
-    let checksum = Blake2b256::digest(&bytes);
-    bytes.extend_from_slice(&checksum[..4]);
-    bs58::encode(bytes).into_string()
+    encode_as_p2s(&hex::decode(hex).unwrap(), Network::Mainnet)
 }
 
 fn rules(entries: &[&str]) -> Vec<AddressRule> {
@@ -190,5 +184,31 @@ fn an_address_rule_is_a_class_in_any_case_or_an_address() {
     assert_eq!(AddressRule::parse(&fee), Ok(AddressRule::Address(Address::decode(&fee).unwrap())));
     for entry in ["p2p", "p2pkh", "any", "none"] {
         assert!(AddressRule::parse(entry).is_err(), "{entry}");
+    }
+}
+
+/// The startup log line: the rules in force, with named keys counted, configured keys among
+/// them.
+#[test]
+fn a_policy_reads_as_its_rules() {
+    let fee = Address::decode(&address(P2S_TREE)).unwrap();
+    let nft = NFT.parse().unwrap();
+    for (policy, line) in [
+        (KeyPolicy::default(), "addresses: any; tokens: any"),
+        (KeyPolicy::new(Some(&[]), &[], Some(&[]), &[]), "addresses: none; tokens: none"),
+        (
+            KeyPolicy::new(Some(&rules(&["p2pk", "p2sh", &address(P2S_TREE)])), &[], None, &[]),
+            "addresses: p2pk, p2sh, 1 by name; tokens: any",
+        ),
+        (
+            KeyPolicy::new(None, [&fee], Some(&[nft]), &[token(TOKEN), tree(P2SH_TREE)]),
+            "addresses: any, 1 denied; tokens: 2 by name",
+        ),
+        (
+            KeyPolicy::new(Some(&[]), [&fee], None, &[tree(P2PK_TREE)]),
+            "addresses: 1 by name, 1 denied; tokens: any",
+        ),
+    ] {
+        assert_eq!(policy.to_string(), line);
     }
 }
