@@ -1,17 +1,12 @@
 //! The box fetcher: full boxes for the ids the engine keeps, from the cheapest source that
 //! has them (DESIGN.md, "Fetching full boxes").
 
-use std::{
-    collections::HashMap,
-    num::NonZeroUsize,
-    sync::{Arc, Mutex, PoisonError},
-};
+use std::{collections::HashMap, sync::Arc};
 
-use lru::LruCache;
 use tracing::debug;
 
 use crate::{
-    adapters::{AdapterError, EngineHandle},
+    adapters::{AdapterError, BoxCache, EngineHandle},
     clients::NodeSource,
     engine::{Query, Reply},
     types::ergo::{BoxId, UTxO},
@@ -24,20 +19,19 @@ pub const CHUNK: usize = 1000;
 
 pub struct BoxFetcher<S> {
     source: S,
-    /// Boxes never change, so the cache needs eviction but never invalidation.
-    cache: Mutex<LruCache<BoxId, Arc<UTxO>>>,
+    /// Shared with the loader, which seeds it with the boxes of each first load.
+    cache: BoxCache,
     chunk: usize,
 }
 
 impl<S: NodeSource> BoxFetcher<S> {
-    /// A fetcher whose cache holds up to `capacity` boxes.
-    pub fn new(source: S, capacity: NonZeroUsize) -> Self {
-        Self::with_chunk(source, capacity, CHUNK)
+    pub fn new(source: S, cache: BoxCache) -> Self {
+        Self::with_chunk(source, cache, CHUNK)
     }
 
-    pub fn with_chunk(source: S, capacity: NonZeroUsize, chunk: usize) -> Self {
+    pub fn with_chunk(source: S, cache: BoxCache, chunk: usize) -> Self {
         assert!(chunk >= 1);
-        Self { source, cache: Mutex::new(LruCache::new(capacity)), chunk }
+        Self { source, cache, chunk }
     }
 
     /// The boxes of `ids`, in the same order; `None` for an id no source knows.
@@ -53,12 +47,9 @@ impl<S: NodeSource> BoxFetcher<S> {
         ids: &[BoxId],
     ) -> Result<Vec<Option<Arc<UTxO>>>, AdapterError> {
         let mut found: HashMap<BoxId, Arc<UTxO>> = HashMap::new();
-        {
-            let mut cache = self.cache.lock().unwrap_or_else(PoisonError::into_inner);
-            for id in ids {
-                if let Some(b) = cache.get(id) {
-                    found.insert(*id, b.clone());
-                }
+        for id in ids {
+            if let Some(b) = self.cache.get(id) {
+                found.insert(*id, b);
             }
         }
         let cached = found.len();
@@ -88,17 +79,10 @@ impl<S: NodeSource> BoxFetcher<S> {
         let from_indexer = found.len() - cached - from_ring - from_node;
         debug!(ids = ids.len(), cached, from_ring, from_node, from_indexer, "Boxes fetched");
 
-        let mut cache = self.cache.lock().unwrap_or_else(PoisonError::into_inner);
-        Ok(ids
-            .iter()
-            .map(|id| {
-                let b = found.get(id).cloned();
-                if let Some(b) = &b {
-                    cache.put(*id, b.clone());
-                }
-                b
-            })
-            .collect())
+        for b in found.values() {
+            self.cache.insert(b.clone());
+        }
+        Ok(ids.iter().map(|id| found.get(id).cloned()).collect())
     }
 }
 

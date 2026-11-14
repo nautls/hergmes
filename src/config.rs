@@ -3,9 +3,8 @@
 //! The relay's own settings start with `HERGMES_`, so they can't clash with other variables
 //! in a shared environment. `ERGO_NODE_URL` names the node, not the relay, and has no prefix.
 //!
-//! The box cache budget and the caps on subscriptions and tracked boxes are not here yet:
-//! nothing reads them until REST (step 8) and WebSocket (step 9), and their defaults are
-//! still open decisions in DESIGN.md.
+//! The caps on subscriptions and tracked boxes are not here yet: nothing reads them until
+//! pages (step 8b) and WebSocket (step 9).
 
 use std::time::Duration;
 
@@ -36,7 +35,12 @@ pub mod vars {
     pub const TRACK_ADDRESSES: &str = "HERGMES_TRACK_ADDRESSES";
     /// Token ids tracked for the life of the process, comma-separated.
     pub const TRACK_TOKENS: &str = "HERGMES_TRACK_TOKENS";
+    /// The box cache's budget, in MiB. 0 disables the cache.
+    pub const BOX_CACHE_MB: &str = "HERGMES_BOX_CACHE_MB";
 }
+
+/// The box cache's default budget: about 32k to 1.2M boxes, at 100 B to 4 KB each.
+pub const BOX_CACHE_MB: u64 = 128;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
@@ -47,6 +51,8 @@ pub struct Config {
     /// Addresses tracked from the start, checked against the node's network once it is known.
     pub track_addresses: Vec<Address>,
     pub track_tokens: Vec<TokenId>,
+    /// The box cache's budget in bytes, read in MiB; 0 disables the cache.
+    pub box_cache_bytes: u64,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -81,6 +87,10 @@ impl Config {
             get(vars::POLL_INTERVAL_MS),
             follower_defaults.interval,
         )?;
+        let cache_mb = number(vars::BOX_CACHE_MB, get(vars::BOX_CACHE_MB), BOX_CACHE_MB)?;
+        let box_cache_bytes = cache_mb
+            .checked_mul(1024 * 1024)
+            .ok_or_else(|| invalid(vars::BOX_CACHE_MB, &format!("{cache_mb} MiB is too large")))?;
         let refresh = millis(
             vars::MEMPOOL_REFRESH_MS,
             get(vars::MEMPOOL_REFRESH_MS),
@@ -105,6 +115,7 @@ impl Config {
             track_tokens: list(vars::TRACK_TOKENS, get(vars::TRACK_TOKENS), |t| {
                 t.parse::<TokenId>().map_err(|e| e.to_string())
             })?,
+            box_cache_bytes,
         })
     }
 

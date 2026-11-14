@@ -2,7 +2,7 @@ use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use dotenvy::dotenv;
 use hergmes::{
-    adapters::{Follower, TokenChecker, loader::Loader},
+    adapters::{BoxCache, Follower, TokenChecker, loader::Loader},
     clients::NodeClient,
     config::Config,
     engine::Engine,
@@ -42,6 +42,8 @@ async fn run() -> Result<(), AppError> {
     let keys = config.tracked_keys(node.network())?;
 
     let (engine, mut engine_task) = runtime::spawn(Engine::new(config.engine));
+    // Seeded by every first load; the box fetcher reads it once pages are served.
+    let cache = BoxCache::new(config.box_cache_bytes);
     info!(
         network = ?node.network(),
         window = config.engine.window,
@@ -58,7 +60,7 @@ async fn run() -> Result<(), AppError> {
 
     let keeper = Arc::new(Keeper::new(
         engine,
-        Loader::new(node.clone(), Default::default()),
+        Loader::new(node.clone(), Default::default()).seeding(cache),
         Arc::new(TokenChecker::new(node, config.token_supply_limit)),
         Default::default(),
     ));

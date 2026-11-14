@@ -12,11 +12,11 @@ use tracing::debug;
 use crate::{
     engine::{
         Balance, BlockDelta, BlockRef, BoxKey, ChainLink, EngineError, Event, KeyDelta, KeyId,
-        Mempool, Output, PageError, Query, Reply, ResyncReason, Spend, StoredBox, Totals,
-        TrackingKey,
+        LoadedBox, Mempool, Output, PageError, Query, Reply, ResyncReason, Spend, StoredBox,
+        Totals, TrackingKey,
         overlay::{self, PendingDelta},
     },
-    types::ergo::{BoxId, HeaderId, IndexedBlock, IndexedBox, UTxO},
+    types::ergo::{BoxId, HeaderId, IndexedBlock, UTxO},
 };
 
 /// How far back the engine can serve, and how long it keeps idle keys.
@@ -381,7 +381,7 @@ impl Engine {
         &mut self,
         key: TrackingKey,
         as_of: BlockRef,
-        boxes: Vec<IndexedBox>,
+        boxes: Vec<LoadedBox>,
     ) -> Vec<Output> {
         if self.tip != Some(as_of) {
             return vec![Output::LoadRejected { key, as_of }];

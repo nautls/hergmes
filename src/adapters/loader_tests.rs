@@ -9,7 +9,7 @@ use std::sync::{
 
 use super::*;
 use crate::{
-    adapters::{EngineGone, Follower, follower},
+    adapters::{BoxCache, BoxFetcher, EngineGone, Follower, follower},
     engine::{Config as EngineConfig, Engine, EngineError, Query, Reply},
     sim::{
         Chain, Endpoint, SimChain, SimConfig,
@@ -205,6 +205,82 @@ fn a_load_the_engine_rejects_is_reported() {
     let loader = Loader::new(sim.clone(), Config::default());
     assert_eq!(ready(loader.try_load(&engine, &key)).unwrap(), Attempt::Rejected);
     assert!(!engine.inner.lock().unwrap().is_tracked(&key));
+}
+
+/// The ids `cache` holds out of `key`'s boxes at the node's tip, and how many boxes the key
+/// has.
+fn seeded(sim: &SimChain, cache: &BoxCache, key: &TrackingKey) -> (usize, usize) {
+    let tip = sim.lock().tip();
+    let boxes = sim.lock().oracle().unspent(key, tip.height);
+    let held = boxes
+        .keys()
+        .filter(|k| cache.get(&k.box_id).is_some())
+        .count();
+    (held, boxes.len())
+}
+
+/// The loader seeds the box cache from a load the engine accepts, and from one it ignores
+/// because the key is already tracked; never from a load it rejects.
+#[test]
+fn a_load_seeds_the_cache_unless_the_engine_rejects_it() {
+    // Accepted.
+    let chain = new_chain();
+    let engine = synced_engine(&chain);
+    let sim = SimChain::new(chain);
+    let key = tree_key(&sim, 0);
+    let cache = BoxCache::new(1 << 20);
+    let loader = Loader::new(sim.clone(), Config::default()).seeding(cache.clone());
+    let outcome = ready(loader.try_load(&engine, &key)).unwrap();
+    assert!(matches!(outcome, Attempt::Tracked { .. }), "{outcome:?}");
+    let (held, all) = seeded(&sim, &cache, &key);
+    assert!(all > 0);
+    assert_eq!(held, all, "every box of an accepted load");
+
+    // A duplicate: the key is tracked already, and the engine ignores the second load.
+    let cache = BoxCache::new(1 << 20);
+    let again = Loader::new(sim.clone(), Config::default()).seeding(cache.clone());
+    let outcome = ready(again.try_load(&engine, &key)).unwrap();
+    assert!(matches!(outcome, Attempt::Tracked { .. }), "{outcome:?}");
+    assert_eq!(seeded(&sim, &cache, &key), (all, all), "every box of a duplicate");
+
+    // Rejected: the engine moved between the tip read and the load.
+    let mut chain = new_chain();
+    chain.mine(0, 1, 1);
+    let mut engine = Engine::new(EngineConfig::default());
+    for height in chain.height() - 1..=chain.height() {
+        engine
+            .apply(Event::BlockApplied(chain.oracle().indexed_block(height)))
+            .unwrap();
+    }
+    let engine = Racing { inner: Mutex::new(engine), armed: AtomicBool::new(true) };
+    let sim = SimChain::new(chain);
+    let key = tree_key(&sim, 0);
+    let cache = BoxCache::new(1 << 20);
+    let loader = Loader::new(sim.clone(), Config::default()).seeding(cache.clone());
+    assert_eq!(ready(loader.try_load(&engine, &key)).unwrap(), Attempt::Rejected);
+    assert!(cache.boxes().is_empty(), "nothing from a rejected load");
+}
+
+/// The common case, a page right after a load (snapshot, then subscribe), is served from
+/// the boxes the load seeded, with no node call.
+#[test]
+fn a_page_right_after_a_load_makes_no_node_call() {
+    let chain = new_chain();
+    let engine = synced_engine(&chain);
+    let sim = SimChain::new(chain);
+    let key = tree_key(&sim, 0);
+    let cache = BoxCache::new(1 << 20);
+    let loader = Loader::new(sim.clone(), Config::default()).seeding(cache.clone());
+    ready(loader.try_load(&engine, &key)).unwrap();
+
+    let (page, _) = engine_and_oracle(&sim, &engine, &key);
+    let ids: Vec<BoxId> = page.iter().map(|k| k.box_id).collect();
+    assert!(!ids.is_empty());
+    let before = sim.calls().len();
+    let fetcher = BoxFetcher::new(sim.clone(), cache);
+    let boxes = ready(fetcher.fetch(&engine, &ids)).unwrap();
+    assert!(boxes.iter().all(Option::is_some));
+    assert_eq!(sim.calls().len(), before, "no node call");
 }
 
 #[tokio::test(start_paused = true)]

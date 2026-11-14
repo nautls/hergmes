@@ -5,6 +5,7 @@ use std::sync::Mutex;
 
 use super::*;
 use crate::{
+    adapters::cache::weight,
     engine::{Config, Engine, Event, TrackingKey},
     sim::{
         Chain, Endpoint, SimChain,
@@ -12,8 +13,9 @@ use crate::{
     },
 };
 
-fn capacity(n: usize) -> NonZeroUsize {
-    NonZeroUsize::new(n).unwrap()
+/// A cache large enough for every box of the simulated chain.
+fn cache() -> BoxCache {
+    BoxCache::new(1 << 20)
 }
 
 fn synced_engine(chain: &Chain) -> Mutex<Engine> {
@@ -39,7 +41,12 @@ fn each_box_comes_from_the_first_source_that_has_it() {
     // Tree 0 is tracked; a block spends one of its boxes, so only the ring holds it.
     let key = TrackingKey::Tree(chain.trees()[0].clone());
     let as_of = chain.tip();
-    let boxes = chain.oracle().load(&key, as_of.height);
+    let boxes = chain
+        .oracle()
+        .load(&key, as_of.height)
+        .into_iter()
+        .map(crate::engine::LoadedBox::from)
+        .collect();
     engine
         .lock()
         .unwrap()
@@ -63,7 +70,7 @@ fn each_box_comes_from_the_first_source_that_has_it() {
     let unknown = crate::sim::testing::digest(250);
 
     let sim = SimChain::new(chain);
-    let fetcher = BoxFetcher::new(sim.clone(), capacity(100));
+    let fetcher = BoxFetcher::new(sim.clone(), cache());
     let wanted = [in_ring, unspent, spent_elsewhere, pending, unknown, unspent];
     let boxes = ready(fetcher.fetch(&engine, &wanted)).unwrap();
     assert_eq!(
@@ -93,7 +100,7 @@ fn large_id_lists_go_in_chunks() {
     let engine = synced_engine(&chain);
     let wanted: Vec<BoxId> = chain.utxo().values().map(|b| b.id).take(5).collect();
     let sim = SimChain::new(chain);
-    let fetcher = BoxFetcher::with_chunk(sim.clone(), capacity(100), 2);
+    let fetcher = BoxFetcher::with_chunk(sim.clone(), cache(), 2);
     let boxes = ready(fetcher.fetch(&engine, &wanted)).unwrap();
     assert!(boxes.iter().all(Option::is_some));
     assert_eq!(calls(&sim, Endpoint::BoxesWithPool), 3);
@@ -104,12 +111,20 @@ fn the_cache_evicts_the_least_recently_used_box() {
     let chain = new_chain();
     let engine = synced_engine(&chain);
     let (a, b) = (box_of(&chain, 0), box_of(&chain, 1));
+    let room = {
+        let utxo = chain.utxo();
+        let [wa, wb] = [a, b].map(|id| weight(utxo.values().find(|x| x.id == id).unwrap()));
+        u64::from(wa.max(wb))
+    };
     let sim = SimChain::new(chain);
-    let fetcher = BoxFetcher::new(sim.clone(), capacity(1));
+    // Room for one of the two.
+    let cache = BoxCache::new(room);
+    let fetcher = BoxFetcher::new(sim.clone(), cache.clone());
     ready(fetcher.fetch(&engine, &[a])).unwrap();
     ready(fetcher.fetch(&engine, &[a])).unwrap();
     assert_eq!(calls(&sim, Endpoint::BoxesWithPool), 1);
     ready(fetcher.fetch(&engine, &[b])).unwrap();
+    cache.settle();
     ready(fetcher.fetch(&engine, &[a])).unwrap();
     assert_eq!(calls(&sim, Endpoint::BoxesWithPool), 3, "b evicted a");
 }
@@ -162,7 +177,7 @@ mod node {
             .await;
 
         let client = NodeClient::new(reqwest::Client::new(), &server.uri(), Network::Mainnet);
-        let fetcher = BoxFetcher::new(client, capacity(10));
+        let fetcher = BoxFetcher::new(client, cache());
         let engine = Mutex::new(Engine::new(Config::default()));
         // The found box is asked last, so a positional match would be wrong.
         let boxes = fetcher

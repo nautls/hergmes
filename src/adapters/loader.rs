@@ -4,17 +4,20 @@
 //! The indexer can't pin a read to a block, so the loader pins it from outside: the node's
 //! tip is read before and after the pages, and the indexer must be at that tip
 //! (DESIGN.md, "How the hybrid works", First load).
+//!
+//! The boxes of a load the engine takes seed the box cache, so the pages that follow (a
+//! snapshot right after a subscribe, the common case) make no node call.
 
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use tokio::time::sleep;
 use tracing::{debug, info};
 
 use crate::{
-    adapters::{EngineGone, EngineHandle, backoff, best_full_block, engine_tip},
+    adapters::{BoxCache, EngineGone, EngineHandle, backoff, best_full_block, engine_tip},
     clients::{NodeError, NodeSource, Page, source::MAX_PAGE_LIMIT},
-    engine::{BlockRef, Event, Output, TrackingKey},
-    types::ergo::{BoxId, IndexedBox},
+    engine::{BlockRef, Event, LoadedBox, Output, TrackingKey},
+    types::ergo::{BoxId, IndexedBox, UTxO},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -72,12 +75,22 @@ pub enum LoadError {
 pub struct Loader<S> {
     source: S,
     config: Config,
+    cache: BoxCache,
 }
 
 impl<S: NodeSource> Loader<S> {
     pub fn new(source: S, config: Config) -> Self {
         assert!(config.page_limit >= 1 && config.page_limit <= MAX_PAGE_LIMIT);
-        Self { source, config }
+        Self { source, config, cache: BoxCache::disabled() }
+    }
+
+    /// Seeds `cache` with the boxes of every load the engine takes: one it accepts, and one
+    /// it ignores because the key is already tracked. The loader can't tell those two apart,
+    /// and a duplicate's boxes are the key's boxes at the tip all the same. A rejected load
+    /// seeds nothing: the tip moved, some of its boxes may be spent, and a retry follows.
+    pub fn seeding(mut self, cache: BoxCache) -> Self {
+        self.cache = cache;
+        self
     }
 
     /// Loads `key` and sends it to the engine, retrying until an attempt is accepted or
@@ -149,13 +162,21 @@ impl<S: NodeSource> Loader<S> {
         }
 
         let count = boxes.len();
+        let boxes: Vec<LoadedBox> = boxes.into_iter().map(LoadedBox::from).collect();
+        let seeds: Vec<Arc<UTxO>> = boxes.iter().map(|b| b.utxo.clone()).collect();
         let event = Event::KeyLoaded { key: key.clone(), as_of: tip, boxes };
         // `KeyLoaded` is never an `EngineError`: an off-tip load answers `LoadRejected`.
         let outputs = engine.apply(event).await?.unwrap_or_default();
         let rejected = outputs
             .iter()
             .any(|o| matches!(o, Output::LoadRejected { key: k, .. } if k == key));
-        Ok(if rejected { Attempt::Rejected } else { Attempt::Tracked { as_of: tip, boxes: count } })
+        if rejected {
+            return Ok(Attempt::Rejected);
+        }
+        for b in seeds {
+            self.cache.insert(b);
+        }
+        Ok(Attempt::Tracked { as_of: tip, boxes: count })
     }
 
     /// Every page of the key's unspent boxes, oldest first, until a short page.

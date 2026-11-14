@@ -55,7 +55,15 @@ impl Fixture {
     fn load(&self, key: &TrackingKey) {
         let (as_of, boxes) = {
             let chain = self.sim.lock();
-            (chain.tip(), chain.oracle().load(key, chain.height()))
+            (
+                chain.tip(),
+                chain
+                    .oracle()
+                    .load(key, chain.height())
+                    .into_iter()
+                    .map(crate::engine::LoadedBox::from)
+                    .collect(),
+            )
         };
         assert_eq!(self.engine_tip(), Some(as_of));
         let outputs = self

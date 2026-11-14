@@ -32,6 +32,7 @@ fn only_the_node_url_is_required() {
     assert_eq!(config.follower, follower::Config::default());
     assert_eq!(config.token_supply_limit, SUPPLY_LIMIT);
     assert!(config.track_addresses.is_empty() && config.track_tokens.is_empty());
+    assert_eq!(config.box_cache_bytes, 128 * 1024 * 1024);
 
     assert!(matches!(self::config(&[]), Err(ConfigError::Missing(vars::NODE_URL))));
     let empty = self::config(&[(vars::NODE_URL, "  ")]);
@@ -49,6 +50,7 @@ fn every_setting_is_read() {
         (vars::TOKEN_SUPPLY_LIMIT, "7"),
         (vars::TRACK_ADDRESSES, &format!(" {MAINNET} ,")),
         (vars::TRACK_TOKENS, &format!("{NFT},{TOKEN}")),
+        (vars::BOX_CACHE_MB, "3"),
     ])
     .unwrap();
     assert_eq!(config.engine, engine::Config { window: 30, grace: 0 });
@@ -57,6 +59,13 @@ fn every_setting_is_read() {
     assert_eq!(config.token_supply_limit, 7);
     assert_eq!(config.track_addresses, vec![Address::decode(MAINNET).unwrap()]);
     assert_eq!(config.track_tokens, vec![NFT.parse().unwrap(), TOKEN.parse().unwrap()]);
+    assert_eq!(config.box_cache_bytes, 3 * 1024 * 1024);
+}
+
+#[test]
+fn a_box_cache_of_zero_is_allowed() {
+    let config = config(&[(vars::NODE_URL, "http://node"), (vars::BOX_CACHE_MB, "0")]);
+    assert_eq!(config.unwrap().box_cache_bytes, 0, "it disables the cache");
 }
 
 #[test]
@@ -71,6 +80,8 @@ fn bad_values_name_their_variable() {
         (vars::TOKEN_SUPPLY_LIMIT, "lots"),
         (vars::TRACK_ADDRESSES, "9fRusAarL1KkrWQVsxSRVYnvWxaAT2A96cKtNn9tvPh5XUyCisR"),
         (vars::TRACK_TOKENS, "abcd"),
+        (vars::BOX_CACHE_MB, "-1"),
+        (vars::BOX_CACHE_MB, "18446744073709551615"),
     ] {
         assert_eq!(invalid_var(config(&[url, (var, value)])), var, "{var}={value}");
     }

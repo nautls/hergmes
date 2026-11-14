@@ -16,6 +16,7 @@ pub use block::{
 pub use key::TrackingKey;
 pub use mempool::Mempool;
 pub use message::{
-    Balance, EngineError, Event, Output, PageError, PendingTx, Query, Reply, ResyncReason,
+    Balance, EngineError, Event, LoadedBox, Output, PageError, PendingTx, Query, Reply,
+    ResyncReason,
 };
 pub use state::{Config, Engine};

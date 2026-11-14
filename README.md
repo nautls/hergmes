@@ -48,6 +48,7 @@ cargo run
 | `HERGMES_TOKEN_SUPPLY_LIMIT` | 100     | Largest token emission that can be tracked                       |
 | `HERGMES_TRACK_ADDRESSES`    |         | Addresses tracked for the life of the process, comma-separated   |
 | `HERGMES_TRACK_TOKENS`       |         | Token ids tracked for the life of the process, comma-separated   |
+| `HERGMES_BOX_CACHE_MB`       | 128     | Memory for full boxes kept to serve pages, in MiB; 0 disables it |
 
 Logging uses `tracing`; set `RUST_LOG` (e.g. `RUST_LOG=hergmes=debug`) to adjust verbosity.
 

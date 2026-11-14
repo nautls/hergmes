@@ -15,6 +15,7 @@ use crate::{
 pub mod balance;
 pub mod blocks;
 pub mod boxes;
+pub mod cache;
 pub mod follower;
 pub mod loader;
 pub mod mempool;
@@ -23,6 +24,7 @@ pub mod tokens;
 pub use balance::BalanceReader;
 pub use blocks::BlockConsumer;
 pub use boxes::BoxFetcher;
+pub use cache::BoxCache;
 pub use follower::Follower;
 pub use loader::Loader;
 pub use mempool::MempoolPoller;

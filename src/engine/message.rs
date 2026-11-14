@@ -17,13 +17,27 @@ pub enum Event {
     /// The whole mempool, and the tip read alongside it.
     MempoolSnapshot { txs: Arc<[UnconfirmedTransaction]>, observed_tip: BlockRef },
     /// A key's first load. Accepted only if `as_of` is the current tip; it then starts tracking.
-    KeyLoaded { key: TrackingKey, as_of: BlockRef, boxes: Vec<IndexedBox> },
+    KeyLoaded { key: TrackingKey, as_of: BlockRef, boxes: Vec<LoadedBox> },
     /// A client subscribed to a key. A key that is not tracked answers `ResyncRequired`: the
     /// transport loads it first.
     Subscribed(TrackingKey),
     /// A client unsubscribed from a key or disconnected. A key with no subscribers is
     /// untracked once it has been idle for the grace period, counted in blocks.
     Unsubscribed(TrackingKey),
+}
+
+/// A box of a first load. The box is shared, not owned: the engine keeps only its id and
+/// height, and the loader keeps the same allocation for the box cache, with no copy.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LoadedBox {
+    pub utxo: Arc<UTxO>,
+    pub inclusion_height: u32,
+}
+
+impl From<IndexedBox> for LoadedBox {
+    fn from(b: IndexedBox) -> Self {
+        Self { utxo: Arc::new(b.utxo), inclusion_height: b.inclusion_height }
+    }
 }
 
 /// A read of engine state, answered in order with the events. Reads of a tracked key count

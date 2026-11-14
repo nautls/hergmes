@@ -443,7 +443,13 @@ impl Harness {
     /// The loader: the key's boxes at the node's tip.
     fn load(&mut self, key: &TrackingKey) {
         let as_of = self.chain.tip();
-        let boxes = self.chain.oracle().load(key, as_of.height);
+        let boxes = self
+            .chain
+            .oracle()
+            .load(key, as_of.height)
+            .into_iter()
+            .map(crate::engine::LoadedBox::from)
+            .collect();
         let before = self.expected_states();
         let tracked = self.keys.contains_key(key);
         let outputs = self.feed(Event::KeyLoaded { key: key.clone(), as_of, boxes });
@@ -1005,7 +1011,13 @@ impl Fixture {
 
     fn load(&mut self, key: &TrackingKey) -> Vec<Output> {
         let as_of = self.chain.tip();
-        let boxes = self.chain.oracle().load(key, as_of.height);
+        let boxes = self
+            .chain
+            .oracle()
+            .load(key, as_of.height)
+            .into_iter()
+            .map(crate::engine::LoadedBox::from)
+            .collect();
         self.engine
             .apply(Event::KeyLoaded { key: key.clone(), as_of, boxes })
             .expect("no error")
@@ -1203,6 +1215,7 @@ fn loading_a_key_decides_the_snapshot_again() {
         .load(&zero, as_of.height)
         .into_iter()
         .filter(|b| b.utxo.id != source)
+        .map(crate::engine::LoadedBox::from)
         .collect();
     let outputs = f
         .engine
