@@ -9,17 +9,12 @@ use crate::{
     },
 };
 
-/// An address's key, its ErgoTree. An address of another network than the node's is
-/// refused: a testnet and a mainnet P2PK address with the same public key have the same
-/// tree, so the relay would serve the other network's boxes under it.
+/// An address's key, its ErgoTree, for an address of the node's network only
+/// ([`Address::check_network`]).
 pub fn address_key(address: &str, network: Network) -> Result<TrackingKey, ApiError> {
-    let address = Address::decode(address).map_err(|e| ApiError::InvalidAddress(e.to_string()))?;
-    if address.network() != network {
-        return Err(ApiError::InvalidAddress(format!(
-            "a {:?} address, but the node is on {network:?}",
-            address.network()
-        )));
-    }
+    let address = Address::decode(address)
+        .and_then(|a| a.check_network(network).map(|()| a))
+        .map_err(|e| ApiError::InvalidAddress(e.to_string()))?;
     Ok(TrackingKey::Tree(address.into_ergo_tree()))
 }
 

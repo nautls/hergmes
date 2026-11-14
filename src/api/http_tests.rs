@@ -24,6 +24,7 @@ use crate::{
     adapters::{BoxCache, BoxFetcher, EngineGone, Follower, Loader, TokenChecker},
     api::cursor::CursorError,
     engine::{Config, Engine},
+    runtime::{Settled, settling},
     sim::{Chain, SimChain, SimConfig, testing::ready, token_id},
     types::{
         address::{self, Network},
@@ -118,6 +119,11 @@ impl Fixture {
     }
 
     fn with_chain(chain: Chain) -> Self {
+        Self::waiting_for(chain, Settled::now())
+    }
+
+    /// Loading no key for a client until `settled` is.
+    fn waiting_for(chain: Chain, settled: Settled) -> Self {
         let sim = SimChain::new(chain);
         let cache = BoxCache::new(1 << 20);
         let loader = Arc::new(Loader::new(sim.clone(), Default::default()).seeding(cache.clone()));
@@ -128,7 +134,8 @@ impl Fixture {
                 loader,
                 Arc::new(TokenChecker::new(sim.clone(), 100)),
                 BoxFetcher::new(sim.clone(), cache),
-            ),
+            )
+            .waiting_for(settled),
             balances: Balances::new(sim.clone(), Default::default()),
             network: Network::Mainnet,
             synced: follower.synced(),
@@ -205,6 +212,22 @@ async fn status_is_ready_once_the_engine_is_at_the_nodes_tip() {
     let status = f.ok("/v1/status").await;
     assert_eq!(status["tip"]["height"], tip.height);
     assert_eq!(status["ready"], false, "the indexer lags, so the engine is behind");
+}
+
+/// Until the configured keys settle, a key not tracked can't be loaded, so the relay is not
+/// ready and a first page is `not_ready`.
+#[tokio::test]
+async fn status_is_not_ready_until_the_configured_keys_settle() {
+    let (settled, pending) = settling(1);
+    let mut f = Fixture::waiting_for(Chain::new(SimConfig::default()), settled);
+    f.tick();
+    assert_eq!(f.ok("/v1/status").await["ready"], false);
+    let uri = format!("/v1/addresses/{}/boxes", f.address(0));
+    assert_eq!(f.error(&uri, StatusCode::SERVICE_UNAVAILABLE).await, "not_ready");
+
+    drop(pending);
+    assert_eq!(f.ok("/v1/status").await["ready"], true);
+    f.ok(&uri).await;
 }
 
 #[tokio::test]

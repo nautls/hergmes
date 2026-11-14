@@ -133,12 +133,13 @@ async fn address_balance<S: NodeSource, E: EngineHandle>(
 }
 
 /// Cheap enough for health checks: one engine query and no node call. `ready` is the
-/// engine having a tip and being at the node's.
+/// engine having a tip and being at the node's, and the configured keys having settled, so
+/// that a key not yet tracked can be loaded.
 async fn status<S: NodeSource, E: EngineHandle>(
     State(api): State<Arc<Api<S, E>>>,
 ) -> Result<Response, ApiError> {
     let tip = engine_tip(&api.engine).await?;
-    let ready = tip.is_some() && *api.synced.borrow();
+    let ready = tip.is_some() && *api.synced.borrow() && api.pages.loads();
     Ok(Json(StatusBody { network: api.network, tip: tip.as_ref(), ready }).into_response())
 }
 

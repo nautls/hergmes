@@ -149,19 +149,13 @@ impl Config {
     }
 
     /// The keys tracked from the start. Fails if an address is for another network than the
-    /// node's: a testnet and a mainnet P2PK address with the same key have the same tree.
+    /// node's ([`Address::check_network`]).
     pub fn tracked_keys(&self, network: Network) -> Result<Vec<TrackingKey>, ConfigError> {
         let mut keys = Vec::new();
         for address in &self.track_addresses {
-            if address.network() != network {
-                return Err(invalid(
-                    vars::TRACK_ADDRESSES,
-                    &format!(
-                        "{address} is a {:?} address, but the node is on {network:?}",
-                        address.network()
-                    ),
-                ));
-            }
+            address
+                .check_network(network)
+                .map_err(|e| invalid(vars::TRACK_ADDRESSES, &format!("{address}: {e}")))?;
             keys.push(TrackingKey::Tree(address.ergo_tree().clone()));
         }
         keys.extend(self.track_tokens.iter().map(|id| TrackingKey::Token(*id)));

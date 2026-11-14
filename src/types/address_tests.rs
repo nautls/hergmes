@@ -169,6 +169,22 @@ fn p2sh_tree_follows_the_node_not_fleet() {
 }
 
 #[test]
+fn an_address_of_another_network_is_refused() {
+    let mainnet = Address::decode(FEE_MAINNET).unwrap();
+    let testnet = Address::decode(FEE_TESTNET).unwrap();
+    assert_eq!(mainnet.ergo_tree(), testnet.ergo_tree(), "only the network tells them apart");
+    assert_eq!(mainnet.check_network(Network::Mainnet), Ok(()));
+    assert_eq!(testnet.check_network(Network::Testnet), Ok(()));
+    let error = mainnet.check_network(Network::Testnet).unwrap_err();
+    assert_eq!(
+        error,
+        AddressError::WrongNetwork { address: Network::Mainnet, node: Network::Testnet }
+    );
+    assert_eq!(error.to_string(), "a Mainnet address, but the node is on Testnet");
+    assert!(testnet.check_network(Network::Mainnet).is_err());
+}
+
+#[test]
 fn network_names() {
     assert_eq!("mainnet".parse::<Network>().unwrap(), Network::Mainnet);
     assert_eq!("testnet".parse::<Network>().unwrap(), Network::Testnet);

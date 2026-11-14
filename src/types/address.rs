@@ -92,6 +92,8 @@ pub enum AddressError {
     InvalidPublicKey,
     #[error("P2SH hash must be {P2SH_HASH_LENGTH} bytes, got {0}")]
     P2shHashLength(usize),
+    #[error("a {address:?} address, but the node is on {node:?}")]
+    WrongNetwork { address: Network, node: Network },
 }
 
 /// A decoded address: the ErgoTree it stands for, and its network.
@@ -153,6 +155,16 @@ impl Address {
 
     pub fn network(&self) -> Network {
         self.network
+    }
+
+    /// Refuses an address of another network than the node's. A testnet and a mainnet P2PK
+    /// address with the same public key have the same tree, so the relay would serve the
+    /// other network's boxes under it.
+    pub fn check_network(&self, node: Network) -> Result<(), AddressError> {
+        if self.network != node {
+            return Err(AddressError::WrongNetwork { address: self.network, node });
+        }
+        Ok(())
     }
 
     pub fn address_type(&self) -> AddressType {

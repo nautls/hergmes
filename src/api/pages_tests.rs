@@ -530,6 +530,29 @@ fn a_token_is_checked_before_it_is_loaded() {
     assert_eq!(page.items, expected(&sim, &small));
 }
 
+/// No load starts for a client until the configured keys settle: an untracked key is
+/// `not_ready` with no node call, and a tracked key is served all the same.
+#[test]
+fn no_load_starts_until_the_configured_keys_settle() {
+    let (sim, engine, pages) = service(crate::sim::testing::new_chain(), 0);
+    let (settled, pending) = crate::runtime::settling(1);
+    let pages = pages.waiting_for(settled);
+    let (tracked, untracked) = (tree_key(&sim, 0), tree_key(&sim, 1));
+    ready(Loader::new(sim.clone(), loader::Config::default()).load(&engine, &tracked)).unwrap();
+
+    let calls = sim.calls().len();
+    let error = ready(pages.page(&engine, &untracked, None, None)).unwrap_err();
+    assert_eq!(error, ApiError::NotReady { retry_after: loader::Config::default().retry });
+    assert_eq!(sim.calls().len(), calls, "no node call");
+    assert!(!engine.lock().unwrap().is_tracked(&untracked));
+    let page = ready(pages.page(&engine, &tracked, None, None)).unwrap();
+    assert_eq!(page.items, expected(&sim, &tracked));
+
+    drop(pending);
+    let page = ready(pages.page(&engine, &untracked, None, None)).unwrap();
+    assert_eq!(page.items, expected(&sim, &untracked));
+}
+
 /// A key over the per-key cap is `too_many_boxes`, and it stays untracked.
 #[test]
 fn a_key_over_the_cap_is_too_many_boxes() {

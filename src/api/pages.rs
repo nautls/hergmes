@@ -3,7 +3,8 @@
 //!
 //! The ids come from the engine, so every page of a snapshot is as of one block whatever
 //! happens between requests; the boxes come from the box fetcher. A key that is not tracked
-//! is loaded first, which a token key does only after the supply check.
+//! is loaded first, which a token key does only after the supply check, and only once the
+//! configured keys have settled.
 
 use std::sync::Arc;
 
@@ -12,6 +13,7 @@ use crate::{
     api::{ApiError, Cursor},
     clients::NodeSource,
     engine::{BlockRef, PageError, PageIds, Query, Reply, TrackingKey},
+    runtime::Settled,
     types::ergo::{BoxId, UTxO},
 };
 
@@ -40,6 +42,8 @@ pub struct Pages<S> {
     loader: Arc<Loader<S>>,
     tokens: Arc<TokenChecker<S>>,
     fetcher: BoxFetcher<S>,
+    /// Whether the configured keys have settled; no load starts for a client before.
+    settled: Settled,
 }
 
 impl<S: NodeSource> Pages<S> {
@@ -48,7 +52,19 @@ impl<S: NodeSource> Pages<S> {
         tokens: Arc<TokenChecker<S>>,
         fetcher: BoxFetcher<S>,
     ) -> Self {
-        Self { loader, tokens, fetcher }
+        Self { loader, tokens, fetcher, settled: Settled::now() }
+    }
+
+    /// Starts no load until `settled` is, so at startup the configured keys take the total cap
+    /// before clients can. A request that would load answers `not_ready` until then.
+    pub fn waiting_for(mut self, settled: Settled) -> Self {
+        self.settled = settled;
+        self
+    }
+
+    /// Whether a request may load a key that is not tracked.
+    pub fn loads(&self) -> bool {
+        self.settled.is_settled()
     }
 
     /// A page of `key`'s boxes: the first one, at the tip, without a cursor; the next one
@@ -117,6 +133,9 @@ impl<S: NodeSource> Pages<S> {
             Err(PageError::NotTracked) => {}
         }
 
+        if !self.loads() {
+            return Err(ApiError::NotReady { retry_after: self.loader.config().retry });
+        }
         if let TrackingKey::Token(id) = key {
             self.tokens.check(id).await?;
         }

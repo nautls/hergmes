@@ -112,6 +112,7 @@ impl Engine {
     }
 
     /// The block a tracked key was loaded at: pages pinned below it expire.
+    #[cfg(test)]
     pub fn tracked_since(&self, key: &TrackingKey) -> Option<BlockRef> {
         Some(self.keys[self.ids.get(key)?].since)
     }

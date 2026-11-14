@@ -32,10 +32,11 @@ async fn main() -> Result<(), AppError> {
 }
 
 /// Binds the REST API's address, starts the engine task, the follower, a keeper per
-/// configured key and the server, and runs until the engine is gone or the server stops. The engine task ends only by panicking, which can leave it half-changed,
-/// and the follower and keepers then stop with `EngineGone`: nothing can serve, so the
-/// process exits, and a restart reloads every key from the node. A keeper that gives up its
-/// key (logged), or panics, leaves the relay running: one key's trouble never stops it.
+/// configured key and the server, and runs until the engine is gone or the server stops.
+/// The engine task ends only by panicking, which can leave it half-changed, and the
+/// follower and keepers then stop with `EngineGone`: nothing can serve, so the process
+/// exits, and a restart reloads every key from the node. A keeper that gives up its key
+/// (logged), or panics, leaves the relay running: one key's trouble never stops it.
 async fn run() -> Result<(), AppError> {
     let config = Config::from_env()?;
     // Bound first, so a port conflict stops the process before anything starts.
@@ -71,9 +72,13 @@ async fn run() -> Result<(), AppError> {
     // Shared by the keepers and the page service, so their loads of one key coalesce.
     let loader = Arc::new(Loader::new(node.clone(), config.loader).seeding(cache.clone()));
     let tokens = Arc::new(TokenChecker::new(node.clone(), config.token_supply_limit));
+    // The server starts at once, for the status route and tracked keys, but loads no key for
+    // a client until the configured keys have settled.
+    let (settled, pending) = runtime::settling(keys.len());
     let api = Arc::new(Api {
         engine: engine.clone(),
-        pages: Pages::new(loader.clone(), tokens.clone(), BoxFetcher::new(node.clone(), cache)),
+        pages: Pages::new(loader.clone(), tokens.clone(), BoxFetcher::new(node.clone(), cache))
+            .waiting_for(settled),
         balances: Balances::new(node.clone(), Default::default()),
         network: node.network(),
         synced,
@@ -84,11 +89,11 @@ async fn run() -> Result<(), AppError> {
     let keeper = Arc::new(Keeper::new(engine, loader, tokens, Default::default()));
     let mut keepers = JoinSet::new();
     let mut kept = HashMap::new();
-    for key in keys {
+    for (key, pending) in keys.into_iter().zip(pending) {
         let keeper = keeper.clone();
         let task = keepers.spawn({
             let key = key.clone();
-            async move { keeper.keep(key).await }
+            async move { keeper.keep(key, pending).await }
         });
         kept.insert(task.id(), key);
     }

@@ -13,13 +13,19 @@
 //! tracked, so the keeper subscribes again without a reload.
 //!
 //! One key's trouble never stops the relay, which serves every other key and client. A token
-//! above the supply limit, or a key refused by a cap on tracked boxes, is logged and given
-//! up; a node that returns boxes not matching the key is logged and asked again later. Only a
-//! stopped engine ends every keeper.
+//! above the supply limit, or a key over the per-key cap, is logged and given up; a key the
+//! total cap refuses, or a node that returns boxes not matching the key, is logged and asked
+//! again later. Only a stopped engine ends every keeper.
+//!
+//! Loads that clients start wait for the configured keys ([`Settled`]), so at startup they
+//! can't take the total cap first.
 
 use std::{sync::Arc, time::Duration};
 
-use tokio::{sync::mpsc, time::sleep};
+use tokio::{
+    sync::{mpsc, watch},
+    time::sleep,
+};
 use tracing::{debug, error, info, warn};
 
 use crate::{
@@ -41,12 +47,63 @@ pub struct Config {
     /// The wait after a load returned a box that does not match the key. That is a node
     /// fault; each retry is a full reload, so it is spaced well apart.
     pub mismatch_retry: Duration,
+    /// The wait after the total cap refused the key. Room is made only as idle keys are
+    /// untracked, a block at a time, and each retry is a full reload.
+    pub capacity_retry: Duration,
 }
 
 impl Default for Config {
     fn default() -> Self {
-        Self { retry: Duration::from_secs(5), mismatch_retry: Duration::from_secs(60) }
+        Self {
+            retry: Duration::from_secs(5),
+            mismatch_retry: Duration::from_secs(60),
+            capacity_retry: Duration::from_secs(60),
+        }
     }
+}
+
+/// Whether every configured key has settled its first load: tracked, given up, or refused
+/// for a reason other than the engine not being at the node's tip yet. Until then the relay
+/// starts no load for a client, so clients can't fill the total cap before the configured
+/// keys are in. A key that keeps failing still settles, so it never holds every client off.
+#[derive(Debug, Clone)]
+pub struct Settled(watch::Receiver<usize>);
+
+impl Settled {
+    /// Already settled: no configured key to wait for.
+    pub fn now() -> Self {
+        Self(watch::Sender::new(0).subscribe())
+    }
+
+    pub fn is_settled(&self) -> bool {
+        *self.0.borrow() == 0
+    }
+}
+
+/// One configured key's part in [`Settled`]. It counts as settled once settled or dropped,
+/// so a keeper that panics never holds the clients off.
+#[derive(Debug)]
+pub struct Pending(Option<Arc<watch::Sender<usize>>>);
+
+impl Pending {
+    fn settle(&mut self) {
+        if let Some(count) = self.0.take() {
+            count.send_modify(|n| *n -= 1);
+        }
+    }
+}
+
+impl Drop for Pending {
+    fn drop(&mut self) {
+        self.settle();
+    }
+}
+
+/// A [`Pending`] for each of `keys` configured keys, and what settles when all of them have.
+pub fn settling(keys: usize) -> (Settled, Vec<Pending>) {
+    let count = Arc::new(watch::Sender::new(keys));
+    let settled = Settled(count.subscribe());
+    (settled, (0..keys).map(|_| Pending(Some(count.clone()))).collect())
 }
 
 /// Outputs a keeper's sink holds. It takes only `balance` messages (none for a token key)
@@ -72,10 +129,10 @@ impl<S: NodeSource> Keeper<S> {
         Self { engine, loader, tokens, config }
     }
 
-    /// Keeps `key` tracked for good. Returns `Ok` only after giving the key up (a token above
-    /// the supply limit or a key refused by a cap, logged at `error`), and `EngineGone` when
-    /// the engine stops.
-    pub async fn keep(&self, key: TrackingKey) -> Result<(), EngineGone> {
+    /// Keeps `key` tracked for good, settling `pending` once its first load has an answer.
+    /// Returns `Ok` only after giving the key up (a token above the supply limit or a key over
+    /// the per-key cap, logged at `error`), and `EngineGone` when the engine stops.
+    pub async fn keep(&self, key: TrackingKey, mut pending: Pending) -> Result<(), EngineGone> {
         let key = &key;
         // Whether the engine may still track the key. Only a subscription that ended without
         // `resync_required` (a slow drain) leaves it tracked, and a reload would then page
@@ -83,7 +140,7 @@ impl<S: NodeSource> Keeper<S> {
         // again first and loaded only if that answers `resync_required`.
         let mut tracked = false;
         loop {
-            if !tracked && !self.load(key).await? {
+            if !tracked && !self.load(key, &mut pending).await? {
                 return Ok(());
             }
             let (sink, mut stream) = mpsc::channel(SINK);
@@ -110,12 +167,15 @@ impl<S: NodeSource> Keeper<S> {
     }
 
     /// Loads `key`, trying again until the engine tracks it. `false` if the key was given up.
-    async fn load(&self, key: &TrackingKey) -> Result<bool, EngineGone> {
+    /// `pending` is settled by any answer but the engine not being at the node's tip yet,
+    /// which every load waits through at startup.
+    async fn load(&self, key: &TrackingKey, pending: &mut Pending) -> Result<bool, EngineGone> {
         loop {
             if let TrackingKey::Token(id) = key {
                 match self.tokens.check(id).await {
                     Ok(()) => {}
                     Err(TokenError::Node(error)) => {
+                        pending.settle();
                         let wait = backoff(&error, self.config.retry);
                         warn!(?key, %error, ?wait, "Token check failed, trying again");
                         sleep(wait).await;
@@ -123,6 +183,7 @@ impl<S: NodeSource> Keeper<S> {
                     }
                     Err(TokenError::UnknownToken) => {
                         // The indexer may not have reached the mint yet.
+                        pending.settle();
                         warn!(?key, wait = ?self.config.retry, "Configured token is unknown, trying again");
                         sleep(self.config.retry).await;
                         continue;
@@ -138,17 +199,27 @@ impl<S: NodeSource> Keeper<S> {
             let error = match self.loader.load(&self.engine, key).await {
                 Ok((as_of, boxes)) => {
                     info!(?key, ?as_of, boxes, "Configured key loaded");
+                    pending.settle();
                     return Ok(true);
                 }
                 Err(error) => error,
             };
+            if !matches!(*error, LoadError::GaveUp { .. }) {
+                pending.settle();
+            }
             let wait = match &*error {
                 LoadError::EngineGone(gone) => return Err(*gone),
-                error @ (LoadError::TooManyBoxes { .. } | LoadError::CapacityExceeded { .. }) => {
-                    // The operator sets both the keys and the caps; an exemption would need a
-                    // second path in the engine.
+                error @ LoadError::TooManyBoxes { .. } => {
+                    // The operator sets both the keys and the caps.
                     error!(?key, %error, "Configured key can't be tracked, giving it up");
                     return Ok(false);
+                }
+                error @ LoadError::CapacityExceeded { .. } => {
+                    // Room is made as idle keys are untracked. An exemption from the cap would
+                    // need a second path in the engine.
+                    let wait = self.config.capacity_retry;
+                    warn!(?key, %error, ?wait, "Configured key refused by the cap, trying again");
+                    wait
                 }
                 LoadError::Mismatch { box_id } => {
                     let wait = self.config.mismatch_retry;
