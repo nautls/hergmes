@@ -55,9 +55,10 @@ pub enum Query {
     },
     /// A key's overlay, tracked or not.
     Overlay(TrackingKey),
-    /// A key's pending delta, tracked or not: the signed pending side of a balance.
+    /// A key's pending delta, tracked or not: the signed pending side of a balance, with the
+    /// block it was computed at.
     Pending(TrackingKey),
-    /// A tracked key's balance at the tip, as the stream sends it.
+    /// A tracked address's balance at the tip, as the stream sends it. A token key has none.
     Balance(TrackingKey),
     Tip,
     /// The blocks the engine can revert, oldest first, ending at the tip. The block consumer
@@ -69,7 +70,7 @@ pub enum Query {
     MempoolSnapshot,
     /// The messages that bring a client from `from` to the tip: replayed blocks or
     /// rollbacks, then the overlay and the balance, or a resync. Without `from` (a
-    /// balance-only subscription), only the balance.
+    /// balance-only subscription), only the balance. A token key gets no balance.
     CatchUp {
         key: TrackingKey,
         from: Option<BlockRef>,
@@ -77,13 +78,13 @@ pub enum Query {
 }
 
 /// The answer to a [`Query`], in the matching variant. Where a reply is an `Option`, `None`
-/// means the key is untracked or there is no tip; overlays and pending deltas are answered
-/// for any key.
+/// means the key is untracked (or, for a balance, a token key) or there is no tip; overlays
+/// and pending deltas are answered for any key.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Reply {
     Page(Result<PageIds, PageError>),
     Overlay(Vec<PendingTx>),
-    Pending(PendingDelta),
+    Pending(Option<PendingAt>),
     Balance(Option<Balance>),
     Tip(Option<BlockRef>),
     Chain(Vec<ChainLink>),
@@ -117,7 +118,17 @@ pub enum EngineError {
     NotTip { block: BlockRef, tip: Option<BlockRef> },
 }
 
-/// A key's balance at a tip: its running totals, and the signed pending delta of its overlay.
+/// A key's pending delta and the engine's tip it was computed at. An untracked address's
+/// balance pairs it with a confirmed balance read from the indexer only at the same height:
+/// a block applied between the two reads would leave a tx it mined in neither half.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingAt {
+    pub as_of: BlockRef,
+    pub delta: PendingDelta,
+}
+
+/// An address's balance at a tip: its running totals, and the signed pending delta of its
+/// overlay.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Balance {
     pub as_of: BlockRef,
@@ -149,7 +160,8 @@ pub enum Output {
     },
     /// The key's whole pending state, replacing the previous one.
     Mempool { key: TrackingKey, tip_height: u32, pending: Vec<PendingTx> },
-    /// The key's whole balance, replacing the previous one. Sent when its value changes.
+    /// An address's whole balance, replacing the previous one. Sent when its value changes;
+    /// never for a token key.
     Balance { key: TrackingKey, balance: Balance },
     /// The subscription ended: the client redoes its snapshot, or for a balance-only one,
     /// subscribes again.

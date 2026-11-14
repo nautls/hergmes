@@ -34,7 +34,8 @@ struct Snapshot {
 #[derive(Debug, Clone)]
 struct Sent {
     hash: OverlayHash,
-    /// The pending delta of that overlay. Fixed by the overlay, so it changes only with the hash.
+    /// The pending delta of that overlay, for an address; empty for a token key, which has
+    /// no balance. Fixed by the overlay, so it changes only with the hash.
     delta: PendingDelta,
 }
 
@@ -223,7 +224,8 @@ impl Mempool {
         }
     }
 
-    /// A tracked key's pending delta, as of the last message sent for it.
+    /// A tracked key's pending delta, as of the last message sent for it. Empty for a token
+    /// key.
     pub fn tracked_delta(&self, key: &TrackingKey) -> Option<&PendingDelta> {
         self.sent.get(key).map(|s| &s.delta)
     }
@@ -232,8 +234,11 @@ impl Mempool {
     /// with their catch-up, so it counts as sent.
     pub fn track(&mut self, key: TrackingKey) {
         if !self.sent.contains_key(&key) {
-            let sent =
-                Sent { hash: overlay::hash(&self.overlay(&key)), delta: self.pending_delta(&key) };
+            let delta = match key {
+                TrackingKey::Tree(_) => self.pending_delta(&key),
+                TrackingKey::Token(_) => PendingDelta::default(),
+            };
+            let sent = Sent { hash: overlay::hash(&self.overlay(&key)), delta };
             self.sent.insert(key, sent);
         }
     }
@@ -261,8 +266,8 @@ impl Mempool {
         outputs
     }
 
-    /// Every tracked key's overlay and pending delta, in one pass over the snapshot. A key no
-    /// pending tx touches is absent.
+    /// Every tracked key's overlay and pending delta (empty for a token key), in one pass over
+    /// the snapshot. A key no pending tx touches is absent.
     fn tracked_overlays(&self) -> BTreeMap<TrackingKey, (Vec<PendingTx>, PendingDelta)> {
         let Some(snapshot) = &self.snapshot else {
             return BTreeMap::new();
@@ -276,13 +281,19 @@ impl Mempool {
                     let utxo = shared
                         .get_or_insert_with(|| Arc::new(output.clone()))
                         .clone();
-                    overlays.entry(key.clone()).or_default().1.created(output);
+                    let entry = overlays.entry(key.clone()).or_default();
+                    if matches!(key, TrackingKey::Tree(_)) {
+                        entry.1.created(output);
+                    }
                     pending_entry(&mut touched, key, tx.id).created.push(utxo);
                 }
             }
             for input in &tx.inputs {
                 for key in overlay::keys_of(input).filter(|k| self.sent.contains_key(k)) {
-                    overlays.entry(key.clone()).or_default().1.spent(input);
+                    let entry = overlays.entry(key.clone()).or_default();
+                    if matches!(key, TrackingKey::Tree(_)) {
+                        entry.1.spent(input);
+                    }
                     pending_entry(&mut touched, key, tx.id).spent.push(input.id);
                 }
             }

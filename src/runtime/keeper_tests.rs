@@ -7,7 +7,7 @@ use tokio::task::JoinHandle;
 use super::*;
 use crate::{
     adapters::{BlockConsumer, EngineGone, EngineHandle, loader},
-    engine::{self, Engine, Query, Reply},
+    engine::{self, Engine, PageIds, Query, Reply},
     runtime::spawn,
     sim::{Chain, SimChain, SimConfig, token_id},
 };
@@ -48,10 +48,12 @@ fn keep(keeper: &Arc<Keeper<SimChain>>, key: &TrackingKey) -> JoinHandle<Result<
     tokio::spawn(async move { keeper.keep(key).await })
 }
 
-/// The key's confirmed balance, if it is tracked. A read is activity for the grace period.
-async fn confirmed(engine: &Handle, key: &TrackingKey) -> Option<crate::engine::Totals> {
-    match engine.query(Query::Balance(key.clone())).await.unwrap() {
-        Reply::Balance(balance) => balance.map(|b| b.confirmed),
+/// The key's boxes at the engine's tip, if it is tracked. A read is activity for the grace
+/// period. A page rather than a balance, which a token key has none of.
+async fn tracked(engine: &Handle, key: &TrackingKey) -> Option<PageIds> {
+    let query = Query::Page { key: key.clone(), at: None, after: None, limit: usize::MAX };
+    match engine.query(query).await.unwrap() {
+        Reply::Page(page) => page.ok(),
         other => panic!("{other:?}"),
     }
 }
@@ -60,12 +62,16 @@ async fn confirmed(engine: &Handle, key: &TrackingKey) -> Option<crate::engine::
 async fn tracked_at_tip(sim: &SimChain, engine: &Handle, key: &TrackingKey) {
     for _ in 0..100 {
         let tip = sim.lock().tip();
-        if let Reply::Balance(Some(balance)) =
-            engine.query(Query::Balance(key.clone())).await.unwrap()
-            && balance.as_of == tip
+        if let Some(page) = tracked(engine, key).await
+            && page.as_of == tip
         {
-            let expected = sim.lock().oracle().totals(key, tip.height);
-            assert_eq!(balance.confirmed, expected, "{key:?}");
+            let expected: Vec<_> = sim
+                .lock()
+                .oracle()
+                .unspent(key, tip.height)
+                .into_keys()
+                .collect();
+            assert_eq!(page.boxes, expected, "{key:?}");
             return;
         }
         sleep(Duration::from_millis(100)).await;
@@ -89,8 +95,8 @@ async fn a_configured_key_outlives_the_grace_period() {
         sim.lock().mine(0, 1, seed.into());
         sync(&sim, &engine).await;
     }
-    assert!(confirmed(&engine, kept).await.is_some(), "the keeper's subscription holds it");
-    assert!(confirmed(&engine, loaded).await.is_none(), "a key no one holds goes idle");
+    assert!(tracked(&engine, kept).await.is_some(), "the keeper's subscription holds it");
+    assert!(tracked(&engine, loaded).await.is_none(), "a key no one holds goes idle");
 }
 
 #[tokio::test(start_paused = true)]
@@ -171,8 +177,8 @@ async fn keys_refused_by_a_cap_are_given_up_alone() {
         .expect("given up")
         .unwrap();
     assert_eq!(given_up, Ok(()), "over the total cap");
-    assert!(confirmed(&engine, &tree).await.is_none());
-    assert!(confirmed(&engine, &small).await.is_some());
+    assert!(tracked(&engine, &tree).await.is_none());
+    assert!(tracked(&engine, &small).await.is_some());
 }
 
 #[tokio::test(start_paused = true)]

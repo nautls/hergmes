@@ -1,5 +1,5 @@
-//! The engine: per-key unspent id sets and running totals, the block delta ring buffer, the
-//! mempool overlays and balances, driven by events and queries one at a time.
+//! The engine: per-key unspent id sets, running totals for addresses, the block delta ring
+//! buffer, the mempool overlays and balances, driven by events and queries one at a time.
 
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque},
@@ -12,8 +12,8 @@ use tracing::debug;
 use crate::{
     engine::{
         Balance, BlockDelta, BlockRef, BoxKey, ChainLink, EngineError, Event, KeyDelta, KeyId,
-        LoadedBox, Mempool, Output, PageError, PageIds, Query, Reply, ResyncReason, Spend,
-        StoredBox, Totals, TrackingKey,
+        LoadedBox, Mempool, Output, PageError, PageIds, PendingAt, Query, Reply, ResyncReason,
+        Spend, StoredBox, Totals, TrackingKey,
         overlay::{self, PendingDelta},
     },
     types::ergo::{BoxId, HeaderId, IndexedBlock, UTxO},
@@ -51,7 +51,9 @@ struct KeyState {
     key: TrackingKey,
     /// The key's unspent boxes at the tip.
     boxes: BTreeSet<BoxKey>,
-    totals: Totals,
+    /// An address's running totals. A token key has none: summed over its holders' boxes, a
+    /// balance means nothing (DESIGN.md, "Balances"), so no block pays for keeping it.
+    totals: Option<Totals>,
     /// The block the key was loaded at. Ring entries up to it have no share for the key.
     since: BlockRef,
     /// The engine's block count when the key was loaded (see [`BlockDelta::seq`]).
@@ -60,7 +62,8 @@ struct KeyState {
     /// The tip height at the key's last activity: its load, a subscribe or unsubscribe, or a
     /// read.
     last_activity: u32,
-    /// The pending delta of the last `balance` sent. The confirmed half is `totals`.
+    /// The pending delta of the last `balance` sent. The confirmed half is `totals`. Always
+    /// empty for a token key.
     pending_sent: PendingDelta,
 }
 
@@ -151,7 +154,10 @@ impl Engine {
         match query {
             Query::Page { key, at, after, limit } => Reply::Page(self.page(&key, at, after, limit)),
             Query::Overlay(key) => Reply::Overlay(self.mempool.overlay(&key)),
-            Query::Pending(key) => Reply::Pending(self.mempool.pending_delta(&key)),
+            Query::Pending(key) => Reply::Pending(
+                self.tip
+                    .map(|as_of| PendingAt { as_of, delta: self.mempool.pending_delta(&key) }),
+            ),
             Query::Balance(key) => {
                 self.touch(&key);
                 Reply::Balance(self.balance(&key))
@@ -198,11 +204,13 @@ impl Engine {
                 spent.insert(id);
                 for (key_id, height) in self.take_holders(&id) {
                     let state = self.keys.get_mut(&key_id).expect("a holder is tracked");
-                    before.entry(key_id).or_insert_with(|| state.totals.clone());
                     state
                         .boxes
                         .remove(&BoxKey { inclusion_height: height, box_id: id });
-                    state.totals.sub(&input.utxo);
+                    if let Some(totals) = &mut state.totals {
+                        before.entry(key_id).or_insert_with(|| totals.clone());
+                        totals.sub(&input.utxo);
+                    }
                     let key_delta = delta.keys.entry(key_id).or_default();
                     match key_delta.created.iter().position(|c| *c == id) {
                         Some(i) => {
@@ -232,11 +240,13 @@ impl Engine {
                 };
                 for key_id in holders {
                     let state = self.keys.get_mut(&key_id).expect("an id is tracked");
-                    before.entry(key_id).or_insert_with(|| state.totals.clone());
                     state
                         .boxes
                         .insert(BoxKey { inclusion_height: block_ref.height, box_id: id });
-                    state.totals.add(&output.utxo);
+                    if let Some(totals) = &mut state.totals {
+                        before.entry(key_id).or_insert_with(|| totals.clone());
+                        totals.add(&output.utxo);
+                    }
                     self.reverse.insert((id, key_id), block_ref.height);
                     delta.keys.entry(key_id).or_default().created.push(id);
                 }
@@ -343,13 +353,17 @@ impl Engine {
             }
             let key_delta = delta.keys.get(&key_id);
             if let Some(d) = key_delta {
-                before.insert(key_id, state.totals.clone());
+                if let Some(totals) = &state.totals {
+                    before.insert(key_id, totals.clone());
+                }
                 for id in &d.created {
                     let stored = &delta.boxes[id];
                     state
                         .boxes
                         .remove(&BoxKey { inclusion_height: block.height, box_id: *id });
-                    state.totals.sub(&stored.utxo);
+                    if let Some(totals) = &mut state.totals {
+                        totals.sub(&stored.utxo);
+                    }
                     self.reverse.remove(&(*id, key_id));
                 }
                 for spend in &d.spent {
@@ -357,7 +371,9 @@ impl Engine {
                     let box_key =
                         BoxKey { inclusion_height: stored.inclusion_height, box_id: spend.box_id };
                     state.boxes.insert(box_key);
-                    state.totals.add(&stored.utxo);
+                    if let Some(totals) = &mut state.totals {
+                        totals.add(&stored.utxo);
+                    }
                     self.reverse
                         .insert((spend.box_id, key_id), stored.inclusion_height);
                 }
@@ -418,7 +434,7 @@ impl Engine {
         let mut state = KeyState {
             key: key.clone(),
             boxes: BTreeSet::new(),
-            totals: Totals::default(),
+            totals: matches!(key, TrackingKey::Tree(_)).then(Totals::default),
             since: as_of,
             loaded_seq: self.seq,
             subscribers: 0,
@@ -429,7 +445,9 @@ impl Engine {
             debug_assert!(key.matches(&b.utxo), "the loader checks every box");
             let box_key = BoxKey { inclusion_height: b.inclusion_height, box_id: b.utxo.id };
             if state.boxes.insert(box_key) {
-                state.totals.add(&b.utxo);
+                if let Some(totals) = &mut state.totals {
+                    totals.add(&b.utxo);
+                }
                 self.reverse.insert((b.utxo.id, key_id), b.inclusion_height);
             }
         }
@@ -503,29 +521,33 @@ impl Engine {
 
     // --- Balances ---
 
+    /// A tracked address's balance at the tip. `None` for a token key.
     fn balance(&self, key: &TrackingKey) -> Option<Balance> {
         let state = &self.keys[self.ids.get(key)?];
         Some(Balance {
             as_of: self.tip?,
-            confirmed: state.totals.clone(),
+            confirmed: state.totals.clone()?,
             pending: self.mempool.tracked_delta(key).cloned().unwrap_or_default(),
         })
     }
 
-    /// Appends a `Balance` for each tracked key whose totals changed in this step (`before`
-    /// holds the totals of the keys the step touched, as they were) or whose pending delta
-    /// differs from the one sent.
+    /// Appends a `Balance` for each tracked address whose totals changed in this step
+    /// (`before` holds the totals of the keys the step touched, as they were) or whose
+    /// pending delta differs from the one sent. Token keys get none.
     fn push_balances(&mut self, before: &BTreeMap<KeyId, Totals>, outputs: &mut Vec<Output>) {
         let Some(tip) = self.tip else {
             return;
         };
         for (key, key_id) in &self.ids {
             let state = self.keys.get_mut(key_id).expect("an id is tracked");
+            let Some(totals) = &state.totals else {
+                continue;
+            };
             let pending = self.mempool.tracked_delta(key).cloned().unwrap_or_default();
-            let totals_changed = before.get(key_id).is_some_and(|t| *t != state.totals);
+            let totals_changed = before.get(key_id).is_some_and(|t| t != totals);
             if totals_changed || pending != state.pending_sent {
                 state.pending_sent = pending.clone();
-                let balance = Balance { as_of: tip, confirmed: state.totals.clone(), pending };
+                let balance = Balance { as_of: tip, confirmed: totals.clone(), pending };
                 outputs.push(Output::Balance { key: key.clone(), balance });
             }
         }

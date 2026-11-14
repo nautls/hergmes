@@ -166,10 +166,11 @@ impl Harness {
             Reply::Page(Ok(page)) => assert_eq!(page.boxes, expected, "{key:?}"),
             other => panic!("{other:?}"),
         }
-        match self.query(Query::Balance(key.clone())) {
-            Reply::Balance(Some(balance)) => {
+        match (key, self.query(Query::Balance(key.clone()))) {
+            (TrackingKey::Tree(_), Reply::Balance(Some(balance))) => {
                 assert_eq!(balance.confirmed, oracle.totals(key, tip.height), "{key:?}");
             }
+            (TrackingKey::Token(_), Reply::Balance(None)) => {}
             other => panic!("{other:?}"),
         }
     }

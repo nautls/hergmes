@@ -2,7 +2,9 @@
 //!
 //! The services here hold what a request does, without HTTP: the page service reads a
 //! key's box ids from the engine, loading the key first if it is not tracked, and fills in
-//! full boxes. The HTTP layer (step 8d) parses, calls them and serializes.
+//! full boxes; the balance service answers an address's balance, from the engine if it is
+//! tracked and from the indexer and the engine's mempool snapshot if not. The HTTP layer
+//! parses, calls them and serializes.
 
 use std::time::Duration;
 
@@ -12,10 +14,12 @@ use crate::{
     types::ergo::BoxId,
 };
 
+pub mod balances;
 pub mod cursor;
 pub mod keys;
 pub mod pages;
 
+pub use balances::{AddressBalance, Balances};
 pub use cursor::Cursor;
 pub use pages::{BoxPage, PagedBox, Pages};
 
@@ -45,7 +49,8 @@ pub enum ApiError {
     TooManyBoxes { max: usize },
     #[error("the relay tracks as many boxes as it can; try again later")]
     CapacityExceeded,
-    /// A load that did not settle; `retry_after` is the loader's next wait.
+    /// A load that did not settle, or an untracked address's balance whose halves never met
+    /// at one height; `retry_after` is the next wait.
     #[error("the key is not loaded yet")]
     NotReady { retry_after: Duration },
     /// The node answered `503`, with its `Retry-After` if it sent one.

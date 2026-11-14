@@ -74,8 +74,9 @@ struct KeyModel {
     since: BlockRef,
     activity: u32,
     subscribers: u32,
-    /// The last balance sent (or delivered with a catch-up), and the last overlay.
-    balance: (Totals, PendingDelta),
+    /// The last balance sent (or delivered with a catch-up), and the last overlay. A token
+    /// key has no balance.
+    balance: Option<(Totals, PendingDelta)>,
     overlay: Vec<PendingTx>,
 }
 
@@ -136,7 +137,8 @@ impl Client {
                 }
                 self.overlay = pending.clone();
             }
-            Output::Balance { balance, .. } => {
+            Output::Balance { key, balance } => {
+                assert!(matches!(key, TrackingKey::Tree(_)), "a balance sent for {key:?}");
                 let engine_tip = engine_tip.expect("a balance goes out with a tip");
                 let tip = if self.balance_only { engine_tip } else { self.tip };
                 assert_eq!(balance.as_of, tip, "a balance for another block");
@@ -553,11 +555,14 @@ impl Harness {
         model.activity = tip.height;
 
         let from = (!balance_only).then_some(tip);
-        let Reply::CatchUp(outputs) = self.engine.query(Query::CatchUp { key, from }) else {
+        let query = Query::CatchUp { key: key.clone(), from };
+        let Reply::CatchUp(outputs) = self.engine.query(query) else {
             panic!("a catch-up reply");
         };
-        // From the tip: nothing to replay, then the overlay (box subscriptions) and balance.
-        assert_eq!(outputs.len(), if balance_only { 1 } else { 2 });
+        // From the tip: nothing to replay, then the overlay (box subscriptions) and the
+        // balance (addresses).
+        let balance = usize::from(matches!(key, TrackingKey::Tree(_)));
+        assert_eq!(outputs.len(), usize::from(!balance_only) + balance);
         for output in &outputs {
             client.receive(output, Some(tip));
         }
@@ -715,14 +720,14 @@ impl Harness {
     }
 
     /// `key`'s balance values and overlay at the engine's tip.
-    fn expected(&self, key: &TrackingKey) -> ((Totals, PendingDelta), Vec<PendingTx>) {
+    fn expected(&self, key: &TrackingKey) -> Expected {
         let oracle = self.oracle();
         let utxo = oracle.utxo(self.tip().height);
         let ids: HashSet<BoxId> = utxo.values().map(|b| b.id).collect();
         expected_for(self, key, &utxo, &ids)
     }
 
-    fn expected_states(&self) -> BTreeMap<TrackingKey, ((Totals, PendingDelta), Vec<PendingTx>)> {
+    fn expected_states(&self) -> BTreeMap<TrackingKey, Expected> {
         let Some(tip) = self.engine.tip() else {
             return BTreeMap::new();
         };
@@ -735,12 +740,9 @@ impl Harness {
     }
 
     /// Each tracked key gets a `Mempool` message if and only if its overlay changed in the
-    /// step, and a `Balance` if and only if its value did; `before` is from before the step.
-    fn check_emissions(
-        &mut self,
-        outputs: &[Output],
-        before: &BTreeMap<TrackingKey, ((Totals, PendingDelta), Vec<PendingTx>)>,
-    ) {
+    /// step, and an address a `Balance` if and only if its value did; a token key never gets
+    /// one. `before` is from before the step.
+    fn check_emissions(&mut self, outputs: &[Output], before: &BTreeMap<TrackingKey, Expected>) {
         let after = self.expected_states();
         for (key, model) in &mut self.keys {
             let (balance, overlay) = &after[key];
@@ -761,14 +763,16 @@ impl Harness {
                 Output::Balance { key: k, balance } if k == key => Some(balance),
                 _ => None,
             });
-            match sent {
-                Some(b) => {
+            match (sent, balance) {
+                (Some(b), Some(balance)) => {
                     assert_eq!((&b.confirmed, &b.pending), (&balance.0, &balance.1));
-                    assert_ne!(&model.balance, balance, "an unchanged balance sent");
+                    assert_ne!(model.balance.as_ref(), Some(balance), "an unchanged balance sent");
                 }
-                None => assert_eq!(&model.balance, balance, "a changed balance not sent"),
+                (Some(_), None) => panic!("a balance sent for {key:?}"),
+                (None, _) => assert_eq!(&model.balance, balance, "a changed balance not sent"),
             }
-            if let Some(((was, was_pending), _)) = before.get(key)
+            if let Some((Some((was, was_pending)), _)) = before.get(key)
+                && let Some(balance) = balance
                 && was != &balance.0
                 && sum(was, was_pending) == sum(&balance.0, &balance.1)
             {
@@ -799,7 +803,17 @@ impl Harness {
             let state = &self.engine.keys[&key_id];
             let expected: BTreeSet<BoxKey> = oracle.unspent(key, tip.height).into_keys().collect();
             assert_eq!(state.boxes, expected, "{key:?}'s set");
-            assert_eq!(state.totals, oracle.totals(key, tip.height), "{key:?}'s totals");
+            let totals =
+                matches!(key, TrackingKey::Tree(_)).then(|| oracle.totals(key, tip.height));
+            assert_eq!(state.totals, totals, "{key:?}'s totals");
+            // A REST read of a tracked key's balance is the last one streamed. Read without
+            // `Query::Balance`, which would count as activity.
+            let streamed = self.keys[key].balance.as_ref();
+            let read = self.engine.balance(key);
+            assert_eq!(
+                read.as_ref().map(|b| (&b.confirmed, &b.pending)),
+                streamed.map(|(c, p)| (c, p))
+            );
             for b in &state.boxes {
                 reverse.insert((b.box_id, key_id), b.inclusion_height);
             }
@@ -823,7 +837,7 @@ impl Harness {
 
         // Every live client holds the oracle's state at the tip.
         for client in self.clients.iter().filter(|c| c.live) {
-            let ((confirmed, pending), overlay) = expected_for(self, &client.key, &utxo, &ids);
+            let (balance, overlay) = expected_for(self, &client.key, &utxo, &ids);
             if !client.balance_only {
                 assert_eq!(client.tip, tip);
                 let expected: BTreeMap<BoxId, Arc<UTxO>> = oracle
@@ -834,11 +848,12 @@ impl Harness {
                 assert_eq!(client.boxes, expected, "a client of {:?} diverged", client.key);
                 assert_eq!(client.overlay, overlay);
             }
-            let balance = client
-                .balance
-                .as_ref()
-                .expect("a balance with the catch-up");
-            assert_eq!((&balance.confirmed, &balance.pending), (&confirmed, &pending));
+            let got = client.balance.as_ref().map(|b| (&b.confirmed, &b.pending));
+            let expected = balance.as_ref().map(|(c, p)| (c, p));
+            assert_eq!(
+                got, expected,
+                "an address's balance came with the catch-up, a token's never"
+            );
         }
         self.check_partial_confirmation(&ids);
     }
@@ -882,12 +897,15 @@ fn sum(
     (i128::from(totals.nano_ergs) + pending.nano_ergs, tokens)
 }
 
+/// A key's expected balance values (none for a token key) and overlay.
+type Expected = (Option<(Totals, PendingDelta)>, Vec<PendingTx>);
+
 fn expected_for(
     harness: &Harness,
     key: &TrackingKey,
     utxo: &BTreeMap<BoxKey, Arc<UTxO>>,
     ids: &HashSet<BoxId>,
-) -> ((Totals, PendingDelta), Vec<PendingTx>) {
+) -> Expected {
     let held: Vec<&UTxO> = utxo
         .values()
         .map(|b| &**b)
@@ -896,7 +914,8 @@ fn expected_for(
     let overlay = harness.reference_overlay(key, ids);
     let totals = sim::totals(held.iter().copied());
     let delta = reference_delta(&held, &overlay);
-    ((totals, delta), overlay)
+    let balance = matches!(key, TrackingKey::Tree(_)).then_some((totals, delta));
+    (balance, overlay)
 }
 
 /// Boxes a block both creates and spends.
@@ -1044,7 +1063,7 @@ impl Fixture {
         outputs
     }
 
-    fn state(&self, key: &TrackingKey) -> (BTreeSet<BoxKey>, Totals) {
+    fn state(&self, key: &TrackingKey) -> (BTreeSet<BoxKey>, Option<Totals>) {
         let state = &self.engine.keys[&self.engine.ids[key]];
         (state.boxes.clone(), state.totals.clone())
     }
@@ -1290,6 +1309,60 @@ fn an_untracked_key_is_refused_and_a_balance_only_catch_up_is_the_balance() {
         panic!("a balance");
     };
     assert_eq!(outputs, [Output::Balance { key: zero, balance }]);
+}
+
+/// A token key gets its blocks and overlays but no balance: not on a snapshot, a block, a
+/// catch-up or a read. The address holding the token gets one each time.
+#[test]
+fn a_token_key_has_no_balance() {
+    let mut f = Fixture::new(Config::default());
+    let zero = f.key(0);
+    let input = sim::testing::box_of(&f.chain, 0);
+    let to = f.chain.trees()[0].clone();
+    let mint = f.chain.mint(&input, 5, &to);
+    f.mine(vec![mint]);
+    let token = TrackingKey::Token(input);
+    f.load(&zero);
+    f.load(&token);
+    assert_eq!(f.engine.keys[&f.engine.ids[&token]].totals, None, "no totals for a token");
+    assert_eq!(f.catch_up(&token, None), []);
+    let Reply::Balance(None) = f.engine.query(Query::Balance(token.clone())) else {
+        panic!("no balance for a token key");
+    };
+
+    // A pending tx moving the token out of the address.
+    let held = f
+        .chain
+        .utxo()
+        .values()
+        .find(|b| token.matches(b))
+        .expect("minted")
+        .id;
+    let to = f.chain.trees()[1].clone();
+    let tx = f.chain.transfer(&[held], &to);
+    f.chain.submit(tx.clone());
+    let outputs = f.snapshot();
+    assert_eq!(
+        kinds(&outputs),
+        [("mempool", zero.clone()), ("mempool", token.clone()), ("balance", zero.clone())]
+    );
+    // A pending delta is still answered for any key, with the tip it was computed at. The
+    // token only moves between holders, so the token key's nets out.
+    let Reply::Pending(Some(pending)) = f.engine.query(Query::Pending(token.clone())) else {
+        panic!("a pending delta");
+    };
+    assert_eq!(pending.as_of, f.engine.tip().expect("a tip"));
+    assert_eq!(pending.delta, PendingDelta::default());
+
+    let outputs = f.mine(vec![tx]);
+    let kinds = kinds(&outputs);
+    assert!(kinds.contains(&("balance", zero.clone())));
+    assert!(
+        !kinds
+            .iter()
+            .any(|(kind, key)| *kind == "balance" && *key != zero),
+        "{kinds:?}"
+    );
 }
 
 /// A client left on a branch that was orphaned after the key stopped being tracked: the

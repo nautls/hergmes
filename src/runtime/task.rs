@@ -88,7 +88,8 @@ impl Handle {
     /// Subscribes `sink` to `key`'s outputs, atomically with the catch-up from `from`: no
     /// event is applied between the two, so the live outputs start right after the
     /// catch-up. Without `from` the subscription is balance-only: its sink gets only
-    /// `balance` and `resync_required`.
+    /// `balance` and `resync_required`, and for a token key, which has no balance, only
+    /// `resync_required`.
     ///
     /// The subscription ends, and the task drops the sink, when the engine sends the key a
     /// `resync_required` (delivered first), when the sink is full or closed, or on

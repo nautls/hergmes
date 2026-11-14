@@ -2,9 +2,10 @@
 //! process.
 //!
 //! It loads each key and holds a subscription to it, so the engine never untracks it for
-//! idleness. The subscription is balance-only because the keeper reads nothing else: the
-//! kind only filters what reaches the keeper's sink, and the engine tracks the key's boxes
-//! the same either way, for every other subscriber and query.
+//! idleness. The subscription is balance-only because the keeper reads nothing but its
+//! end: the kind only filters what reaches the keeper's sink, and the engine tracks the key's
+//! boxes the same either way, for every other subscriber and query. A token key has no
+//! balance, so its sink gets only `resync_required`.
 //!
 //! The engine still drops a key whose load block is orphaned, or every key on a fork deeper
 //! than the window; the subscription then ends with `resync_required`, and the keeper loads
@@ -48,8 +49,8 @@ impl Default for Config {
     }
 }
 
-/// Outputs a keeper's sink holds. It takes only `balance` messages and drains them as they
-/// come, so a few are plenty.
+/// Outputs a keeper's sink holds. It takes only `balance` messages (none for a token key)
+/// and drains them as they come, so a few are plenty.
 const SINK: usize = 16;
 
 pub struct Keeper<S> {
