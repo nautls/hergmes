@@ -207,8 +207,8 @@ async fn a_key_refused_by_the_total_cap_is_tracked_once_there_is_room() {
     let (kept, settled) = keep_settling(&keeper(&sim, &engine), &tree);
     sleep(Config::default().capacity_retry / 2).await;
     assert!(settled.is_settled(), "a refusal is an answer");
-    // An attempt reads `/info` before and after its pages: one attempt, not one per retry.
-    assert_eq!(reads() - before, 2, "a refused key is loaded again only after the long wait");
+    // An attempt stopped at the cap reads `/info` once: one attempt, not one per retry.
+    assert_eq!(reads() - before, 1, "a refused key is loaded again only after the long wait");
     assert!(tracked(&engine, &tree).await.is_none(), "refused while the cap is full");
     assert!(!kept.is_finished(), "a full cap is a wait, not a give-up");
 

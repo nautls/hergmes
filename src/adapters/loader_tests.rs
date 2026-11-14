@@ -367,9 +367,62 @@ fn a_load_past_the_cap_on_tracked_boxes_is_refused_and_seeds_nothing() {
     let loader = Loader::new(sim.clone(), Config::default()).seeding(cache.clone());
     let error = ready(loader.load(&engine, &key)).unwrap_err();
     assert!(matches!(*error, LoadError::CapacityExceeded { tracked: 0, boxes: 4 }), "{error:?}");
-    assert_eq!(count(&sim, Endpoint::Info), 2, "one attempt, not retried");
+    assert_eq!(count(&sim, Endpoint::Info), 1, "one attempt, stopped at its page, not retried");
     assert!(!engine.lock().unwrap().is_tracked(&key));
     assert!(cache.boxes().is_empty(), "nothing from a refused load");
+}
+
+fn engine_with_room(chain: &Chain, max_tracked_boxes: usize) -> Mutex<Engine> {
+    let mut engine = Engine::new(EngineConfig { max_tracked_boxes, ..EngineConfig::default() });
+    engine
+        .apply(Event::BlockApplied(chain.oracle().indexed_block(chain.height())))
+        .unwrap();
+    Mutex::new(engine)
+}
+
+/// A load stops at the first page past the room the engine has left, without paging the key
+/// in full: a full engine costs one page. The engine is not asked.
+#[test]
+fn a_load_past_the_room_left_stops_paging() {
+    // A token split over four boxes, a box per page.
+    let key = TrackingKey::Token(crate::sim::token_id("small-100"));
+    for (room, reads) in [(0, 1), (2, 3)] {
+        let chain = new_chain();
+        let engine = engine_with_room(&chain, room);
+        let sim = SimChain::new(chain);
+        let loader = Loader::new(sim.clone(), Config { page_limit: 1, ..Config::default() });
+        let error = ready(loader.load(&engine, &key)).unwrap_err();
+        assert!(
+            matches!(*error, LoadError::CapacityExceeded { tracked: 0, boxes } if boxes == room + 1),
+            "{error:?}"
+        );
+        assert_eq!(count(&sim, Endpoint::UnspentByToken), reads, "room for {room}");
+        assert_eq!(count(&sim, Endpoint::Info), 1, "stopped before the second tip read");
+        assert!(!engine.lock().unwrap().is_tracked(&key));
+    }
+
+    // A key with no box fits a full engine.
+    let chain = new_chain();
+    let engine = engine_with_room(&chain, 0);
+    let sim = SimChain::new(chain);
+    let empty = TrackingKey::Tree(crate::types::HexBytes(vec![0x00, 0x08, 0xcd]));
+    let loader = Loader::new(sim.clone(), Config { page_limit: 1, ..Config::default() });
+    assert!(matches!(ready(loader.load(&engine, &empty)), Ok((_, 0))));
+}
+
+/// A key the engine already tracks is never refused for room, even by a full engine: the
+/// load is a duplicate the engine ignores.
+#[test]
+fn a_tracked_key_is_not_refused_for_room() {
+    let key = TrackingKey::Token(crate::sim::token_id("small-100"));
+    let chain = new_chain();
+    let engine = engine_with_room(&chain, 4);
+    let sim = SimChain::new(chain);
+    let loader = || Loader::new(sim.clone(), Config { page_limit: 1, ..Config::default() });
+    assert!(matches!(ready(loader().load(&engine, &key)), Ok((_, 4))));
+    let reply = engine.lock().unwrap().query(Query::Capacity(key.clone()));
+    assert_eq!(reply, Reply::Capacity(None));
+    assert!(matches!(ready(loader().load(&engine, &key)), Ok((_, 4))), "a duplicate");
 }
 
 /// Two loads of one key at once are one load: the second waits for the first and gets its

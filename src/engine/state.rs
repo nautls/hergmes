@@ -11,9 +11,9 @@ use tracing::debug;
 
 use crate::{
     engine::{
-        Balance, BlockDelta, BlockRef, BoxKey, ChainLink, EngineError, Event, KeyDelta, KeyId,
-        LoadedBox, Mempool, Output, PageError, PageIds, PendingAt, Query, Reply, ResyncReason,
-        Spend, StoredBox, Totals, TrackingKey,
+        Balance, BlockDelta, BlockRef, BoxKey, Capacity, ChainLink, EngineError, Event, KeyDelta,
+        KeyId, LoadedBox, Mempool, Output, PageError, PageIds, PendingAt, Query, Reply,
+        ResyncReason, Spend, StoredBox, Totals, TrackingKey,
         overlay::{self, PendingDelta},
     },
     types::ergo::{BoxId, HeaderId, IndexedBlock, UTxO},
@@ -164,6 +164,11 @@ impl Engine {
                 Reply::Balance(self.balance(&key))
             }
             Query::Tip => Reply::Tip(self.tip),
+            Query::Capacity(key) => {
+                let capacity =
+                    Capacity { tracked: self.reverse.len(), max: self.config.max_tracked_boxes };
+                Reply::Capacity((!self.is_tracked(&key)).then_some(capacity))
+            }
             Query::Chain => Reply::Chain(
                 self.ring
                     .iter()
@@ -425,8 +430,9 @@ impl Engine {
             return Vec::new();
         }
         // The reverse index holds one entry per tracked box and key: the total.
-        let tracked = self.reverse.len();
-        if tracked.saturating_add(boxes.len()) > self.config.max_tracked_boxes {
+        let capacity = Capacity { tracked: self.reverse.len(), max: self.config.max_tracked_boxes };
+        if !capacity.fits(boxes.len()) {
+            let tracked = capacity.tracked;
             return vec![Output::CapacityExceeded { key, tracked, boxes: boxes.len() }];
         }
         debug!(?key, height = as_of.height, boxes = boxes.len(), "Tracking key");

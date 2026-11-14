@@ -1566,6 +1566,11 @@ fn a_load_past_the_cap_on_tracked_boxes_is_refused() {
     let outputs = f.load(&one);
     assert!(f.engine.is_tracked(&one), "exactly at the cap: {outputs:?}");
     assert_eq!(f.load(&zero), [], "a duplicate is ignored");
+    // The room a loader reads before paging: none for a tracked key, which is never refused.
+    let full = Capacity { tracked: cap, max: cap };
+    assert_eq!(f.engine.query(Query::Capacity(two.clone())), Reply::Capacity(Some(full)));
+    assert_eq!(f.engine.query(Query::Capacity(zero.clone())), Reply::Capacity(None));
+    assert!(full.fits(0) && !full.fits(1));
     let refused = Output::CapacityExceeded { key: two.clone(), tracked: cap, boxes: sizes[2] };
     assert_eq!(f.load(&two), [refused]);
 

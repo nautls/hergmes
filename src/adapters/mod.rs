@@ -9,7 +9,9 @@ use std::{future::Future, time::Duration};
 
 use crate::{
     clients::{NodeError, node::InfoResponse},
-    engine::{BlockRef, ChainLink, EngineError, Event, Output, Query, Reply},
+    engine::{
+        BlockRef, Capacity, ChainLink, EngineError, Event, Output, Query, Reply, TrackingKey,
+    },
 };
 
 pub mod balance;
@@ -99,6 +101,17 @@ pub(crate) async fn engine_tip(engine: &impl EngineHandle) -> Result<Option<Bloc
     match engine.query(Query::Tip).await? {
         Reply::Tip(tip) => Ok(tip),
         other => unreachable!("`Query::Tip` answered {other:?}"),
+    }
+}
+
+/// The room a load of `key` may take, or `None` if the key is tracked.
+pub(crate) async fn engine_capacity(
+    engine: &impl EngineHandle,
+    key: &TrackingKey,
+) -> Result<Option<Capacity>, EngineGone> {
+    match engine.query(Query::Capacity(key.clone())).await? {
+        Reply::Capacity(capacity) => Ok(capacity),
+        other => unreachable!("`Query::Capacity` answered {other:?}"),
     }
 }
 

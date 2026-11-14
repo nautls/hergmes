@@ -19,9 +19,11 @@ use tokio::time::sleep;
 use tracing::{debug, info};
 
 use crate::{
-    adapters::{BoxCache, EngineGone, EngineHandle, backoff, best_full_block, engine_tip},
+    adapters::{
+        BoxCache, EngineGone, EngineHandle, backoff, best_full_block, engine_capacity, engine_tip,
+    },
     clients::{NodeError, NodeSource, Page, source::MAX_PAGE_LIMIT},
-    engine::{BlockRef, Event, LoadedBox, Output, TrackingKey},
+    engine::{BlockRef, Capacity, Event, LoadedBox, Output, TrackingKey},
     types::ergo::{BoxId, IndexedBox, UTxO},
 };
 
@@ -101,8 +103,9 @@ pub enum LoadError {
     /// The key has more than `max` boxes. Loading it again won't change that.
     #[error("the key has more than {max} boxes")]
     TooManyBoxes { max: usize },
-    /// The engine refused the load: its boxes would pass the cap on tracked boxes. It frees
-    /// up as idle keys leave.
+    /// The key's boxes would pass the cap on tracked boxes: the engine refused them, or the
+    /// loader stopped paging at the first page past the room the engine had left. It frees up
+    /// as idle keys leave.
     #[error("{boxes} more boxes would pass the cap on tracked boxes, with {tracked} tracked")]
     CapacityExceeded { tracked: usize, boxes: usize },
     #[error(transparent)]
@@ -222,9 +225,9 @@ impl<S: NodeSource> Loader<S> {
         Err(LoadError::GaveUp { attempts: self.config.attempts, last, wait })
     }
 
-    /// One attempt: read the tip, check the engine and the indexer are at it, read every
-    /// page oldest first, read the tip again, check every box against the key, and send
-    /// `KeyLoaded` pinned to that tip.
+    /// One attempt: read the tip, check the engine and the indexer are at it, read the room
+    /// the engine has left, read every page oldest first (stopping past a cap), read the tip
+    /// again, check every box against the key, and send `KeyLoaded` pinned to that tip.
     pub async fn try_load(
         &self,
         engine: &impl EngineHandle,
@@ -245,7 +248,12 @@ impl<S: NodeSource> Loader<S> {
             });
         }
 
-        let boxes = self.pages(key).await?;
+        // Read before paging, so a load that can't fit stops early. The engine's check on
+        // `KeyLoaded` is still the one that counts: the room can change while the pages are
+        // read. A stop on room that grows meanwhile only costs a retry; a key another loader
+        // tracks meanwhile is refused too, which a shared loader never does.
+        let capacity = engine_capacity(engine, key).await?;
+        let boxes = self.pages(key, capacity).await?;
         if best_full_block(&self.source.info().await?) != Some(tip) {
             debug!(?key, ?tip, "Load dropped: the tip moved during it");
             return Ok(Attempt::TipMoved);
@@ -276,8 +284,13 @@ impl<S: NodeSource> Loader<S> {
     }
 
     /// Every page of the key's unspent boxes, oldest first, until a short page, or until the
-    /// first page that takes the key over the cap.
-    async fn pages(&self, key: &TrackingKey) -> Result<Vec<IndexedBox>, LoadError> {
+    /// first page that takes the key over the per-key cap or past `capacity`. A full engine
+    /// still costs a page: an empty key fits.
+    async fn pages(
+        &self,
+        key: &TrackingKey,
+        capacity: Option<Capacity>,
+    ) -> Result<Vec<IndexedBox>, LoadError> {
         let (limit, max) = (self.config.page_limit, self.config.max_boxes);
         let mut boxes = Vec::new();
         loop {
@@ -290,6 +303,12 @@ impl<S: NodeSource> Loader<S> {
             boxes.append(&mut read);
             if boxes.len() > max {
                 return Err(LoadError::TooManyBoxes { max });
+            }
+            if let Some(capacity) = capacity
+                && !capacity.fits(boxes.len())
+            {
+                let (tracked, boxes) = (capacity.tracked, boxes.len());
+                return Err(LoadError::CapacityExceeded { tracked, boxes });
             }
             if !full {
                 return Ok(boxes);

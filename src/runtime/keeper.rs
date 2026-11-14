@@ -48,7 +48,7 @@ pub struct Config {
     /// fault; each retry is a full reload, so it is spaced well apart.
     pub mismatch_retry: Duration,
     /// The wait after the total cap refused the key. Room is made only as idle keys are
-    /// untracked, a block at a time, and each retry is a full reload.
+    /// untracked, a block at a time, and a retry reads pages until it is past the room.
     pub capacity_retry: Duration,
 }
 

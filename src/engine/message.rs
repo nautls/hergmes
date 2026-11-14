@@ -61,6 +61,9 @@ pub enum Query {
     /// A tracked address's balance at the tip, as the stream sends it. A token key has none.
     Balance(TrackingKey),
     Tip,
+    /// The room a load of the key may take under the cap on tracked boxes, or `None` if the
+    /// key is tracked: a duplicate load is never refused. Not activity for the key.
+    Capacity(TrackingKey),
     /// The blocks the engine can revert, oldest first, ending at the tip. The block consumer
     /// finds the fork point in it.
     Chain,
@@ -87,10 +90,25 @@ pub enum Reply {
     Pending(Option<PendingAt>),
     Balance(Option<Balance>),
     Tip(Option<BlockRef>),
+    Capacity(Option<Capacity>),
     Chain(Vec<ChainLink>),
     Boxes(Vec<Arc<UTxO>>),
     MempoolSnapshot(Option<(Arc<[UnconfirmedTransaction]>, BlockRef)>),
     CatchUp(Vec<Output>),
+}
+
+/// The boxes tracked, one per box and key, and the cap on them. A load of `n` boxes fits
+/// while `tracked + n <= max`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Capacity {
+    pub tracked: usize,
+    pub max: usize,
+}
+
+impl Capacity {
+    pub fn fits(&self, boxes: usize) -> bool {
+        self.tracked.saturating_add(boxes) <= self.max
+    }
 }
 
 /// A page of a key's box keys, and the block it is as of.
