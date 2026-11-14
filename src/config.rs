@@ -3,13 +3,13 @@
 //! The relay's own settings start with `HERGMES_`, so they can't clash with other variables
 //! in a shared environment. `ERGO_NODE_URL` names the node, not the relay, and has no prefix.
 //!
-//! The caps on subscriptions and tracked boxes are not here yet: nothing reads them until
-//! pages (step 8b) and WebSocket (step 9).
+//! The cap on subscriptions per connection is not here yet: nothing reads it until the
+//! WebSocket (step 9).
 
 use std::time::Duration;
 
 use crate::{
-    adapters::{follower, mempool, tokens::SUPPLY_LIMIT},
+    adapters::{follower, loader, mempool, tokens::SUPPLY_LIMIT},
     engine::{self, TrackingKey},
     types::{
         address::{Address, Network},
@@ -37,6 +37,10 @@ pub mod vars {
     pub const TRACK_TOKENS: &str = "HERGMES_TRACK_TOKENS";
     /// The box cache's budget, in MiB. 0 disables the cache.
     pub const BOX_CACHE_MB: &str = "HERGMES_BOX_CACHE_MB";
+    /// The most boxes a key can have when it is loaded.
+    pub const MAX_BOXES_PER_KEY: &str = "HERGMES_MAX_BOXES_PER_KEY";
+    /// The most boxes tracked over all keys, checked when a key is loaded.
+    pub const MAX_TRACKED_BOXES: &str = "HERGMES_MAX_TRACKED_BOXES";
 }
 
 /// The box cache's default budget: about 32k to 1.2M boxes, at 100 B to 4 KB each.
@@ -47,6 +51,7 @@ pub struct Config {
     pub node_url: String,
     pub engine: engine::Config,
     pub follower: follower::Config,
+    pub loader: loader::Config,
     pub token_supply_limit: u64,
     /// Addresses tracked from the start, checked against the node's network once it is known.
     pub track_addresses: Vec<Address>,
@@ -77,6 +82,7 @@ impl Config {
         };
         let engine_defaults = engine::Config::default();
         let follower_defaults = follower::Config::default();
+        let loader_defaults = loader::Config::default();
 
         let window = number(vars::WINDOW_BLOCKS, get(vars::WINDOW_BLOCKS), engine_defaults.window)?;
         if window == 0 {
@@ -91,6 +97,16 @@ impl Config {
         let box_cache_bytes = cache_mb
             .checked_mul(1024 * 1024)
             .ok_or_else(|| invalid(vars::BOX_CACHE_MB, &format!("{cache_mb} MiB is too large")))?;
+        let max_boxes = at_least_one(
+            vars::MAX_BOXES_PER_KEY,
+            get(vars::MAX_BOXES_PER_KEY),
+            loader_defaults.max_boxes,
+        )?;
+        let max_tracked_boxes = at_least_one(
+            vars::MAX_TRACKED_BOXES,
+            get(vars::MAX_TRACKED_BOXES),
+            engine_defaults.max_tracked_boxes,
+        )?;
         let refresh = millis(
             vars::MEMPOOL_REFRESH_MS,
             get(vars::MEMPOOL_REFRESH_MS),
@@ -102,8 +118,10 @@ impl Config {
             engine: engine::Config {
                 window,
                 grace: number(vars::GRACE_BLOCKS, get(vars::GRACE_BLOCKS), engine_defaults.grace)?,
+                max_tracked_boxes,
             },
             follower: follower::Config { interval, mempool: mempool::Config { refresh } },
+            loader: loader::Config { max_boxes, ..loader_defaults },
             token_supply_limit: number(
                 vars::TOKEN_SUPPLY_LIMIT,
                 get(vars::TOKEN_SUPPLY_LIMIT),
@@ -160,6 +178,19 @@ where
             .parse()
             .map_err(|e: T::Err| invalid(var, &format!("{v:?}: {e}"))),
     }
+}
+
+/// A count of at least 1: a cap of 0 would refuse every key that has a box.
+fn at_least_one(
+    var: &'static str,
+    value: Option<String>,
+    default: usize,
+) -> Result<usize, ConfigError> {
+    let n = number(var, value, default)?;
+    if n == 0 {
+        return Err(invalid(var, "must be at least 1"));
+    }
+    Ok(n)
 }
 
 /// A duration in milliseconds, at least 1: tokio's interval panics on zero.

@@ -58,9 +58,12 @@ async fn run() -> Result<(), AppError> {
         async move { follower.run(&engine).await }
     });
 
+    // Shared by the keepers and, from step 8d, the page service, so their loads of one key
+    // coalesce.
+    let loader = Arc::new(Loader::new(node.clone(), config.loader).seeding(cache));
     let keeper = Arc::new(Keeper::new(
         engine,
-        Loader::new(node.clone(), Default::default()).seeding(cache),
+        loader,
         Arc::new(TokenChecker::new(node, config.token_supply_limit)),
         Default::default(),
     ));

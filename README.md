@@ -49,6 +49,8 @@ cargo run
 | `HERGMES_TRACK_ADDRESSES`    |         | Addresses tracked for the life of the process, comma-separated   |
 | `HERGMES_TRACK_TOKENS`       |         | Token ids tracked for the life of the process, comma-separated   |
 | `HERGMES_BOX_CACHE_MB`       | 128     | Memory for full boxes kept to serve pages, in MiB; 0 disables it |
+| `HERGMES_MAX_BOXES_PER_KEY`  | 50000   | Most boxes an address or token can have to be tracked            |
+| `HERGMES_MAX_TRACKED_BOXES`  | 2000000 | Most boxes tracked over all keys (about 110 bytes each)          |
 
 Logging uses `tracing`; set `RUST_LOG` (e.g. `RUST_LOG=hergmes=debug`) to adjust verbosity.
 

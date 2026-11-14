@@ -12,14 +12,15 @@ use tracing::debug;
 use crate::{
     engine::{
         Balance, BlockDelta, BlockRef, BoxKey, ChainLink, EngineError, Event, KeyDelta, KeyId,
-        LoadedBox, Mempool, Output, PageError, Query, Reply, ResyncReason, Spend, StoredBox,
-        Totals, TrackingKey,
+        LoadedBox, Mempool, Output, PageError, PageIds, Query, Reply, ResyncReason, Spend,
+        StoredBox, Totals, TrackingKey,
         overlay::{self, PendingDelta},
     },
     types::ergo::{BoxId, HeaderId, IndexedBlock, UTxO},
 };
 
-/// How far back the engine can serve, and how long it keeps idle keys.
+/// How far back the engine can serve, how long it keeps idle keys, and how many boxes it
+/// tracks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Config {
     /// N: how many blocks of deltas the ring buffer keeps. It bounds replay on reconnect,
@@ -27,11 +28,20 @@ pub struct Config {
     pub window: u32,
     /// G: how many blocks a key with no subscribers is kept after its last activity.
     pub grace: u32,
+    /// The most boxes tracked over all keys, a box held by two keys counted twice (each is
+    /// an entry of the reverse index). Checked when a key is loaded, never afterwards: a
+    /// tracked key grows from blocks, and dropping it would break its subscribers.
+    pub max_tracked_boxes: usize,
+}
+
+impl Config {
+    /// About a day of blocks, ten minutes of grace, and about 220 MB of ids.
+    pub const DEFAULT: Self = Self { window: 720, grace: 5, max_tracked_boxes: 2_000_000 };
 }
 
 impl Default for Config {
     fn default() -> Self {
-        Self { window: 720, grace: 5 }
+        Self::DEFAULT
     }
 }
 
@@ -98,8 +108,14 @@ impl Engine {
         self.ids.contains_key(key)
     }
 
+    /// The block a tracked key was loaded at: pages pinned below it expire.
+    pub fn tracked_since(&self, key: &TrackingKey) -> Option<BlockRef> {
+        Some(self.keys[self.ids.get(key)?].since)
+    }
+
     /// Applies one event. Within it, messages go out as `Block` / `Rollback` /
-    /// `ResyncRequired` / `LoadRejected`, then `Mempool`, then `Balance`, each in key order.
+    /// `ResyncRequired` / `LoadRejected` / `CapacityExceeded`, then `Mempool`, then
+    /// `Balance`, each in key order.
     pub fn apply(&mut self, event: Event) -> Result<Vec<Output>, EngineError> {
         Ok(match event {
             Event::BlockApplied(block) => self.block_applied(&block)?,
@@ -391,6 +407,11 @@ impl Engine {
             debug!(?key, ?as_of, "Load of an already tracked key ignored");
             return Vec::new();
         }
+        // The reverse index holds one entry per tracked box and key: the total.
+        let tracked = self.reverse.len();
+        if tracked.saturating_add(boxes.len()) > self.config.max_tracked_boxes {
+            return vec![Output::CapacityExceeded { key, tracked, boxes: boxes.len() }];
+        }
         debug!(?key, height = as_of.height, boxes = boxes.len(), "Tracking key");
         let key_id = KeyId(self.next_id);
         self.next_id += 1;
@@ -547,11 +568,13 @@ impl Engine {
     fn page(
         &mut self,
         key: &TrackingKey,
-        at: BlockRef,
+        at: Option<BlockRef>,
         after: Option<BoxKey>,
         limit: usize,
-    ) -> Result<Vec<BoxKey>, PageError> {
+    ) -> Result<PageIds, PageError> {
         let since = self.touch(key).ok_or(PageError::NotTracked)?.since;
+        // A tracked key implies a tip: dropping the tip untracks every key.
+        let at = at.or(self.tip).ok_or(PageError::NotTracked)?;
         let key_id = self.ids[key];
         let state = &self.keys[&key_id];
         if at.height < since.height || !self.on_main(at) {
@@ -575,7 +598,7 @@ impl Engine {
             .range((lower, Bound::Unbounded))
             .take_while(|b| b.inclusion_height <= at.height);
         let restored = restored.range((lower, Bound::Unbounded));
-        Ok(merge(current, restored).take(limit).collect())
+        Ok(PageIds { as_of: at, boxes: merge(current, restored).take(limit).collect() })
     }
 
     fn catch_up(&mut self, key: TrackingKey, from: Option<BlockRef>) -> Vec<Output> {

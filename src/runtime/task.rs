@@ -4,7 +4,7 @@
 //! unsubscribes. Each event's outputs go to the subscribers of their keys before the caller
 //! gets its reply, so every subscriber sees outputs in the order the engine produced them,
 //! and a caller whose `apply` returned knows its outputs were delivered. The caller gets back
-//! only the outputs addressed to it (`LoadRejected`). Waiting callers
+//! only the outputs addressed to it (`LoadRejected`, `CapacityExceeded`). Waiting callers
 //! park on a one-shot reply instead of blocking a worker thread on a lock (DESIGN.md,
 //! "Decided", Runtime).
 //!
@@ -271,11 +271,11 @@ impl Router {
     }
 
     /// Sends each output to its key's subscribers, in order. Returns what goes to no one:
-    /// `LoadRejected`, the loader's answer.
+    /// `LoadRejected` and `CapacityExceeded`, the loader's answers.
     fn route(&mut self, engine: &mut Engine, outputs: Vec<Output>) -> Vec<Output> {
         let mut unrouted = Vec::new();
         for output in outputs {
-            if matches!(output, Output::LoadRejected { .. }) {
+            if matches!(output, Output::LoadRejected { .. } | Output::CapacityExceeded { .. }) {
                 unrouted.push(output);
                 continue;
             }
@@ -363,6 +363,9 @@ fn log(outputs: &[Output]) {
             }
             Output::ResyncRequired { key, reason } => info!(?key, ?reason, "Resync required"),
             Output::LoadRejected { key, as_of } => debug!(?key, ?as_of, "Load rejected"),
+            Output::CapacityExceeded { key, tracked, boxes } => {
+                info!(?key, tracked, boxes, "Load refused: the cap on tracked boxes is reached");
+            }
             Output::Mempool { key, pending, .. } => {
                 debug!(?key, txs = pending.len(), "Mempool overlay");
             }

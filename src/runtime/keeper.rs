@@ -12,8 +12,9 @@
 //! tracked, so the keeper subscribes again without a reload.
 //!
 //! One key's trouble never stops the relay, which serves every other key and client. A token
-//! above the supply limit is logged and given up; a node that returns boxes not matching the
-//! key is logged and asked again later. Only a stopped engine ends every keeper.
+//! above the supply limit, or a key refused by a cap on tracked boxes, is logged and given
+//! up; a node that returns boxes not matching the key is logged and asked again later. Only a
+//! stopped engine ends every keeper.
 
 use std::{sync::Arc, time::Duration};
 
@@ -53,7 +54,9 @@ const SINK: usize = 16;
 
 pub struct Keeper<S> {
     engine: Handle,
-    loader: Loader<S>,
+    /// Shared with the page service, so a client's first request and a keeper's load of the
+    /// same key are one load.
+    loader: Arc<Loader<S>>,
     tokens: Arc<TokenChecker<S>>,
     config: Config,
 }
@@ -61,7 +64,7 @@ pub struct Keeper<S> {
 impl<S: NodeSource> Keeper<S> {
     pub fn new(
         engine: Handle,
-        loader: Loader<S>,
+        loader: Arc<Loader<S>>,
         tokens: Arc<TokenChecker<S>>,
         config: Config,
     ) -> Self {
@@ -69,7 +72,8 @@ impl<S: NodeSource> Keeper<S> {
     }
 
     /// Keeps `key` tracked for good. Returns `Ok` only after giving the key up (a token above
-    /// the supply limit, logged at `error`), and `EngineGone` when the engine stops.
+    /// the supply limit or a key refused by a cap, logged at `error`), and `EngineGone` when
+    /// the engine stops.
     pub async fn keep(&self, key: TrackingKey) -> Result<(), EngineGone> {
         let key = &key;
         // Whether the engine may still track the key. Only a subscription that ended without
@@ -130,13 +134,22 @@ impl<S: NodeSource> Keeper<S> {
                 }
             }
 
-            let wait = match self.loader.load(&self.engine, key).await {
+            let error = match self.loader.load(&self.engine, key).await {
                 Ok((as_of, boxes)) => {
                     info!(?key, ?as_of, boxes, "Configured key loaded");
                     return Ok(true);
                 }
-                Err(LoadError::EngineGone(gone)) => return Err(gone),
-                Err(LoadError::Mismatch { box_id }) => {
+                Err(error) => error,
+            };
+            let wait = match &*error {
+                LoadError::EngineGone(gone) => return Err(*gone),
+                error @ (LoadError::TooManyBoxes { .. } | LoadError::CapacityExceeded { .. }) => {
+                    // The operator sets both the keys and the caps; an exemption would need a
+                    // second path in the engine.
+                    error!(?key, %error, "Configured key can't be tracked, giving it up");
+                    return Ok(false);
+                }
+                LoadError::Mismatch { box_id } => {
                     let wait = self.config.mismatch_retry;
                     error!(
                         ?key,
@@ -146,15 +159,15 @@ impl<S: NodeSource> Keeper<S> {
                     );
                     wait
                 }
-                Err(error @ LoadError::GaveUp { wait, .. }) => {
+                error @ LoadError::GaveUp { wait, .. } => {
                     // The engine is still catching up with the node, the tip keeps moving,
                     // or the indexer is recovering. The loader skips the wait after its last
                     // attempt, so it is taken here, a `503`'s `Retry-After` included.
                     info!(?key, %error, ?wait, "Configured key not loaded yet, trying again");
-                    wait
+                    *wait
                 }
-                Err(LoadError::Node(error)) => {
-                    let wait = backoff(&error, self.config.retry);
+                LoadError::Node(error) => {
+                    let wait = backoff(error, self.config.retry);
                     warn!(?key, %error, ?wait, "Load failed, trying again");
                     wait
                 }

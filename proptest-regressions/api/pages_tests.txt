@@ -1,0 +1,10 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 7179108b9ab2fd8d634b51b71201bc2dc3c46a3002f679ed135f2f89cea8a332 # shrinks to cache = false, ops = [Chain(MempoolAdd { seed: 3166364389426016949 }), Chain(Mine { from_pool: 0, fresh: 0, seed: 0 }), Start { key: Index(12297829382473034411), limit: 1 }]
+cc 5e1b86c2d699ef8931ab8d1212f55ccb274f000e9b87b839cec2025b13d28838 # shrinks to cache = false, ops = [Chain(Mine { from_pool: 0, fresh: 1, seed: 714351560721071114 }), Start { key: Index(0), limit: 1 }, Next]
+cc 8d3c1c274a26a9ade53c010cc4da4224b07ad4cc03855e79a032395961f72152 # shrinks to cache = false, ops = [SpendDuringFetch(0), Chain(MempoolAdd { seed: 0 }), Chain(Mine { from_pool: 1, fresh: 0, seed: 0 }), Start { key: Index(0), limit: 1 }, Tick, Next]
+cc d8461e499316b446b830a5f574d1a4a057e35d279b8691aee2cc059a3b4d1034 # shrinks to cache = false, ops = [Chain(Mine { from_pool: 0, fresh: 0, seed: 0 }), Chain(Reorg { depth: 1, extra: 0, seed: 5991007528908682030 }), Settle, Start { key: Index(0), limit: 1 }, Fork(0), Next]

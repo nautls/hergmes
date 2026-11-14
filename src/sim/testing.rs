@@ -3,7 +3,8 @@
 use std::{
     collections::{BTreeMap, HashSet},
     future::Future,
-    pin::pin,
+    pin::{Pin, pin},
+    sync::Mutex,
     task::{Context, Poll, Waker},
 };
 
@@ -13,8 +14,9 @@ use proptest::{
 };
 
 use crate::{
+    adapters::{EngineGone, EngineHandle},
     clients::{Page, source::MAX_PAGE_LIMIT},
-    engine::{PendingTx, overlay::PendingDelta},
+    engine::{Engine, EngineError, Event, Output, PendingTx, Query, Reply, overlay::PendingDelta},
     sim::{self, Chain, SimConfig, SimOp, strategy},
     types::{
         Digest, HashDigest, HexBytes,
@@ -54,6 +56,54 @@ pub fn ready<F: Future>(future: F) -> F::Output {
     match pin!(future).poll(&mut Context::from_waker(Waker::noop())) {
         Poll::Ready(output) => output,
         Poll::Pending => panic!("SimChain calls never wait"),
+    }
+}
+
+/// Polls `future` once.
+pub fn poll_once<F: Future>(future: Pin<&mut F>) -> Poll<F::Output> {
+    future.poll(&mut Context::from_waker(Waker::noop()))
+}
+
+/// Polls `future` until it is ready, as a runtime would with nothing else to run.
+pub fn finish<F: Future>(mut future: Pin<&mut F>) -> F::Output {
+    for _ in 0..1000 {
+        if let Poll::Ready(output) = poll_once(future.as_mut()) {
+            return output;
+        }
+    }
+    panic!("not ready after 1000 polls");
+}
+
+/// Pending once, then ready: a point where another task runs.
+struct YieldOnce(bool);
+
+impl Future for YieldOnce {
+    type Output = ();
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+        if std::mem::replace(&mut self.0, true) {
+            Poll::Ready(())
+        } else {
+            cx.waker().wake_by_ref();
+            Poll::Pending
+        }
+    }
+}
+
+/// An engine whose every call waits once first, so a caller suspends between its node calls
+/// and another one can arrive meanwhile. `SimChain` calls never wait, so without it a first
+/// load finishes before a second caller starts.
+pub struct Yielding(pub Mutex<Engine>);
+
+impl EngineHandle for Yielding {
+    async fn apply(&self, event: Event) -> Result<Result<Vec<Output>, EngineError>, EngineGone> {
+        YieldOnce(false).await;
+        self.0.apply(event).await
+    }
+
+    async fn query(&self, query: Query) -> Result<Reply, EngineGone> {
+        YieldOnce(false).await;
+        self.0.query(query).await
     }
 }
 

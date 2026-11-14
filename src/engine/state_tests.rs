@@ -14,7 +14,7 @@ use crate::{
 
 /// Small enough that random histories reach the window and grace edges: reorgs go up to 5
 /// blocks deep.
-const CONFIG: Config = Config { window: 4, grace: 2 };
+const CONFIG: Config = Config { window: 4, grace: 2, ..Config::DEFAULT };
 const MAX_REORG: u8 = 5;
 const CASES: u32 = 5_000;
 
@@ -147,7 +147,9 @@ impl Client {
                 self.resumable = false;
             }
             Output::Block { .. } | Output::Rollback { .. } | Output::Mempool { .. } => {}
-            Output::LoadRejected { .. } => panic!("load results go to the loader"),
+            Output::LoadRejected { .. } | Output::CapacityExceeded { .. } => {
+                panic!("load results go to the loader")
+            }
         }
     }
 }
@@ -493,7 +495,8 @@ impl Harness {
             | Output::Mempool { key, .. }
             | Output::Balance { key, .. }
             | Output::ResyncRequired { key, .. }
-            | Output::LoadRejected { key, .. } => key.clone(),
+            | Output::LoadRejected { key, .. }
+            | Output::CapacityExceeded { key, .. } => key.clone(),
         };
         for pair in outputs.windows(2) {
             let (a, b) = ((rank(&pair[0]), key(&pair[0])), (rank(&pair[1]), key(&pair[1])));
@@ -657,11 +660,13 @@ impl Harness {
         let mut ids = Vec::new();
         loop {
             let after = ids.last().copied();
-            let query = Query::Page { key: key.clone(), at, after, limit };
+            let query = Query::Page { key: key.clone(), at: Some(at), after, limit };
             let Reply::Page(page) = self.engine.query(query) else {
                 panic!("a page reply");
             };
             let page = page?;
+            assert_eq!(page.as_of, at, "a page is as of the block asked for");
+            let page = page.boxes;
             assert!(page.len() <= limit);
             let done = page.len() < limit;
             ids.extend(page);
@@ -1064,6 +1069,7 @@ fn kinds(outputs: &[Output]) -> Vec<(&'static str, TrackingKey)> {
             Output::Balance { key, .. } => ("balance", key.clone()),
             Output::ResyncRequired { key, .. } => ("resync", key.clone()),
             Output::LoadRejected { key, .. } => ("load_rejected", key.clone()),
+            Output::CapacityExceeded { key, .. } => ("capacity_exceeded", key.clone()),
         })
         .collect()
 }
@@ -1291,7 +1297,7 @@ fn an_untracked_key_is_refused_and_a_balance_only_catch_up_is_the_balance() {
 /// even though the key is tracked again from the fork point.
 #[test]
 fn a_client_from_an_earlier_tracking_period_resyncs() {
-    let mut f = Fixture::new(Config { window: 10, grace: 0 });
+    let mut f = Fixture::new(Config { window: 10, grace: 0, ..Config::DEFAULT });
     let zero = f.key(0);
     f.load(&zero);
     f.engine
@@ -1330,9 +1336,9 @@ fn pages_pinned_to_a_block_survive_later_blocks() {
     assert!(expected.len() >= 2);
 
     let page = |f: &mut Fixture, after| {
-        let query = Query::Page { key: zero.clone(), at, after, limit: 1 };
+        let query = Query::Page { key: zero.clone(), at: Some(at), after, limit: 1 };
         let Reply::Page(Ok(ids)) = f.engine.query(query) else { panic!("a page") };
-        ids
+        ids.boxes
     };
     let first = page(&mut f, None);
     // Spend the box the next page would return, and add one to the key.
@@ -1403,7 +1409,7 @@ fn a_pending_spend_of_a_box_a_block_spent_is_left_out() {
 
 #[test]
 fn the_chain_query_lists_the_ring_oldest_first() {
-    let mut f = Fixture::new(Config { window: 2, grace: 5 });
+    let mut f = Fixture::new(Config { window: 2, grace: 5, ..Config::DEFAULT });
     let genesis = f.engine.tip().expect("a tip");
     let chain = |f: &mut Fixture| match f.engine.query(Query::Chain) {
         Reply::Chain(links) => links,
@@ -1427,7 +1433,7 @@ fn the_chain_query_lists_the_ring_oldest_first() {
 
 #[test]
 fn the_boxes_query_answers_from_the_ring_only() {
-    let mut f = Fixture::new(Config { window: 2, grace: 5 });
+    let mut f = Fixture::new(Config { window: 2, grace: 5, ..Config::DEFAULT });
     let (zero, one) = (f.key(0), f.key(1));
     f.load(&zero);
     f.load(&one);
@@ -1453,4 +1459,71 @@ fn the_boxes_query_answers_from_the_ring_only() {
     assert_eq!(boxes(&mut f, vec![created.id]), vec![created.clone()]);
     f.mine(vec![]);
     assert!(boxes(&mut f, vec![created.id, source]).is_empty());
+}
+
+/// The cap on tracked boxes: a load that reaches it exactly is taken, one box more is
+/// refused and changes nothing. A duplicate load is ignored even at the cap, and a load off
+/// the tip is rejected before the cap is looked at.
+#[test]
+fn a_load_past_the_cap_on_tracked_boxes_is_refused() {
+    let probe = Fixture::new(Config::default());
+    let sizes: Vec<usize> = (0..3)
+        .map(|t| {
+            probe
+                .chain
+                .oracle()
+                .load(&probe.key(t), probe.chain.height())
+                .len()
+        })
+        .collect();
+    assert!(sizes.iter().all(|&n| n > 0), "{sizes:?}");
+    let cap = sizes[0] + sizes[1];
+
+    let mut f = Fixture::new(Config { max_tracked_boxes: cap - 1, ..Config::default() });
+    let [zero, one] = [0, 1].map(|t| f.key(t));
+    f.load(&zero);
+    let refused = Output::CapacityExceeded { key: one.clone(), tracked: sizes[0], boxes: sizes[1] };
+    assert_eq!(f.load(&one), [refused]);
+    assert!(!f.engine.is_tracked(&one));
+    assert_eq!(f.engine.reverse.len(), sizes[0], "nothing changed");
+
+    let mut f = Fixture::new(Config { max_tracked_boxes: cap, ..Config::default() });
+    let [zero, one, two] = [0, 1, 2].map(|t| f.key(t));
+    f.load(&zero);
+    let outputs = f.load(&one);
+    assert!(f.engine.is_tracked(&one), "exactly at the cap: {outputs:?}");
+    assert_eq!(f.load(&zero), [], "a duplicate is ignored");
+    let refused = Output::CapacityExceeded { key: two.clone(), tracked: cap, boxes: sizes[2] };
+    assert_eq!(f.load(&two), [refused]);
+
+    f.chain.mine(1, 1, 3);
+    let as_of = f.chain.tip();
+    assert_eq!(f.load(&two), [Output::LoadRejected { key: two, as_of }]);
+}
+
+#[test]
+fn a_page_without_a_block_is_at_the_tip() {
+    let mut f = Fixture::new(Config::default());
+    let zero = f.key(0);
+    let query = |at| Query::Page { key: zero.clone(), at, after: None, limit: usize::MAX };
+    let Reply::Page(Err(PageError::NotTracked)) = f.engine.query(query(None)) else {
+        panic!("an untracked key has no page");
+    };
+    f.load(&zero);
+    let tx = f
+        .chain
+        .transfer(&[sim::testing::box_of(&f.chain, 0)], &f.chain.trees()[1].clone());
+    f.mine(vec![tx]);
+    let tip = f.engine.tip().expect("a tip");
+    let Reply::Page(Ok(page)) = f.engine.query(query(None)) else { panic!("a page") };
+    assert_eq!(page.as_of, tip);
+    let Reply::Page(Ok(pinned)) = f.engine.query(query(Some(tip))) else { panic!("a page") };
+    assert_eq!(page, pinned);
+    let expected: Vec<BoxKey> = f
+        .chain
+        .oracle()
+        .unspent(&zero, tip.height)
+        .into_keys()
+        .collect();
+    assert_eq!(page.boxes, expected);
 }

@@ -19,7 +19,7 @@ use crate::{
 };
 
 /// Small enough that reorgs reach past the window and keys go idle.
-const CONFIG: Config = Config { window: 4, grace: 2 };
+const CONFIG: Config = Config { window: 4, grace: 2, ..Config::DEFAULT };
 const MAX_REORG: u8 = 5;
 const CASES: u32 = 2_000;
 
@@ -161,9 +161,9 @@ impl Harness {
         let tip = self.engine_tip().expect("a tip");
         let oracle = self.sim.lock().oracle_at(&tip.header_id);
         let expected: Vec<_> = oracle.unspent(key, tip.height).into_keys().collect();
-        let query = Query::Page { key: key.clone(), at: tip, after: None, limit: usize::MAX };
+        let query = Query::Page { key: key.clone(), at: Some(tip), after: None, limit: usize::MAX };
         match self.query(query) {
-            Reply::Page(Ok(boxes)) => assert_eq!(boxes, expected, "{key:?}"),
+            Reply::Page(Ok(page)) => assert_eq!(page.boxes, expected, "{key:?}"),
             other => panic!("{other:?}"),
         }
         match self.query(Query::Balance(key.clone())) {

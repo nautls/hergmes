@@ -12,7 +12,7 @@ use crate::{
     sim::{Chain, SimChain, SimConfig, token_id},
 };
 
-const CONFIG: engine::Config = engine::Config { window: 4, grace: 2 };
+const CONFIG: engine::Config = engine::Config { window: 4, grace: 2, ..engine::Config::DEFAULT };
 const RETRY: Duration = Duration::from_secs(5);
 
 /// A chain mined a little, with an indexer that recovers from a reorg at once, and an engine
@@ -37,7 +37,7 @@ async fn sync(sim: &SimChain, engine: &Handle) {
 fn keeper(sim: &SimChain, engine: &Handle) -> Arc<Keeper<SimChain>> {
     Arc::new(Keeper::new(
         engine.clone(),
-        Loader::new(sim.clone(), loader::Config::default()),
+        Arc::new(Loader::new(sim.clone(), loader::Config::default())),
         Arc::new(TokenChecker::new(sim.clone(), 100)),
         Config::default(),
     ))
@@ -128,6 +128,51 @@ async fn a_token_above_the_supply_limit_is_given_up_alone() {
         .unwrap();
     assert_eq!(given_up, Ok(()));
     tracked_at_tip(&sim, &engine, &small).await;
+}
+
+/// Keys refused by a cap are given up, each alone: one over the per-key cap, and one the
+/// engine refuses once the total cap is reached. The key that fits stays tracked.
+#[tokio::test(start_paused = true)]
+async fn keys_refused_by_a_cap_are_given_up_alone() {
+    let mut chain = Chain::new(SimConfig { recovery_reads: 0, ..SimConfig::default() });
+    chain.mine(0, 2, 1);
+    let sim = SimChain::new(chain);
+    let small = TrackingKey::Token(token_id("small-100"));
+    let tree = sim.lock().keys()[0].clone();
+    assert!(matches!(tree, TrackingKey::Tree(_)));
+    let tip = sim.lock().tip();
+    let token_boxes = sim.lock().oracle().load(&small, tip.height).len();
+    assert!(token_boxes > 3);
+    // Room for the token's boxes and nothing more.
+    let config = engine::Config { max_tracked_boxes: token_boxes, ..CONFIG };
+    let (engine, _task) = spawn(Engine::new(config));
+    sync(&sim, &engine).await;
+    let keeper = |max_boxes| {
+        Arc::new(Keeper::new(
+            engine.clone(),
+            Arc::new(Loader::new(sim.clone(), loader::Config { max_boxes, ..Default::default() })),
+            Arc::new(TokenChecker::new(sim.clone(), 100)),
+            Config::default(),
+        ))
+    };
+
+    let over = keep(&keeper(3), &small);
+    let given_up = tokio::time::timeout(RETRY * 10, over)
+        .await
+        .expect("given up")
+        .unwrap();
+    assert_eq!(given_up, Ok(()), "over the per-key cap");
+
+    let _kept = keep(&keeper(loader::MAX_BOXES), &small);
+    tracked_at_tip(&sim, &engine, &small).await;
+    let full = keep(&keeper(loader::MAX_BOXES), &tree);
+    let given_up = tokio::time::timeout(RETRY * 10, full)
+        .await
+        .expect("given up")
+        .unwrap();
+    assert_eq!(given_up, Ok(()), "over the total cap");
+    assert!(confirmed(&engine, &tree).await.is_none());
+    assert!(confirmed(&engine, &small).await.is_some());
 }
 
 #[tokio::test(start_paused = true)]
@@ -240,7 +285,7 @@ mod node {
             Config { retry: Duration::from_millis(10), mismatch_retry: Duration::from_millis(100) };
         let keeper = Arc::new(Keeper::new(
             engine.clone(),
-            Loader::new(client.clone(), loader::Config::default()),
+            Arc::new(Loader::new(client.clone(), loader::Config::default())),
             Arc::new(TokenChecker::new(client, 100)),
             config,
         ));

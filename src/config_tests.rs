@@ -30,6 +30,9 @@ fn only_the_node_url_is_required() {
     assert_eq!(config.node_url, "http://127.0.0.1:9053");
     assert_eq!(config.engine, engine::Config::default());
     assert_eq!(config.follower, follower::Config::default());
+    assert_eq!(config.loader, loader::Config::default());
+    assert_eq!(config.loader.max_boxes, 50_000);
+    assert_eq!(config.engine.max_tracked_boxes, 2_000_000);
     assert_eq!(config.token_supply_limit, SUPPLY_LIMIT);
     assert!(config.track_addresses.is_empty() && config.track_tokens.is_empty());
     assert_eq!(config.box_cache_bytes, 128 * 1024 * 1024);
@@ -51,9 +54,12 @@ fn every_setting_is_read() {
         (vars::TRACK_ADDRESSES, &format!(" {MAINNET} ,")),
         (vars::TRACK_TOKENS, &format!("{NFT},{TOKEN}")),
         (vars::BOX_CACHE_MB, "3"),
+        (vars::MAX_BOXES_PER_KEY, "40"),
+        (vars::MAX_TRACKED_BOXES, "900"),
     ])
     .unwrap();
-    assert_eq!(config.engine, engine::Config { window: 30, grace: 0 });
+    assert_eq!(config.engine, engine::Config { window: 30, grace: 0, max_tracked_boxes: 900 });
+    assert_eq!(config.loader.max_boxes, 40);
     assert_eq!(config.follower.interval, Duration::from_millis(250));
     assert_eq!(config.follower.mempool.refresh, Duration::from_secs(5));
     assert_eq!(config.token_supply_limit, 7);
@@ -82,6 +88,10 @@ fn bad_values_name_their_variable() {
         (vars::TRACK_TOKENS, "abcd"),
         (vars::BOX_CACHE_MB, "-1"),
         (vars::BOX_CACHE_MB, "18446744073709551615"),
+        (vars::MAX_BOXES_PER_KEY, "0"),
+        (vars::MAX_BOXES_PER_KEY, "1e6"),
+        (vars::MAX_TRACKED_BOXES, "0"),
+        (vars::MAX_TRACKED_BOXES, "-5"),
     ] {
         assert_eq!(invalid_var(config(&[url, (var, value)])), var, "{var}={value}");
     }

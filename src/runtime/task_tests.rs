@@ -28,7 +28,7 @@ use crate::{
 };
 
 /// Small enough that reorgs reach past the window and keys go idle.
-const CONFIG: Config = Config { window: 4, grace: 2 };
+const CONFIG: Config = Config { window: 4, grace: 2, ..Config::DEFAULT };
 const MAX_REORG: u8 = 5;
 const CASES: u32 = 1_000;
 
@@ -173,12 +173,12 @@ impl Reference {
 
     /// Each output goes to every live subscription of its key that wants it, in order. A
     /// subscription that can't take it ends and is unsubscribed; a `resync_required` ends
-    /// them all, unsubscribing none (the engine dropped the key). `LoadRejected` goes to no
-    /// one, and is what the event's caller gets back.
+    /// them all, unsubscribing none (the engine dropped the key). `LoadRejected` and
+    /// `CapacityExceeded` go to no one, and are what the event's caller gets back.
     fn route(&mut self, outputs: &[Output]) -> Vec<Output> {
         let mut unrouted = Vec::new();
         for output in outputs {
-            if matches!(output, Output::LoadRejected { .. }) {
+            if matches!(output, Output::LoadRejected { .. } | Output::CapacityExceeded { .. }) {
                 unrouted.push(output.clone());
                 continue;
             }
@@ -501,7 +501,8 @@ async fn a_stopped_task_answers_engine_gone() {
     let follower = Follower::new(sim.clone(), follower::Config::default());
     assert_eq!(follower.run(&engine).await, EngineGone);
     let loader = Loader::new(sim.clone(), loader::Config::default());
-    assert!(matches!(loader.load(&engine, &key).await, Err(LoadError::EngineGone(_))));
+    let error = loader.load(&engine, &key).await.unwrap_err();
+    assert!(matches!(*error, LoadError::EngineGone(_)));
 }
 
 #[tokio::test]
@@ -611,4 +612,35 @@ async fn a_rejected_load_goes_only_to_its_caller() {
     let outputs = engine.apply(event).await.unwrap().unwrap();
     assert_eq!(outputs, vec![Output::LoadRejected { key, as_of: stale }]);
     assert_eq!(receiver.try_recv().unwrap_err(), TryRecvError::Empty);
+}
+
+/// A load refused by the cap on tracked boxes is for an untracked key, which has no
+/// subscribers: routed like other outputs it would reach no one, and the loader would take
+/// the empty answer for an accepted load.
+#[tokio::test]
+async fn a_load_past_the_cap_goes_back_to_its_caller() {
+    let mut chain = new_chain();
+    chain.mine(0, 2, 1);
+    let sim = SimChain::new(chain);
+    let (engine, _task) = spawn(Engine::new(Config { max_tracked_boxes: 1, ..CONFIG }));
+    let tip = sim.lock().tip();
+    BlockConsumer::new(sim.clone())
+        .sync(&engine, tip)
+        .await
+        .unwrap();
+    let oracle = sim.lock().oracle();
+    let (boxes, key) = (sim.lock().keys().into_iter())
+        .map(|k| (oracle.load(&k, tip.height).len(), k))
+        .max()
+        .unwrap();
+    assert!(boxes > 1);
+    let error = Loader::new(sim.clone(), loader::Config::default())
+        .load(&engine, &key)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(*error, LoadError::CapacityExceeded { tracked: 0, boxes: b } if b == boxes),
+        "{error:?}"
+    );
+    assert!(!is_tracked(&engine, &key).await);
 }

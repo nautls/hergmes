@@ -7,9 +7,14 @@
 //!
 //! The boxes of a load the engine takes seed the box cache, so the pages that follow (a
 //! snapshot right after a subscribe, the common case) make no node call.
+//!
+//! Concurrent loads of one key are coalesced: one runs, and the other callers wait for its
+//! outcome instead of paging the key from the node again. A key refused for having too many
+//! boxes is remembered for a while, so asking again doesn't page it from the node again.
 
 use std::{sync::Arc, time::Duration};
 
+use moka::future::Cache;
 use tokio::time::sleep;
 use tracing::{debug, info};
 
@@ -20,10 +25,29 @@ use crate::{
     types::ergo::{BoxId, IndexedBox, UTxO},
 };
 
+/// The default cap on a key's boxes: about 5.5 MB of ids in the engine, and about 20 MB of
+/// full boxes while it loads.
+pub const MAX_BOXES: usize = 50_000;
+
+/// How long a key over the per-key cap is answered `TooManyBoxes` without paging it again:
+/// about the grace period in blocks. A key gets under the cap only by many consolidation txs,
+/// so a wallet that just did waits at most this long, while a hot address over the cap costs
+/// one reload per this long rather than one per request.
+pub const REFUSAL_TTL: Duration = Duration::from_secs(10 * 60);
+
+/// The most refused keys remembered. A key over the cap needs that many boxes on chain, so
+/// there are few; the bound only keeps trees of up to 4 KB from adding up.
+const REFUSALS: u64 = 1_000;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Config {
     /// Boxes per page, at most [`MAX_PAGE_LIMIT`] (the node rejects more).
     pub page_limit: u32,
+    /// The most boxes a key can have. Paging stops as soon as a key has more, so a huge
+    /// address is never paged in full only to be refused.
+    pub max_boxes: usize,
+    /// How long a key over `max_boxes` is refused without paging it again.
+    pub refusal_ttl: Duration,
     /// Attempts before [`Loader::load`] gives up. Each one that reaches the indexer is a full
     /// reload, so this stays small.
     pub attempts: u32,
@@ -34,7 +58,13 @@ pub struct Config {
 
 impl Default for Config {
     fn default() -> Self {
-        Self { page_limit: MAX_PAGE_LIMIT, attempts: 10, retry: Duration::from_secs(1) }
+        Self {
+            page_limit: MAX_PAGE_LIMIT,
+            max_boxes: MAX_BOXES,
+            refusal_ttl: REFUSAL_TTL,
+            attempts: 10,
+            retry: Duration::from_secs(1),
+        }
     }
 }
 
@@ -68,20 +98,61 @@ pub enum LoadError {
     /// (a `503`'s `Retry-After`, or the retry): a caller that tries again waits it first.
     #[error("no load settled after {attempts} attempts, the last one {last:?}")]
     GaveUp { attempts: u32, last: Option<Attempt>, wait: Duration },
+    /// The key has more than `max` boxes. Loading it again won't change that.
+    #[error("the key has more than {max} boxes")]
+    TooManyBoxes { max: usize },
+    /// The engine refused the load: its boxes would pass the cap on tracked boxes. It frees
+    /// up as idle keys leave.
+    #[error("{boxes} more boxes would pass the cap on tracked boxes, with {tracked} tracked")]
+    CapacityExceeded { tracked: usize, boxes: usize },
     #[error(transparent)]
     EngineGone(#[from] EngineGone),
 }
+
+/// The outcome of a load, as every caller waiting on it gets it.
+pub type Loaded = Result<(BlockRef, usize), Arc<LoadError>>;
 
 pub struct Loader<S> {
     source: S,
     config: Config,
     cache: BoxCache,
+    /// The loads running, by key, so that a second caller waits for the first one's outcome.
+    ///
+    /// moka's `try_get_with` runs one `init` per key and gives its result to every caller
+    /// waiting on it. It inserts only an `Ok`, and an outcome must never be kept: once the key
+    /// is untracked it has to be loaded again. So the whole outcome travels as the `Err` side
+    /// (shared as `Arc`), and the map holds nothing once a load returns, with no `invalidate`
+    /// step a dropped caller could skip. If the caller running the load is dropped (a client
+    /// that disconnects), a waiting caller runs it instead; moka panics after 200 such aborts
+    /// in a row on one key, which only that caller sees (moka 0.12.16,
+    /// `future/value_initializer.rs`, `try_init_or_read`).
+    loads: Cache<TrackingKey, ()>,
+    /// Keys refused for having more than `max_boxes`, until `refusal_ttl` passes. Expiring is
+    /// the whole invalidation: the count changes only through blocks, and following it for
+    /// untracked keys would mean engine state, rollbacks and a race at the refusal, to save a
+    /// wallet a few minutes once after a long consolidation. The total cap is not
+    /// remembered: it frees up as idle keys leave.
+    refused: Cache<TrackingKey, usize>,
 }
 
 impl<S: NodeSource> Loader<S> {
     pub fn new(source: S, config: Config) -> Self {
         assert!(config.page_limit >= 1 && config.page_limit <= MAX_PAGE_LIMIT);
-        Self { source, config, cache: BoxCache::disabled() }
+        let refused = Cache::builder()
+            .max_capacity(REFUSALS)
+            .time_to_live(config.refusal_ttl)
+            .build();
+        Self {
+            source,
+            config,
+            cache: BoxCache::disabled(),
+            loads: Cache::builder().build(),
+            refused,
+        }
+    }
+
+    pub fn config(&self) -> &Config {
+        &self.config
     }
 
     /// Seeds `cache` with the boxes of every load the engine takes: one it accepts, and one
@@ -95,9 +166,31 @@ impl<S: NodeSource> Loader<S> {
 
     /// Loads `key` and sends it to the engine, retrying until an attempt is accepted or
     /// `attempts` have been made. A `503` waits for its `Retry-After`; other node errors end
-    /// the load. No wait follows the last attempt: a caller giving up should not sit through
-    /// it, so `GaveUp` carries it instead.
-    pub async fn load(
+    /// the load, as do the caps. No wait follows the last attempt: a caller giving up should
+    /// not sit through it, so `GaveUp` carries it instead.
+    ///
+    /// A call while another load of `key` runs waits for that one and gets its outcome. A key
+    /// refused for too many boxes in the last `refusal_ttl` is refused again with no node
+    /// call.
+    pub async fn load(&self, engine: &impl EngineHandle, key: &TrackingKey) -> Loaded {
+        if let Some(max) = self.refused.get(key).await {
+            return Err(Arc::new(LoadError::TooManyBoxes { max }));
+        }
+        let run = async {
+            let outcome = self.load_alone(engine, key).await;
+            if let Err(LoadError::TooManyBoxes { max }) = outcome {
+                self.refused.insert(key.clone(), max).await;
+            }
+            Err::<(), Loaded>(outcome.map_err(Arc::new))
+        };
+        match self.loads.try_get_with(key.clone(), run).await {
+            Err(outcome) => (*outcome).clone(),
+            Ok(()) => unreachable!("a load's outcome is always the `Err` side"),
+        }
+    }
+
+    /// [`Loader::load`], not coalesced.
+    async fn load_alone(
         &self,
         engine: &impl EngineHandle,
         key: &TrackingKey,
@@ -167,11 +260,14 @@ impl<S: NodeSource> Loader<S> {
         let event = Event::KeyLoaded { key: key.clone(), as_of: tip, boxes };
         // `KeyLoaded` is never an `EngineError`: an off-tip load answers `LoadRejected`.
         let outputs = engine.apply(event).await?.unwrap_or_default();
-        let rejected = outputs
-            .iter()
-            .any(|o| matches!(o, Output::LoadRejected { key: k, .. } if k == key));
-        if rejected {
-            return Ok(Attempt::Rejected);
+        for output in outputs.iter().filter(|o| o.key() == key) {
+            match output {
+                Output::LoadRejected { .. } => return Ok(Attempt::Rejected),
+                &Output::CapacityExceeded { tracked, boxes, .. } => {
+                    return Err(LoadError::CapacityExceeded { tracked, boxes });
+                }
+                _ => {}
+            }
         }
         for b in seeds {
             self.cache.insert(b);
@@ -179,9 +275,10 @@ impl<S: NodeSource> Loader<S> {
         Ok(Attempt::Tracked { as_of: tip, boxes: count })
     }
 
-    /// Every page of the key's unspent boxes, oldest first, until a short page.
-    async fn pages(&self, key: &TrackingKey) -> Result<Vec<IndexedBox>, NodeError> {
-        let limit = self.config.page_limit;
+    /// Every page of the key's unspent boxes, oldest first, until a short page, or until the
+    /// first page that takes the key over the cap.
+    async fn pages(&self, key: &TrackingKey) -> Result<Vec<IndexedBox>, LoadError> {
+        let (limit, max) = (self.config.page_limit, self.config.max_boxes);
         let mut boxes = Vec::new();
         loop {
             let page = Page { offset: boxes.len() as u32, limit };
@@ -191,6 +288,9 @@ impl<S: NodeSource> Loader<S> {
             };
             let full = read.len() as u32 >= limit;
             boxes.append(&mut read);
+            if boxes.len() > max {
+                return Err(LoadError::TooManyBoxes { max });
+            }
             if !full {
                 return Ok(boxes);
             }

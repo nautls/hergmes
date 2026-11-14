@@ -33,11 +33,12 @@ pub use tokens::TokenChecker;
 /// How adapters reach the engine: an event with its answer, or a query with its reply.
 ///
 /// The block consumer needs the answer to an event (an `EngineError` makes it start again
-/// from the engine's chain), and so does the loader (`LoadRejected` makes it retry), so
-/// events are not fire-and-forget. The engine task (`runtime::EngineTask`) implements this
-/// over its inbox. It answers an applied event with only the outputs addressed to its caller
-/// (`LoadRejected`): the rest go to subscribers, and sending them back too would copy every
-/// routed output for a caller that drops them.
+/// from the engine's chain), and so does the loader (`LoadRejected` makes it retry,
+/// `CapacityExceeded` makes it give up), so events are not fire-and-forget. The engine task
+/// (`runtime::EngineTask`) implements this over its inbox. It answers an applied event with
+/// only the outputs addressed to its caller (`LoadRejected`, `CapacityExceeded`): the rest go
+/// to subscribers, and sending them back too would copy every routed output for a caller
+/// that drops them.
 pub trait EngineHandle: Send + Sync {
     fn apply(
         &self,

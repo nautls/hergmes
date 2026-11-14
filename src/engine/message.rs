@@ -44,10 +44,12 @@ impl From<IndexedBox> for LoadedBox {
 /// as activity for the grace period.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Query {
-    /// Up to `limit` box keys of `key` as of block `at`, after the cursor `after`.
+    /// Up to `limit` box keys of `key` as of block `at` (the tip when `None`), after the
+    /// cursor `after`. A first page is pinned to the tip in this one message, with no
+    /// `Query::Tip` before it that a block could follow.
     Page {
         key: TrackingKey,
-        at: BlockRef,
+        at: Option<BlockRef>,
         after: Option<BoxKey>,
         limit: usize,
     },
@@ -79,7 +81,7 @@ pub enum Query {
 /// for any key.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Reply {
-    Page(Result<Vec<BoxKey>, PageError>),
+    Page(Result<PageIds, PageError>),
     Overlay(Vec<PendingTx>),
     Pending(PendingDelta),
     Balance(Option<Balance>),
@@ -88,6 +90,13 @@ pub enum Reply {
     Boxes(Vec<Arc<UTxO>>),
     MempoolSnapshot(Option<(Arc<[UnconfirmedTransaction]>, BlockRef)>),
     CatchUp(Vec<Output>),
+}
+
+/// A page of a key's box keys, and the block it is as of.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PageIds {
+    pub as_of: BlockRef,
+    pub boxes: Vec<BoxKey>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -147,6 +156,9 @@ pub enum Output {
     ResyncRequired { key: TrackingKey, reason: ResyncReason },
     /// A first load pinned to a block other than the tip; the loader retries.
     LoadRejected { key: TrackingKey, as_of: BlockRef },
+    /// A first load refused because its `boxes` on top of the `tracked` ones would pass the
+    /// cap on tracked boxes. Nothing changed. It frees up as idle keys leave.
+    CapacityExceeded { key: TrackingKey, tracked: usize, boxes: usize },
 }
 
 impl Output {
@@ -158,7 +170,8 @@ impl Output {
             | Output::Mempool { key, .. }
             | Output::Balance { key, .. }
             | Output::ResyncRequired { key, .. }
-            | Output::LoadRejected { key, .. } => key,
+            | Output::LoadRejected { key, .. }
+            | Output::CapacityExceeded { key, .. } => key,
         }
     }
 }

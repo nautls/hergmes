@@ -13,7 +13,7 @@ use crate::{
     engine::{Config as EngineConfig, Engine, EngineError, Query, Reply},
     sim::{
         Chain, Endpoint, SimChain, SimConfig,
-        testing::{new_chain, ready},
+        testing::{Yielding, finish, new_chain, poll_once, ready},
     },
 };
 
@@ -38,9 +38,9 @@ fn engine_and_oracle(
         .unspent(key, tip.height)
         .into_keys()
         .collect();
-    let query = Query::Page { key: key.clone(), at: tip, after: None, limit: usize::MAX };
+    let query = Query::Page { key: key.clone(), at: Some(tip), after: None, limit: usize::MAX };
     match engine.lock().unwrap().query(query) {
-        Reply::Page(Ok(boxes)) => (boxes, expected),
+        Reply::Page(Ok(page)) => (page.boxes, expected),
         other => panic!("{other:?}"),
     }
 }
@@ -283,6 +283,139 @@ fn a_page_right_after_a_load_makes_no_node_call() {
     assert_eq!(sim.calls().len(), before, "no node call");
 }
 
+/// A key over the per-key cap is refused at the first page that takes it over, without
+/// paging it in full. A key at the cap exactly is loaded.
+#[test]
+fn a_key_over_the_per_key_cap_is_refused_without_paging_it_all() {
+    // A token split over four boxes.
+    let key = TrackingKey::Token(crate::sim::token_id("small-100"));
+    for (page_limit, max_boxes, reads) in [(1, 2, 3), (16384, 2, 1), (3, 3, 2)] {
+        let chain = new_chain();
+        let engine = synced_engine(&chain);
+        let sim = SimChain::new(chain);
+        let cache = BoxCache::new(1 << 20);
+        let config = Config { page_limit, max_boxes, ..Config::default() };
+        let loader = Loader::new(sim.clone(), config).seeding(cache.clone());
+        let error = ready(loader.load(&engine, &key)).unwrap_err();
+        assert!(matches!(*error, LoadError::TooManyBoxes { max } if max == max_boxes), "{error:?}");
+        assert_eq!(count(&sim, Endpoint::UnspentByToken), reads, "{page_limit} per page");
+        assert_eq!(count(&sim, Endpoint::Info), 1, "not retried");
+        assert!(!engine.lock().unwrap().is_tracked(&key));
+        assert!(cache.boxes().is_empty());
+    }
+
+    let chain = new_chain();
+    let engine = synced_engine(&chain);
+    let sim = SimChain::new(chain);
+    let loader = Loader::new(sim.clone(), Config { max_boxes: 4, ..Config::default() });
+    assert!(matches!(ready(loader.load(&engine, &key)), Ok((_, 4))));
+}
+
+/// A key over the per-key cap is refused again with no node call until the refusal expires,
+/// then paged again. A refusal for the total cap is not remembered: it frees up as idle keys
+/// leave.
+#[test]
+fn a_key_over_the_per_key_cap_is_remembered_for_a_while() {
+    let ttl = Duration::from_millis(200);
+    let key = TrackingKey::Token(crate::sim::token_id("small-100"));
+    let chain = new_chain();
+    let engine = synced_engine(&chain);
+    let sim = SimChain::new(chain);
+    let config = Config { max_boxes: 2, refusal_ttl: ttl, ..Config::default() };
+    let loader = Loader::new(sim.clone(), config);
+    let refused = |loader: &Loader<SimChain>| {
+        let error = ready(loader.load(&engine, &key)).unwrap_err();
+        assert!(matches!(*error, LoadError::TooManyBoxes { max: 2 }), "{error:?}");
+    };
+    refused(&loader);
+    let calls = sim.calls().len();
+    assert!(calls > 0);
+    refused(&loader);
+    assert_eq!(sim.calls().len(), calls, "no node call while remembered");
+    std::thread::sleep(ttl + Duration::from_millis(100));
+    refused(&loader);
+    assert_eq!(sim.calls().len(), 2 * calls, "paged again once it expired");
+
+    let chain = new_chain();
+    let mut engine = Engine::new(EngineConfig { max_tracked_boxes: 1, ..EngineConfig::default() });
+    engine
+        .apply(Event::BlockApplied(chain.oracle().indexed_block(chain.height())))
+        .unwrap();
+    let engine = Mutex::new(engine);
+    let sim = SimChain::new(chain);
+    let loader = Loader::new(sim.clone(), Config::default());
+    for attempt in 1..=2 {
+        let error = ready(loader.load(&engine, &key)).unwrap_err();
+        assert!(matches!(*error, LoadError::CapacityExceeded { .. }), "{error:?}");
+        assert_eq!(count(&sim, Endpoint::UnspentByToken), attempt, "loaded every time");
+    }
+}
+
+/// A load the engine refuses for the cap on tracked boxes ends the load at once and seeds
+/// nothing: the key is not tracked.
+#[test]
+fn a_load_past_the_cap_on_tracked_boxes_is_refused_and_seeds_nothing() {
+    let chain = new_chain();
+    let mut engine = Engine::new(EngineConfig { max_tracked_boxes: 1, ..EngineConfig::default() });
+    engine
+        .apply(Event::BlockApplied(chain.oracle().indexed_block(chain.height())))
+        .unwrap();
+    let engine = Mutex::new(engine);
+    let sim = SimChain::new(chain);
+    let key = TrackingKey::Token(crate::sim::token_id("small-100"));
+    let cache = BoxCache::new(1 << 20);
+    let loader = Loader::new(sim.clone(), Config::default()).seeding(cache.clone());
+    let error = ready(loader.load(&engine, &key)).unwrap_err();
+    assert!(matches!(*error, LoadError::CapacityExceeded { tracked: 0, boxes: 4 }), "{error:?}");
+    assert_eq!(count(&sim, Endpoint::Info), 2, "one attempt, not retried");
+    assert!(!engine.lock().unwrap().is_tracked(&key));
+    assert!(cache.boxes().is_empty(), "nothing from a refused load");
+}
+
+/// Two loads of one key at once are one load: the second waits for the first and gets its
+/// outcome. Nothing is kept: a load after they return runs again.
+#[tokio::test]
+async fn concurrent_loads_of_a_key_are_one_load() {
+    let chain = new_chain();
+    let engine = Yielding(synced_engine(&chain));
+    let sim = SimChain::new(chain);
+    let key = tree_key(&sim, 0);
+    let loader = Loader::new(sim.clone(), Config::default());
+    let (first, second) = tokio::join!(loader.load(&engine, &key), loader.load(&engine, &key));
+    let first = first.unwrap();
+    assert_eq!(second.unwrap(), first);
+    assert_eq!(count(&sim, Endpoint::UnspentByErgoTree), 1, "one load");
+    assert!(engine.0.lock().unwrap().is_tracked(&key));
+
+    // The engine ignores this one as a duplicate, but it runs: no outcome was kept.
+    loader.load(&engine, &key).await.unwrap();
+    assert_eq!(count(&sim, Endpoint::UnspentByErgoTree), 2);
+}
+
+/// The caller running a load is dropped (its client disconnected) while another waits: the
+/// waiting caller runs the load itself.
+#[test]
+fn a_load_whose_caller_is_dropped_is_run_by_the_one_waiting() {
+    let chain = new_chain();
+    let engine = Yielding(synced_engine(&chain));
+    let sim = SimChain::new(chain);
+    let key = tree_key(&sim, 0);
+    let loader = Loader::new(sim.clone(), Config::default());
+
+    let mut first = Box::pin(loader.load(&engine, &key));
+    assert!(poll_once(first.as_mut()).is_pending(), "suspended at its first engine call");
+    assert_eq!(count(&sim, Endpoint::Info), 1, "the first caller runs the load");
+    let mut second = Box::pin(loader.load(&engine, &key));
+    assert!(poll_once(second.as_mut()).is_pending(), "waiting for the first");
+    assert_eq!(count(&sim, Endpoint::Info), 1, "the second waits rather than loading");
+    drop(first);
+
+    let (as_of, _) = finish(second.as_mut()).unwrap();
+    assert_eq!(Some(as_of), engine.0.lock().unwrap().tip());
+    assert!(engine.0.lock().unwrap().is_tracked(&key));
+    assert_eq!(count(&sim, Endpoint::UnspentByErgoTree), 1, "only the second reached the pages");
+}
+
 #[tokio::test(start_paused = true)]
 async fn load_retries_until_the_engine_catches_up() {
     let chain = new_chain();
@@ -317,7 +450,7 @@ async fn load_gives_up_after_its_attempts() {
     let before = engine.lock().unwrap().tip();
     assert!(
         matches!(
-            error,
+            *error,
             LoadError::GaveUp {
                 attempts: 3,
                 last: Some(Attempt::EngineBehind { engine, node: n }),
@@ -407,7 +540,7 @@ mod node {
         let error = loader.load(&engine, &key).await.unwrap_err();
         assert!(
             matches!(
-                error,
+                *error,
                 LoadError::GaveUp { attempts: 1, last: None, wait }
                     if wait == Duration::from_secs(30)
             ),

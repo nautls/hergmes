@@ -25,7 +25,7 @@ impl Fixture {
         let sim = SimChain::new(chain);
         Self {
             consumer: BlockConsumer::new(sim.clone()),
-            engine: Mutex::new(Engine::new(Config { window, grace: 100 })),
+            engine: Mutex::new(Engine::new(Config { window, grace: 100, ..Config::DEFAULT })),
             sim,
         }
     }
@@ -89,9 +89,9 @@ impl Fixture {
             .unspent(key, tip.height)
             .into_keys()
             .collect();
-        let query = Query::Page { key: key.clone(), at: tip, after: None, limit: usize::MAX };
+        let query = Query::Page { key: key.clone(), at: Some(tip), after: None, limit: usize::MAX };
         match self.engine.lock().unwrap().query(query) {
-            Reply::Page(Ok(boxes)) => assert_eq!(boxes, expected),
+            Reply::Page(Ok(page)) => assert_eq!(page.boxes, expected),
             other => panic!("{other:?}"),
         }
     }
