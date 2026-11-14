@@ -40,6 +40,7 @@ fn every_error() -> Vec<(ApiError, StatusCode, Option<&'static str>)> {
         (ApiError::InvalidTokenId, S::BAD_REQUEST, None),
         (ApiError::InvalidCursor(CursorError::Malformed), S::BAD_REQUEST, None),
         (ApiError::InvalidLimit, S::BAD_REQUEST, None),
+        (ApiError::KeyNotAllowed, S::FORBIDDEN, None),
         (ApiError::UnknownToken, S::NOT_FOUND, None),
         (ApiError::CursorExpired, S::GONE, None),
         (ApiError::SupplyTooLarge { emission: 101, limit: 100 }, S::UNPROCESSABLE_ENTITY, None),
@@ -94,7 +95,7 @@ async fn every_error_has_its_status_code_and_retry_after() {
 fn every_variant_is_in_the_table() {
     let codes: std::collections::BTreeSet<_> =
         every_error().iter().map(|(e, ..)| e.code()).collect();
-    assert_eq!(codes.len(), 14, "{codes:?}");
+    assert_eq!(codes.len(), 15, "{codes:?}");
 }
 
 #[test]
@@ -124,6 +125,15 @@ impl Fixture {
 
     /// Loading no key for a client until `settled` is.
     fn waiting_for(chain: Chain, settled: Settled) -> Self {
+        Self::build(chain, settled, KeyPolicy::default())
+    }
+
+    /// Admitting only the keys `policy` admits.
+    fn with_policy(chain: Chain, policy: KeyPolicy) -> Self {
+        Self::build(chain, Settled::now(), policy)
+    }
+
+    fn build(chain: Chain, settled: Settled, policy: KeyPolicy) -> Self {
         let sim = SimChain::new(chain);
         let cache = BoxCache::new(1 << 20);
         let loader = Arc::new(Loader::new(sim.clone(), Default::default()).seeding(cache.clone()));
@@ -138,6 +148,7 @@ impl Fixture {
             .waiting_for(settled),
             balances: Balances::new(sim.clone(), Default::default()),
             network: Network::Mainnet,
+            policy,
             synced: follower.synced(),
         });
         let router = router(api.clone());
@@ -378,6 +389,30 @@ async fn bad_requests_are_refused_with_their_code() {
     // The first value of a repeated name counts.
     f.ok(&format!("{boxes}?limit=1&limit=ten")).await;
     f.ok(&format!("{boxes}?limit=1000")).await;
+}
+
+/// Every route that takes a key goes through the policy, and a refused key costs no node
+/// call.
+#[tokio::test(start_paused = true)]
+async fn every_route_refuses_a_key_the_policy_does_not_admit() {
+    let chain = Chain::new(SimConfig::default());
+    let denied = address::Address::from_ergo_tree(chain.trees()[0].clone(), Network::Mainnet);
+    let policy = KeyPolicy::new(None, [&denied], Some(&[]), &[]);
+    let mut f = Fixture::with_policy(chain, policy);
+    f.tick();
+    let calls = f.sim.calls().len();
+    for uri in [
+        format!("/v1/addresses/{}/boxes", f.address(0)),
+        format!("/v1/addresses/{}/balance", f.address(0)),
+        format!("/v1/tokens/{}/boxes", token_id("small-100")),
+    ] {
+        assert_eq!(f.error(&uri, StatusCode::FORBIDDEN).await, "key_not_allowed", "{uri}");
+    }
+    assert_eq!(f.sim.calls().len(), calls, "no node call");
+
+    f.ok(&format!("/v1/addresses/{}/boxes", f.address(1))).await;
+    f.ok(&format!("/v1/addresses/{}/balance", f.address(1)))
+        .await;
 }
 
 #[tokio::test]

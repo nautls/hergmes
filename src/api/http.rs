@@ -20,7 +20,7 @@ use tracing::{debug, warn};
 use crate::{
     adapters::{EngineHandle, engine_tip},
     api::{
-        ApiError, Balances, Pages,
+        ApiError, Balances, KeyPolicy, Pages,
         keys::{address_key, token_key},
         wire::{BalanceBody, ErrorBody, PageBody, StatusBody},
     },
@@ -43,6 +43,8 @@ pub struct Api<S, E> {
     pub balances: Balances<S>,
     /// The node's network: addresses of another one are refused.
     pub network: Network,
+    /// The keys clients may name.
+    pub policy: KeyPolicy,
     /// Whether the follower's last tick left the engine at the node's tip.
     pub synced: watch::Receiver<bool>,
 }
@@ -93,7 +95,7 @@ async fn address_boxes<S: NodeSource, E: EngineHandle>(
     params: Params,
 ) -> Result<Response, ApiError> {
     let address = address.map_err(|e| ApiError::InvalidAddress(e.body_text()))?;
-    let key = address_key(&address, api.network)?;
+    let key = address_key(&address, api.network, &api.policy)?;
     page(&api, &key, &params).await
 }
 
@@ -103,7 +105,7 @@ async fn token_boxes<S: NodeSource, E: EngineHandle>(
     params: Params,
 ) -> Result<Response, ApiError> {
     let token_id = token_id.map_err(|_| ApiError::InvalidTokenId)?;
-    let key = token_key(&token_id)?;
+    let key = token_key(&token_id, &api.policy)?;
     page(&api, &key, &params).await
 }
 
@@ -125,7 +127,7 @@ async fn address_balance<S: NodeSource, E: EngineHandle>(
     address: Result<Path<String>, PathRejection>,
 ) -> Result<Response, ApiError> {
     let address = address.map_err(|e| ApiError::InvalidAddress(e.body_text()))?;
-    let TrackingKey::Tree(tree) = address_key(&address, api.network)? else {
+    let TrackingKey::Tree(tree) = address_key(&address, api.network, &api.policy)? else {
         unreachable!("an address's key is its tree")
     };
     let balance = api.balances.balance(&api.engine, &tree).await?;
@@ -151,6 +153,7 @@ impl ApiError {
             | Self::InvalidTokenId
             | Self::InvalidCursor(_)
             | Self::InvalidLimit => StatusCode::BAD_REQUEST,
+            Self::KeyNotAllowed => StatusCode::FORBIDDEN,
             Self::UnknownToken => StatusCode::NOT_FOUND,
             Self::CursorExpired => StatusCode::GONE,
             Self::SupplyTooLarge { .. } | Self::TooManyBoxes { .. } => {
@@ -177,6 +180,7 @@ impl ApiError {
             | Self::InvalidTokenId
             | Self::InvalidCursor(_)
             | Self::InvalidLimit
+            | Self::KeyNotAllowed
             | Self::UnknownToken
             | Self::CursorExpired
             | Self::SupplyTooLarge { .. }

@@ -1,7 +1,10 @@
 //! Tracking keys from what clients send: an address, or a token id.
+//!
+//! Every route that takes a key gets it here, so the operator's [`KeyPolicy`] covers all of
+//! them, and a refused key costs no node call.
 
 use crate::{
-    api::ApiError,
+    api::{ApiError, policy::KeyPolicy},
     engine::TrackingKey,
     types::{
         address::{Address, Network},
@@ -10,18 +13,29 @@ use crate::{
 };
 
 /// An address's key, its ErgoTree, for an address of the node's network only
-/// ([`Address::check_network`]).
-pub fn address_key(address: &str, network: Network) -> Result<TrackingKey, ApiError> {
+/// ([`Address::check_network`]) that the policy admits.
+pub fn address_key(
+    address: &str,
+    network: Network,
+    policy: &KeyPolicy,
+) -> Result<TrackingKey, ApiError> {
     let address = Address::decode(address)
         .and_then(|a| a.check_network(network).map(|()| a))
         .map_err(|e| ApiError::InvalidAddress(e.to_string()))?;
-    Ok(TrackingKey::Tree(address.into_ergo_tree()))
+    admitted(TrackingKey::Tree(address.into_ergo_tree()), policy)
 }
 
-/// A token's key. The id is 64 hex characters, in either case.
-pub fn token_key(id: &str) -> Result<TrackingKey, ApiError> {
+/// A token's key, if the policy admits it. The id is 64 hex characters, in either case.
+pub fn token_key(id: &str, policy: &KeyPolicy) -> Result<TrackingKey, ApiError> {
     let id: TokenId = id.parse().map_err(|_| ApiError::InvalidTokenId)?;
-    Ok(TrackingKey::Token(id))
+    admitted(TrackingKey::Token(id), policy)
+}
+
+fn admitted(key: TrackingKey, policy: &KeyPolicy) -> Result<TrackingKey, ApiError> {
+    if !policy.admits(&key) {
+        return Err(ApiError::KeyNotAllowed);
+    }
+    Ok(key)
 }
 
 #[cfg(test)]

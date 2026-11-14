@@ -50,6 +50,7 @@ async fn run() -> Result<(), AppError> {
         .expect("Failed to build HTTP client");
     let node = NodeClient::connect(http_client, &config.node_url).await?;
     let keys = config.tracked_keys(node.network())?;
+    let policy = config.key_policy(node.network(), &keys)?;
 
     let (engine, mut engine_task) = runtime::spawn(Engine::new(config.engine));
     // Seeded by every first load, and read by the box fetcher to fill in pages.
@@ -81,6 +82,7 @@ async fn run() -> Result<(), AppError> {
             .waiting_for(settled),
         balances: Balances::new(node.clone(), Default::default()),
         network: node.network(),
+        policy,
         synced,
     });
     let mut server = tokio::spawn(axum::serve(listener, http::router(api)).into_future());

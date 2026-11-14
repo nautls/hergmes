@@ -1,11 +1,13 @@
 use std::collections::HashMap;
 
 use super::*;
+use crate::types::address::AddressType;
 
 const MAINNET: &str = "9fRusAarL1KkrWQVsxSRVYnvWxaAT2A96cKtNn9tvPh5XUyCisr";
 const MAINNET_TREE: &str =
     "0008cd0278011ec0cf5feb92d61adb51dcb75876627ace6fd9446ab4cabc5313ab7b39a7";
 const FEE_TESTNET: &str = "Bf1X9JgQTUtgntaer91B24n6kP8L2kqEiQqNf1z97BKo9UbnW3WRP9VXu8BXd1LsYCiYbHJEdWKxkF5YNx5n7m31wsDjbEuB3B13ZMDVBWkepGmWfGa71otpFViHDCuvbw1uNicAQnfuWfnj8fbCa4";
+const FEE_MAINNET: &str = "2iHkR7CWvD1R4j1yZg5bkeDRQavjAaVPeTDFGGLZduHyfWMuYpmhHocX8GJoaieTx78FntzJbCBVL6rf96ocJoZdmWBL2fci7NqWgAirppPQmZ7fN9V6z13Ay6brPriBKYqLp1bT2Fk4FkFLCfdPpe";
 const NFT: &str = "20fa2bf23962cdf51b07722d6237c0c7b8a44f78856c0f7ec308dc1ef1a92a51";
 const TOKEN: &str = "8c27dd9d8a35aac1e3167d58858c0a8b4059b277da790552e37eba22df9b9035";
 
@@ -35,6 +37,9 @@ fn only_the_node_url_is_required() {
     assert_eq!(config.engine.max_tracked_boxes, 2_000_000);
     assert_eq!(config.token_supply_limit, SUPPLY_LIMIT);
     assert!(config.track_addresses.is_empty() && config.track_tokens.is_empty());
+    assert_eq!(config.allow_addresses, None, "every address");
+    assert!(config.deny_addresses.is_empty());
+    assert_eq!(config.allow_tokens, None, "every token within the supply limit");
     assert_eq!(config.box_cache_bytes, 128 * 1024 * 1024);
     assert_eq!(config.listen_addr.to_string(), "127.0.0.1:8080", "loopback until chosen");
 
@@ -54,6 +59,9 @@ fn every_setting_is_read() {
         (vars::TOKEN_SUPPLY_LIMIT, "7"),
         (vars::TRACK_ADDRESSES, &format!(" {MAINNET} ,")),
         (vars::TRACK_TOKENS, &format!("{NFT},{TOKEN}")),
+        (vars::ALLOW_ADDRESSES, &format!("p2pk, P2SH,{MAINNET}")),
+        (vars::DENY_ADDRESSES, FEE_MAINNET),
+        (vars::ALLOW_TOKENS, &format!("{TOKEN},")),
         (vars::BOX_CACHE_MB, "3"),
         (vars::MAX_BOXES_PER_KEY, "40"),
         (vars::MAX_TRACKED_BOXES, "900"),
@@ -67,6 +75,16 @@ fn every_setting_is_read() {
     assert_eq!(config.token_supply_limit, 7);
     assert_eq!(config.track_addresses, vec![Address::decode(MAINNET).unwrap()]);
     assert_eq!(config.track_tokens, vec![NFT.parse().unwrap(), TOKEN.parse().unwrap()]);
+    assert_eq!(
+        config.allow_addresses,
+        Some(vec![
+            AddressRule::Class(AddressType::P2PK),
+            AddressRule::Class(AddressType::P2SH),
+            AddressRule::Address(Address::decode(MAINNET).unwrap()),
+        ])
+    );
+    assert_eq!(config.deny_addresses, vec![Address::decode(FEE_MAINNET).unwrap()]);
+    assert_eq!(config.allow_tokens, Some(vec![TOKEN.parse().unwrap()]));
     assert_eq!(config.box_cache_bytes, 3 * 1024 * 1024);
     assert_eq!(config.listen_addr.to_string(), "0.0.0.0:9000");
 }
@@ -89,6 +107,14 @@ fn bad_values_name_their_variable() {
         (vars::TOKEN_SUPPLY_LIMIT, "lots"),
         (vars::TRACK_ADDRESSES, "9fRusAarL1KkrWQVsxSRVYnvWxaAT2A96cKtNn9tvPh5XUyCisR"),
         (vars::TRACK_TOKENS, "abcd"),
+        (vars::ALLOW_ADDRESSES, "p2pkh"),
+        (vars::ALLOW_ADDRESSES, ","),
+        (vars::ALLOW_ADDRESSES, "none,p2pk"),
+        (vars::DENY_ADDRESSES, "p2s"),
+        (vars::DENY_ADDRESSES, "none"),
+        (vars::ALLOW_TOKENS, "abcd"),
+        (vars::ALLOW_TOKENS, " , "),
+        (vars::ALLOW_TOKENS, &format!("{NFT},NONE")),
         (vars::BOX_CACHE_MB, "-1"),
         (vars::BOX_CACHE_MB, "18446744073709551615"),
         (vars::MAX_BOXES_PER_KEY, "0"),
@@ -128,4 +154,77 @@ fn tracked_keys_are_trees_and_tokens_on_the_node_network() {
             .unwrap();
     assert!(testnet.tracked_keys(Network::Mainnet).is_err());
     assert_eq!(testnet.tracked_keys(Network::Testnet).unwrap().len(), 1);
+}
+
+#[test]
+fn none_allows_nothing() {
+    let config = config(&[
+        (vars::NODE_URL, "http://node"),
+        (vars::ALLOW_ADDRESSES, " None "),
+        (vars::ALLOW_TOKENS, "none"),
+    ])
+    .unwrap();
+    assert_eq!(config.allow_addresses, Some(vec![]));
+    assert_eq!(config.allow_tokens, Some(vec![]));
+}
+
+#[test]
+fn the_key_policy_admits_the_configured_keys_and_follows_the_rules() {
+    let config = config(&[
+        (vars::NODE_URL, "http://node"),
+        (vars::TRACK_ADDRESSES, FEE_MAINNET),
+        (vars::TRACK_TOKENS, NFT),
+        (vars::ALLOW_ADDRESSES, "p2sh"),
+        (vars::DENY_ADDRESSES, MAINNET),
+        (vars::ALLOW_TOKENS, "none"),
+    ])
+    .unwrap();
+    let keys = config.tracked_keys(Network::Mainnet).unwrap();
+    let policy = config.key_policy(Network::Mainnet, &keys).unwrap();
+    for key in &keys {
+        assert!(policy.admits(key), "{key:?} is configured");
+    }
+    let p2pk = TrackingKey::Tree(crate::types::HexBytes(hex::decode(MAINNET_TREE).unwrap()));
+    assert!(!policy.admits(&p2pk), "denied");
+    assert!(!policy.admits(&TrackingKey::Token(TOKEN.parse().unwrap())), "no token listed");
+}
+
+#[test]
+fn listed_addresses_must_be_on_the_node_network() {
+    for var in [vars::ALLOW_ADDRESSES, vars::DENY_ADDRESSES] {
+        let config = config(&[(vars::NODE_URL, "http://node"), (var, FEE_TESTNET)]).unwrap();
+        assert!(config.key_policy(Network::Testnet, &[]).is_ok(), "{var}");
+        let wrong = config.key_policy(Network::Mainnet, &[]);
+        assert!(matches!(wrong, Err(ConfigError::Invalid { var: v, .. }) if v == var), "{var}");
+    }
+    let class = config(&[(vars::NODE_URL, "http://node"), (vars::ALLOW_ADDRESSES, "p2s")]);
+    assert!(class.unwrap().key_policy(Network::Testnet, &[]).is_ok(), "a class has no network");
+}
+
+/// A deny rule naming a configured address is a typo or a conflict, so it stops startup,
+/// even when the two name the tree through different encodings.
+#[test]
+fn denying_a_configured_address_stops_startup() {
+    let p2pk_tree = hex::decode(MAINNET_TREE).unwrap();
+    let mut bytes = vec![0x03];
+    bytes.extend(&p2pk_tree);
+    let checksum = <blake2::Blake2b256 as blake2::Digest>::digest(&bytes);
+    bytes.extend_from_slice(&checksum[..4]);
+    let as_p2s = bs58::encode(bytes).into_string();
+
+    for denied in [MAINNET, as_p2s.as_str()] {
+        let config = config(&[
+            (vars::NODE_URL, "http://node"),
+            (vars::TRACK_ADDRESSES, MAINNET),
+            (vars::DENY_ADDRESSES, &format!("{FEE_MAINNET},{denied}")),
+        ])
+        .unwrap();
+        let keys = config.tracked_keys(Network::Mainnet).unwrap();
+        let error = config.key_policy(Network::Mainnet, &keys).unwrap_err();
+        assert!(
+            matches!(&error, ConfigError::Invalid { var: vars::DENY_ADDRESSES, reason }
+                if reason.contains(vars::TRACK_ADDRESSES)),
+            "{denied}: {error}"
+        );
+    }
 }

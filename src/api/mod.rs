@@ -19,11 +19,13 @@ pub mod cursor;
 pub mod http;
 pub mod keys;
 pub mod pages;
+pub mod policy;
 pub mod wire;
 
 pub use balances::{AddressBalance, Balances};
 pub use cursor::Cursor;
 pub use pages::{BoxPage, PagedBox, Pages};
+pub use policy::KeyPolicy;
 
 /// Why a request failed, one variant per error code (DESIGN.md, "Errors"). The code is for
 /// programs, the message for people.
@@ -41,6 +43,9 @@ pub enum ApiError {
     InvalidCursor(cursor::CursorError),
     #[error("limit must be between 1 and {}", pages::MAX_LIMIT)]
     InvalidLimit,
+    /// The operator's key policy refuses the key; permanent for the key.
+    #[error("this relay does not serve this key")]
+    KeyNotAllowed,
     #[error("the indexer does not know this token")]
     UnknownToken,
     #[error("the cursor's block is no longer served; start the snapshot again")]
@@ -75,6 +80,7 @@ impl ApiError {
             Self::InvalidTokenId => "invalid_token_id",
             Self::InvalidCursor(_) => "invalid_cursor",
             Self::InvalidLimit => "invalid_limit",
+            Self::KeyNotAllowed => "key_not_allowed",
             Self::UnknownToken => "unknown_token",
             Self::CursorExpired => "cursor_expired",
             Self::SupplyTooLarge { .. } => "supply_too_large",

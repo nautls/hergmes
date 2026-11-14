@@ -60,7 +60,8 @@ pub enum AddressType {
 }
 
 impl AddressType {
-    fn of_tree(tree: &[u8]) -> Self {
+    /// The type of a tree, by pattern: what the tree is, whatever address it came from.
+    pub fn of_tree(tree: &[u8]) -> Self {
         if tree.len() == P2PK_TREE_LENGTH && tree.starts_with(&P2PK_TREE_PREFIX) {
             AddressType::P2PK
         } else if tree.len() == P2SH_TREE_LENGTH

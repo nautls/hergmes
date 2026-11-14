@@ -13,6 +13,7 @@ use std::{
 
 use crate::{
     adapters::{follower, loader, mempool, tokens::SUPPLY_LIMIT},
+    api::policy::{AddressRule, KeyPolicy},
     engine::{self, TrackingKey},
     types::{
         address::{Address, Network},
@@ -38,6 +39,14 @@ pub mod vars {
     pub const TRACK_ADDRESSES: &str = "HERGMES_TRACK_ADDRESSES";
     /// Token ids tracked for the life of the process, comma-separated.
     pub const TRACK_TOKENS: &str = "HERGMES_TRACK_TOKENS";
+    /// The addresses clients may name: `p2pk`, `p2sh`, `p2s` or addresses, comma-separated,
+    /// or `none`. Unset allows every address.
+    pub const ALLOW_ADDRESSES: &str = "HERGMES_ALLOW_ADDRESSES";
+    /// Addresses clients may not name, comma-separated. Deny wins over allow.
+    pub const DENY_ADDRESSES: &str = "HERGMES_DENY_ADDRESSES";
+    /// The token ids clients may name, comma-separated, or `none`. Unset allows any token
+    /// within the supply limit.
+    pub const ALLOW_TOKENS: &str = "HERGMES_ALLOW_TOKENS";
     /// The box cache's budget, in MiB. 0 disables the cache.
     pub const BOX_CACHE_MB: &str = "HERGMES_BOX_CACHE_MB";
     /// The most boxes a key can have when it is loaded.
@@ -65,6 +74,11 @@ pub struct Config {
     /// Addresses tracked from the start, checked against the node's network once it is known.
     pub track_addresses: Vec<Address>,
     pub track_tokens: Vec<TokenId>,
+    /// The address allowlist; `None` when unset, empty for `none`.
+    pub allow_addresses: Option<Vec<AddressRule>>,
+    pub deny_addresses: Vec<Address>,
+    /// The token allowlist; `None` when unset, empty for `none`.
+    pub allow_tokens: Option<Vec<TokenId>>,
     /// The box cache's budget in bytes, read in MiB; 0 disables the cache.
     pub box_cache_bytes: u64,
     pub listen_addr: SocketAddr,
@@ -137,12 +151,13 @@ impl Config {
                 get(vars::TOKEN_SUPPLY_LIMIT),
                 SUPPLY_LIMIT,
             )?,
-            track_addresses: list(vars::TRACK_ADDRESSES, get(vars::TRACK_ADDRESSES), |a| {
-                Address::decode(a).map_err(|e| e.to_string())
+            track_addresses: list(vars::TRACK_ADDRESSES, get(vars::TRACK_ADDRESSES), address)?,
+            track_tokens: list(vars::TRACK_TOKENS, get(vars::TRACK_TOKENS), token_id)?,
+            allow_addresses: allowlist(vars::ALLOW_ADDRESSES, get(vars::ALLOW_ADDRESSES), |a| {
+                AddressRule::parse(a).map_err(|e| e.to_string())
             })?,
-            track_tokens: list(vars::TRACK_TOKENS, get(vars::TRACK_TOKENS), |t| {
-                t.parse::<TokenId>().map_err(|e| e.to_string())
-            })?,
+            deny_addresses: list(vars::DENY_ADDRESSES, get(vars::DENY_ADDRESSES), address)?,
+            allow_tokens: allowlist(vars::ALLOW_TOKENS, get(vars::ALLOW_TOKENS), token_id)?,
             box_cache_bytes,
             listen_addr: number(vars::LISTEN_ADDR, get(vars::LISTEN_ADDR), LISTEN_ADDR)?,
         })
@@ -163,6 +178,55 @@ impl Config {
         keys.dedup();
         Ok(keys)
     }
+
+    /// The key policy, admitting the configured `keys` ([`Config::tracked_keys`]) always.
+    /// Fails if a listed address is for another network than the node's, or if a deny rule
+    /// names a configured address: that is a typo or a conflict, better seen at startup than
+    /// as refused requests.
+    pub fn key_policy(
+        &self,
+        network: Network,
+        keys: &[TrackingKey],
+    ) -> Result<KeyPolicy, ConfigError> {
+        let allowed = self
+            .allow_addresses
+            .iter()
+            .flatten()
+            .filter_map(|rule| match rule {
+                AddressRule::Address(address) => Some(address),
+                AddressRule::Class(_) => None,
+            });
+        for address in allowed {
+            address
+                .check_network(network)
+                .map_err(|e| invalid(vars::ALLOW_ADDRESSES, &format!("{address}: {e}")))?;
+        }
+        for address in &self.deny_addresses {
+            address
+                .check_network(network)
+                .map_err(|e| invalid(vars::DENY_ADDRESSES, &format!("{address}: {e}")))?;
+            if keys.contains(&TrackingKey::Tree(address.ergo_tree().clone())) {
+                return Err(invalid(
+                    vars::DENY_ADDRESSES,
+                    &format!("{address} is tracked through {}", vars::TRACK_ADDRESSES),
+                ));
+            }
+        }
+        Ok(KeyPolicy::new(
+            self.allow_addresses.as_deref(),
+            &self.deny_addresses,
+            self.allow_tokens.as_deref(),
+            keys,
+        ))
+    }
+}
+
+fn address(entry: &str) -> Result<Address, String> {
+    Address::decode(entry).map_err(|e| e.to_string())
+}
+
+fn token_id(entry: &str) -> Result<TokenId, String> {
+    entry.parse::<TokenId>().map_err(|e| e.to_string())
 }
 
 fn invalid(var: &'static str, reason: &str) -> ConfigError {
@@ -223,6 +287,30 @@ fn list<T>(
         .filter(|v| !v.is_empty())
         .map(|v| parse(v).map_err(|e| invalid(var, &format!("{v:?}: {e}"))))
         .collect()
+}
+
+/// An allowlist: `None` when unset, which allows everything, and empty for `none`. `none`
+/// alone is the only way to allow nothing, so a list that is only commas is refused rather
+/// than read as `none`.
+fn allowlist<T>(
+    var: &'static str,
+    value: Option<String>,
+    parse: impl Fn(&str) -> Result<T, String>,
+) -> Result<Option<Vec<T>>, ConfigError> {
+    let Some(value) = value else { return Ok(None) };
+    if value.eq_ignore_ascii_case("none") {
+        return Ok(Some(Vec::new()));
+    }
+    let entries = list(var, Some(value), |entry| {
+        if entry.eq_ignore_ascii_case("none") {
+            return Err("`none` can't be combined with other entries".to_owned());
+        }
+        parse(entry)
+    })?;
+    if entries.is_empty() {
+        return Err(invalid(var, "no entries; use `none` to allow nothing"));
+    }
+    Ok(Some(entries))
 }
 
 #[cfg(test)]
