@@ -32,6 +32,9 @@ pub struct BoxCache {
     /// a capacity of 0.
     cache: Option<Cache<BoxId, Arc<UTxO>>>,
     budget: u64,
+    /// Inserts made, for tests that check what is written.
+    #[cfg(test)]
+    inserts: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl BoxCache {
@@ -45,7 +48,12 @@ impl BoxCache {
                 .eviction_policy(EvictionPolicy::lru())
                 .build()
         });
-        Self { cache, budget }
+        Self {
+            cache,
+            budget,
+            #[cfg(test)]
+            inserts: Default::default(),
+        }
     }
 
     /// A cache that holds nothing.
@@ -60,6 +68,9 @@ impl BoxCache {
     /// Caches `b`, unless it alone is larger than the budget.
     pub fn insert(&self, b: Arc<UTxO>) {
         let Some(cache) = &self.cache else { return };
+        #[cfg(test)]
+        self.inserts
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         if u64::from(weight(&b)) <= self.budget {
             cache.insert(b.id, b);
         }
@@ -74,6 +85,12 @@ impl BoxCache {
         if let Some(cache) = &self.cache {
             cache.run_pending_tasks();
         }
+    }
+
+    /// The inserts made so far, cached or refused for size.
+    #[cfg(test)]
+    pub fn inserts(&self) -> usize {
+        self.inserts.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// The cached boxes, in no order.

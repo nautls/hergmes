@@ -70,7 +70,8 @@ fn each_box_comes_from_the_first_source_that_has_it() {
     let unknown = crate::sim::testing::digest(250);
 
     let sim = SimChain::new(chain);
-    let fetcher = BoxFetcher::new(sim.clone(), cache());
+    let cache = cache();
+    let fetcher = BoxFetcher::new(sim.clone(), cache.clone());
     let wanted = [in_ring, unspent, spent_elsewhere, pending, unknown, unspent];
     let boxes = ready(fetcher.fetch(&engine, &wanted)).unwrap();
     assert_eq!(
@@ -86,12 +87,27 @@ fn each_box_comes_from_the_first_source_that_has_it() {
         (calls(&sim, Endpoint::BoxesWithPool), calls(&sim, Endpoint::IndexedBox));
     assert_eq!((with_pool, indexed), (1, 2), "the spent box and the unknown id");
 
-    // Everything found is cached: no node call the second time.
+    assert_eq!(cache.inserts(), 4, "each box found, once");
+
+    // Everything found is cached: no node call the second time, and no hit written again.
     let before = sim.calls().len();
     let again =
         ready(fetcher.fetch(&engine, &[in_ring, unspent, spent_elsewhere, pending])).unwrap();
     assert!(again.iter().all(Option::is_some));
     assert_eq!(sim.calls().len(), before);
+    assert_eq!(cache.inserts(), 4, "hits are not written again");
+
+    // Hits and a box from the node: only the new one is written.
+    let other = sim
+        .lock()
+        .utxo()
+        .values()
+        .map(|b| b.id)
+        .find(|id| *id != unspent)
+        .unwrap();
+    let mixed = ready(fetcher.fetch(&engine, &[unspent, other, in_ring])).unwrap();
+    assert_eq!(ids(&mixed), [Some(unspent), Some(other), Some(in_ring)]);
+    assert_eq!(cache.inserts(), 5);
 }
 
 #[test]

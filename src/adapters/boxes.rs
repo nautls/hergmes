@@ -46,15 +46,18 @@ impl<S: NodeSource> BoxFetcher<S> {
         engine: &impl EngineHandle,
         ids: &[BoxId],
     ) -> Result<Vec<Option<Arc<UTxO>>>, AdapterError> {
-        let mut found: HashMap<BoxId, Arc<UTxO>> = HashMap::new();
+        let mut hits: HashMap<BoxId, Arc<UTxO>> = HashMap::new();
         for id in ids {
             if let Some(b) = self.cache.get(id) {
-                found.insert(*id, b);
+                hits.insert(*id, b);
             }
         }
-        let cached = found.len();
-        let mut missing = missing(ids, &found);
+        let mut missing = missing(ids, &hits);
 
+        // Boxes from the other sources, which are the only ones cached: a hit is not
+        // written again, since `get` already marked it used, and an insert would weigh it
+        // and queue a write for moka's housekeeping.
+        let mut found: HashMap<BoxId, Arc<UTxO>> = HashMap::new();
         if !missing.is_empty() {
             match engine.query(Query::Boxes(missing.clone())).await? {
                 Reply::Boxes(boxes) => found.extend(boxes.into_iter().map(|b| (b.id, b))),
@@ -62,26 +65,28 @@ impl<S: NodeSource> BoxFetcher<S> {
             }
             missing = self::missing(&missing, &found);
         }
-        let from_ring = found.len() - cached;
+        let from_ring = found.len();
 
         for chunk in missing.chunks(self.chunk) {
             let boxes = self.source.boxes_with_pool(chunk).await?;
             found.extend(boxes.into_iter().map(|b| (b.id, Arc::new(b))));
         }
         missing = self::missing(&missing, &found);
-        let from_node = found.len() - cached - from_ring;
+        let from_node = found.len() - from_ring;
 
         for id in &missing {
             if let Some(b) = self.source.indexed_box(id).await? {
                 found.insert(*id, Arc::new(b.utxo));
             }
         }
-        let from_indexer = found.len() - cached - from_ring - from_node;
+        let from_indexer = found.len() - from_ring - from_node;
+        let cached = hits.len();
         debug!(ids = ids.len(), cached, from_ring, from_node, from_indexer, "Boxes fetched");
 
         for b in found.values() {
             self.cache.insert(b.clone());
         }
+        found.extend(hits);
         Ok(ids.iter().map(|id| found.get(id).cloned()).collect())
     }
 }
