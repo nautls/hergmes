@@ -1171,7 +1171,14 @@ async fn the_server_pings_and_drops_a_client_that_stays_silent() {
     }
     sleep(PING_INTERVAL).await;
     client.texts().await;
-    assert!(client.closed.is_some(), "dropped at the ping after two unanswered");
+    let (code, _) = client
+        .closed
+        .clone()
+        .expect("closed at the ping after two unanswered");
+    assert_eq!(code, Some(close_code::POLICY));
+    // Silent, it never answers the close either: dropped once the wait for its answer ends.
+    assert!(!client.server.is_finished(), "waiting for the client's close");
+    sleep(CLOSE_TIMEOUT + Duration::from_secs(1)).await;
     assert!(client.server.is_finished());
 }
 

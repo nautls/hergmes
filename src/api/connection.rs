@@ -14,7 +14,7 @@ use axum::extract::ws::{CloseFrame, Message, close_code};
 use tokio::{
     sync::mpsc,
     task::{AbortHandle, JoinError, JoinSet},
-    time::{Instant, MissedTickBehavior, interval_at, timeout},
+    time::{Instant, MissedTickBehavior, interval_at, sleep, timeout},
 };
 use tokio_stream::{StreamExt, StreamMap, StreamNotifyClose, wrappers::ReceiverStream};
 use tracing::{debug, error, warn};
@@ -26,7 +26,8 @@ use crate::{
         http::Api,
         protocol::{self, ClientKey, ClientMessage, Reject, ServerMessage, SubscribeId},
         ws::{
-            Config, MISSED_PINGS, PING_INTERVAL, RecvError, SINK_CAPACITY, Socket, WRITE_TIMEOUT,
+            CLOSE_TIMEOUT, Config, MISSED_PINGS, PING_INTERVAL, RecvError, SINK_CAPACITY, Socket,
+            WRITE_TIMEOUT,
         },
     },
     clients::NodeSource,
@@ -171,7 +172,12 @@ impl<S: NodeSource + 'static, K: Socket> Connection<S, K> {
         let message = match read {
             None | Some(Err(RecvError::Broken)) => return Err(End::Left),
             Some(Err(RecvError::TooLarge)) => {
-                self.close_with(close_code::SIZE, "message too big").await;
+                // The failed read ended tungstenite's stream, so the rest of the message can't
+                // be drained and the drop resets the socket. Held a while first, so the client
+                // reads the close frame before the reset can discard it.
+                if self.send_close(close_code::SIZE, "message too big").await {
+                    sleep(CLOSE_TIMEOUT).await;
+                }
                 return Err(End::TooLarge);
             }
             Some(Ok(message)) => message,
@@ -193,7 +199,11 @@ impl<S: NodeSource + 'static, K: Socket> Connection<S, K> {
             }
             // tungstenite answers pings itself.
             Message::Ping(_) | Message::Pong(_) => Ok(()),
-            Message::Close(_) => Err(End::Left),
+            Message::Close(_) => {
+                // tungstenite has queued the reply, and the next read sends it.
+                self.drain().await;
+                Err(End::Left)
+            }
         }
     }
 
@@ -362,6 +372,8 @@ impl<S: NodeSource + 'static, K: Socket> Connection<S, K> {
 
     async fn on_ping(&mut self) -> Step {
         if self.unanswered >= MISSED_PINGS {
+            self.close_with(close_code::POLICY, "pings unanswered")
+                .await;
             return Err(End::Idle);
         }
         self.unanswered += 1;
@@ -394,11 +406,30 @@ impl<S: NodeSource + 'static, K: Socket> Connection<S, K> {
         }
     }
 
-    /// Sends a close frame, if the socket takes it; the connection ends either way.
+    /// Closes the connection with a reason: sends a close frame, if the socket takes it, then
+    /// waits for the client's. The connection ends either way.
     async fn close_with(&mut self, code: u16, reason: &str) {
+        if self.send_close(code, reason).await {
+            self.drain().await;
+        }
+    }
+
+    /// Sends a close frame, and tells whether the socket took it.
+    async fn send_close(&mut self, code: u16, reason: &str) -> bool {
         let reason = truncate(reason, MAX_CLOSE_REASON);
         let frame = CloseFrame { code, reason: reason.into() };
-        let _ = self.send(Message::Close(Some(frame))).await;
+        self.send(Message::Close(Some(frame))).await.is_ok()
+    }
+
+    /// Reads, discarding, until the client's side ends, for at most [`CLOSE_TIMEOUT`]. A read is
+    /// what sends tungstenite's reply to a client's close frame, and the end of the stream is
+    /// the client's reply to ours. A socket dropped with the client's messages still unread is
+    /// reset, and a reset can discard the close frame before the client reads it: its reason
+    /// is lost, and the client sees code 1006.
+    async fn drain(&mut self) {
+        let _ =
+            timeout(CLOSE_TIMEOUT, async { while let Some(Ok(_)) = self.socket.recv().await {} })
+                .await;
     }
 }
 

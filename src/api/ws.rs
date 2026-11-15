@@ -38,6 +38,9 @@ pub const PING_INTERVAL: Duration = Duration::from_secs(30);
 /// until TCP gives up. Counted in pings, not time, because no ping goes out while a write
 /// waits on a slow link: a client draining a long catch-up has had nothing to answer.
 pub const MISSED_PINGS: u32 = 2;
+/// How long a closing connection waits for the client's half of the close handshake before it
+/// drops the socket. A client that never answers is gone or broken, and is dropped anyway.
+pub const CLOSE_TIMEOUT: Duration = Duration::from_secs(5);
 /// The largest message or frame a client may send. The longest valid one, a subscribe with a
 /// P2S address of about 5,600 characters and a `from`, is about 6 KB.
 pub const MAX_MESSAGE: usize = 16 * 1024;
