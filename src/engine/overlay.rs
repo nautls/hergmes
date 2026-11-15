@@ -15,7 +15,7 @@ use crate::{
     engine::{PendingTx, TrackingKey},
     types::{
         Digest, HashDigest,
-        ergo::{BoxId, TokenId, TxId, UTxO, UnconfirmedTransaction},
+        ergo::{BoxAssets, BoxId, ErgoTree, Token, TokenId, TxId, UTxO, UnconfirmedTransaction},
     },
 };
 
@@ -158,12 +158,86 @@ pub struct PendingDelta {
 
 impl PendingDelta {
     /// Adds `sign` times a box's ERG and tokens.
-    fn add(&mut self, utxo: &UTxO, sign: i128) {
-        self.nano_ergs += sign * i128::from(utxo.value);
-        for token in &utxo.tokens {
+    fn add(&mut self, b: &impl Assets, sign: i128) {
+        self.nano_ergs += sign * i128::from(b.value());
+        for token in b.tokens() {
             *self.tokens.entry(token.id).or_default() += sign * i128::from(token.amount);
         }
     }
+}
+
+/// What a box is guarded by and holds: all a delta reads. A pending tx carries full boxes,
+/// a confirmed one from the indexer's history only these.
+pub trait Assets {
+    fn ergo_tree(&self) -> &ErgoTree;
+    fn value(&self) -> u64;
+    fn tokens(&self) -> &[Token];
+}
+
+impl Assets for UTxO {
+    fn ergo_tree(&self) -> &ErgoTree {
+        &self.ergo_tree
+    }
+    fn value(&self) -> u64 {
+        self.value
+    }
+    fn tokens(&self) -> &[Token] {
+        &self.tokens
+    }
+}
+
+impl Assets for BoxAssets {
+    fn ergo_tree(&self) -> &ErgoTree {
+        &self.ergo_tree
+    }
+    fn value(&self) -> u64 {
+        self.value
+    }
+    fn tokens(&self) -> &[Token] {
+        &self.tokens
+    }
+}
+
+/// One tx's net change for the address guarded by `tree`, per asset: what its outputs pay to
+/// the tree minus what its inputs take from it, as a history lists it (DESIGN.md,
+/// "Transaction history"). Change returned to the address nets off. `None` if the tx neither
+/// spends from nor pays to the tree; a tx that does both evenly is an empty delta.
+pub fn tx_delta<B: Assets>(tree: &ErgoTree, inputs: &[B], outputs: &[B]) -> Option<PendingDelta> {
+    let mut delta = PendingDelta::default();
+    let mut touched = false;
+    for (boxes, sign) in [(outputs, 1), (inputs, -1)] {
+        for b in boxes.iter().filter(|b| b.ergo_tree() == tree) {
+            delta.add(b, sign);
+            touched = true;
+        }
+    }
+    delta.tokens.retain(|_, amount| *amount != 0);
+    touched.then_some(delta)
+}
+
+/// A pending tx as an address's history lists it: its id and its net change for the address.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TxDelta {
+    pub tx_id: TxId,
+    pub delta: PendingDelta,
+}
+
+/// The pending txs of `order` that spend from or pay to `tree`, newest first: `order`
+/// reversed, so a child comes before the parent it spends from.
+pub fn pending_txs(
+    txs: &[UnconfirmedTransaction],
+    order: &[usize],
+    tree: &ErgoTree,
+) -> Vec<TxDelta> {
+    order
+        .iter()
+        .rev()
+        .map(|&i| &txs[i])
+        .filter_map(|tx| {
+            let delta = tx_delta(tree, &tx.inputs, &tx.outputs)?;
+            Some(TxDelta { tx_id: tx.id, delta })
+        })
+        .collect()
 }
 
 /// `key`'s pending delta over the txs of `order`: the matching boxes they create and do not

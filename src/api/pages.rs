@@ -95,7 +95,7 @@ impl<S: NodeSource> Pages<S> {
         let limit = match limit {
             None => DEFAULT_LIMIT,
             Some(n @ 1..=MAX_LIMIT) => n,
-            Some(_) => return Err(ApiError::InvalidLimit),
+            Some(_) => return Err(ApiError::InvalidLimit { max: MAX_LIMIT }),
         } as usize;
         let cursor = cursor
             .map(|c| Cursor::decode(c, key))

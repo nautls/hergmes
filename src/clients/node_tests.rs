@@ -9,7 +9,7 @@ use wiremock::{
 use super::*;
 use crate::{
     fixtures::{self, load, manifest, sample, status},
-    types::{HashDigest, HexBytes, address::Address},
+    types::{HashDigest, HexBytes, address::Address, ergo::BoxAssets},
 };
 
 fn holds(b: &IndexedBox, token_id: &str) -> Option<u64> {
@@ -253,6 +253,39 @@ mod shapes {
         assert_eq!(status("with_pool_none"), 200);
         let none: Vec<UTxO> = load("with_pool_none");
         assert!(none.is_empty());
+    }
+
+    /// Newest first, offset from the newest end: a read at offset 1 is the tail of one at
+    /// offset 0, with the same total. The anchored cursor rests on this.
+    #[test]
+    fn address_transactions_are_newest_first_offset_from_the_newest() {
+        let first: AddressTransactions = load("transactions_by_address");
+        let later: AddressTransactions = load("transactions_by_address_offset");
+        assert_eq!(first.items.len(), 3);
+        assert_eq!(first.total, later.total);
+        assert!(first.total > 3);
+        assert_eq!(first.items[1..], later.items[..]);
+        let heights: Vec<u32> = first.items.iter().map(|t| t.inclusion_height).collect();
+        assert!(heights.is_sorted_by(|a, b| a >= b), "newest first: {heights:?}");
+
+        let tree = sample_tree();
+        for tx in &first.items {
+            assert!(tx.timestamp > 1_500_000_000_000, "milliseconds");
+            let touches = |boxes: &[BoxAssets]| boxes.iter().any(|b| b.ergo_tree == tree);
+            assert!(touches(&tx.inputs) || touches(&tx.outputs), "{} touches the address", tx.id);
+        }
+        // Every input is a full box: the node resolves them all for indexed txs.
+        let raw: Value = load("transactions_by_address");
+        let inputs = raw["items"][0]["inputs"].as_array().unwrap();
+        assert_eq!(inputs.len(), first.items[0].inputs.len());
+        assert!(inputs.iter().all(|i| i["value"].is_u64()));
+    }
+
+    #[test]
+    fn an_unused_address_has_an_empty_history() {
+        assert_eq!(status("transactions_by_address_empty"), 200);
+        let empty: AddressTransactions = load("transactions_by_address_empty");
+        assert_eq!(empty, AddressTransactions { items: Vec::new(), total: 0 });
     }
 }
 
@@ -520,6 +553,51 @@ mod source {
 
         let balance = node.confirmed_balance(&sample_tree()).await.unwrap();
         assert!(balance.nano_ergs > 0);
+    }
+
+    #[tokio::test]
+    async fn address_transactions_post_the_trees_address_with_offset_and_limit() {
+        let (server, node) = node().await;
+        Mock::given(method("POST"))
+            .and(path("/blockchain/transaction/byAddress"))
+            .and(body_json(sample("address")))
+            .and(query_param("offset", "1"))
+            .and(query_param("limit", "2"))
+            .respond_with(recorded("transactions_by_address_offset"))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let page = node
+            .address_transactions(&sample_tree(), 1, 2)
+            .await
+            .unwrap();
+        assert_eq!(page.items.len(), 2);
+        assert!(page.total > 2);
+    }
+
+    /// The history call waits past the client's own timeout, which still bounds the rest.
+    #[tokio::test]
+    async fn address_transactions_wait_past_the_clients_timeout() {
+        let server = MockServer::start().await;
+        let slow = |name: &str| recorded(name).set_delay(std::time::Duration::from_millis(400));
+        Mock::given(path("/blockchain/transaction/byAddress"))
+            .respond_with(slow("transactions_by_address_offset"))
+            .mount(&server)
+            .await;
+        Mock::given(path("/info"))
+            .respond_with(slow("info"))
+            .mount(&server)
+            .await;
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_millis(200))
+            .build()
+            .unwrap();
+        let node = NodeClient::new(client, &server.uri(), Network::Mainnet);
+
+        assert!(node.info().await.is_err(), "the client's timeout");
+        let page = node.address_transactions(&sample_tree(), 1, 2).await;
+        assert_eq!(page.unwrap().items.len(), 2);
     }
 
     #[tokio::test]

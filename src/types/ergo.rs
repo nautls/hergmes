@@ -97,6 +97,37 @@ pub struct IndexedBlock {
     pub transactions: Vec<IndexedTransaction>,
 }
 
+/// A page of `/blockchain/transaction/byAddress`: the address's txs, newest first, and how
+/// many it has in all.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct AddressTransactions {
+    pub items: Vec<AddressTransaction>,
+    pub total: u32,
+}
+
+/// A tx of an address's history, with only what a summary for the address reads: the node
+/// sends full indexed boxes on both sides, and the relay keeps their amounts.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct AddressTransaction {
+    pub id: TxId,
+    #[serde(rename = "inclusionHeight")]
+    pub inclusion_height: u32,
+    /// The block header's timestamp, in milliseconds.
+    pub timestamp: u64,
+    pub inputs: Vec<BoxAssets>,
+    pub outputs: Vec<BoxAssets>,
+}
+
+/// A box's guard and what it holds, and nothing else.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct BoxAssets {
+    #[serde(rename = "ergoTree")]
+    pub ergo_tree: ErgoTree,
+    pub value: u64,
+    #[serde(rename = "assets")]
+    pub tokens: Vec<Token>,
+}
+
 /// Token metadata from `/blockchain/token/byId/{tokenId}`.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct TokenInfo {

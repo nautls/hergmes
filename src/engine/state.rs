@@ -12,8 +12,8 @@ use tracing::debug;
 use crate::{
     engine::{
         Balance, BlockDelta, BlockRef, BoxKey, Capacity, ChainLink, EngineError, Event, KeyDelta,
-        KeyId, LoadedBox, Mempool, Output, PageError, PageIds, PendingAt, Query, Reply,
-        ResyncReason, Spend, StoredBox, Totals, TrackingKey, WithPoolIds,
+        KeyId, LoadedBox, Mempool, Output, PageError, PageIds, PendingAt, PendingTxsAt, Query,
+        Reply, ResyncReason, Spend, StoredBox, Totals, TrackingKey, WithPoolIds,
         overlay::{self, PendingDelta},
     },
     types::ergo::{BoxId, HeaderId, IndexedBlock, UTxO},
@@ -162,6 +162,10 @@ impl Engine {
             Query::Pending(key) => Reply::Pending(
                 self.tip
                     .map(|as_of| PendingAt { as_of, delta: self.mempool.pending_delta(&key) }),
+            ),
+            Query::PendingTxs(tree) => Reply::PendingTxs(
+                self.tip
+                    .map(|as_of| PendingTxsAt { as_of, txs: self.mempool.pending_txs(&tree) }),
             ),
             Query::Balance(key) => {
                 self.touch(&key);

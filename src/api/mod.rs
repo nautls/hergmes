@@ -19,6 +19,7 @@ use crate::{
 pub mod balances;
 pub mod connection;
 pub mod cursor;
+pub mod history;
 pub mod http;
 pub mod keys;
 pub mod pages;
@@ -29,6 +30,7 @@ pub mod ws;
 
 pub use balances::{AddressBalance, Balances};
 pub use cursor::Cursor;
+pub use history::{History, HistoryPage};
 pub use pages::{BoxPage, Pages, WithPoolBoxes};
 pub use policy::KeyPolicy;
 
@@ -46,8 +48,9 @@ pub enum ApiError {
     InvalidTokenId,
     #[error("invalid cursor: {0}")]
     InvalidCursor(cursor::CursorError),
-    #[error("limit must be between 1 and {}", pages::MAX_LIMIT)]
-    InvalidLimit,
+    /// Not a number, or outside 1 to the route's `max`.
+    #[error("limit must be between 1 and {max}")]
+    InvalidLimit { max: u32 },
     /// The operator's key policy refuses the key; permanent for the key.
     #[error("this relay does not serve this key")]
     KeyNotAllowed,
@@ -61,9 +64,10 @@ pub enum ApiError {
     TooManyBoxes { max: usize },
     #[error("the relay tracks as many boxes as it can; try again later")]
     CapacityExceeded,
-    /// A load that did not settle, or an untracked address's balance whose halves never met
-    /// at one height; `retry_after` is the next wait.
-    #[error("the key is not loaded yet")]
+    /// A load that did not settle, an untracked address's balance whose halves never met at
+    /// one height, or a history page the indexer kept moving under; `retry_after` is the next
+    /// wait.
+    #[error("not ready yet; try again")]
     NotReady { retry_after: Duration },
     /// The node answered `503`, with its `Retry-After` if it sent one.
     #[error("the node is unavailable")]
@@ -84,7 +88,7 @@ impl ApiError {
             Self::InvalidAddress(_) => "invalid_address",
             Self::InvalidTokenId => "invalid_token_id",
             Self::InvalidCursor(_) => "invalid_cursor",
-            Self::InvalidLimit => "invalid_limit",
+            Self::InvalidLimit { .. } => "invalid_limit",
             Self::KeyNotAllowed => "key_not_allowed",
             Self::UnknownToken => "unknown_token",
             Self::CursorExpired => "cursor_expired",

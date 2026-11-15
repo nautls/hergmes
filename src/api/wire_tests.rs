@@ -181,3 +181,44 @@ fn a_view_with_the_pool_lists_confirmed_boxes_then_pending_ones_and_says_if_it_w
     let cut = WithPoolBoxes { total: 3, ..view };
     assert_eq!(json(WithPoolBody(&cut)), body(true, 3));
 }
+
+/// A history: pending txs with no `height` or `timestamp`, signed amounts as strings, and no
+/// `asOf`.
+#[test]
+fn a_history_page() {
+    use crate::api::history::{HistoryItem, HistoryPage, Included};
+    let page = HistoryPage {
+        items: vec![
+            HistoryItem {
+                tx_id: digest(1),
+                included: None,
+                delta: PendingDelta {
+                    nano_ergs: -(ABOVE_2_53 as i128),
+                    tokens: BTreeMap::from([(digest(2), 3)]),
+                },
+            },
+            HistoryItem {
+                tx_id: digest(4),
+                included: Some(Included { height: 12, timestamp: 1_731_600_000_000 }),
+                delta: PendingDelta::default(),
+            },
+        ],
+        next_cursor: Some("abc".to_owned()),
+    };
+    assert_eq!(
+        json(HistoryBody(&page)),
+        format!(
+            concat!(
+                r#"{{"items":["#,
+                r#"{{"txId":"{tx1}","delta":{{"nanoErgs":"-9007199254740993","tokens":[{{"tokenId":"{token}","amount":"3"}}]}}}},"#,
+                r#"{{"txId":"{tx4}","height":12,"timestamp":1731600000000,"delta":{{"nanoErgs":"0","tokens":[]}}}}"#,
+                r#"],"nextCursor":"abc"}}"#
+            ),
+            tx1 = hex(1),
+            token = hex(2),
+            tx4 = hex(4),
+        )
+    );
+    let last = HistoryPage { items: Vec::new(), next_cursor: None };
+    assert_eq!(json(HistoryBody(&last)), r#"{"items":[],"nextCursor":null}"#);
+}

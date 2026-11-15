@@ -75,3 +75,62 @@ fn malformed_cursors_are_refused() {
         assert_eq!(Cursor::decode(&encoded, &key), Err(CursorError::Malformed), "{case}");
     }
 }
+
+// --- History cursor ---
+
+fn tx_cursor(pos: u32, total: u32) -> TxCursor {
+    TxCursor { anchor: Digest([3; 32]), pos, total }
+}
+
+proptest! {
+    #[test]
+    fn a_history_cursor_decodes_to_what_was_encoded(
+        anchor in any::<[u8; 32]>(),
+        (pos, total) in (1..=u32::MAX).prop_flat_map(|total| (0..total, Just(total))),
+        tree_bytes in prop::collection::vec(any::<u8>(), 1..300),
+    ) {
+        let key = tree(&tree_bytes);
+        let cursor = TxCursor { anchor: Digest(anchor), pos, total };
+        let encoded = cursor.encode(&key);
+        prop_assert_eq!(encoded.len(), 66);
+        prop_assert!(encoded.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_'));
+        prop_assert_eq!(TxCursor::decode(&encoded, &key), Ok(cursor));
+    }
+}
+
+#[test]
+fn a_history_cursor_for_another_address_is_refused() {
+    let encoded = tx_cursor(2, 5).encode(&tree(&[1, 2, 3]));
+    assert_eq!(TxCursor::decode(&encoded, &tree(&[1, 2, 4])), Err(CursorError::OtherKey));
+}
+
+#[test]
+fn a_history_cursor_of_another_version_is_refused() {
+    let key = tree(&[1]);
+    let mut bytes = URL_SAFE_NO_PAD
+        .decode(tx_cursor(2, 5).encode(&key))
+        .unwrap();
+    bytes[0] = 2;
+    let encoded = URL_SAFE_NO_PAD.encode(&bytes);
+    assert_eq!(TxCursor::decode(&encoded, &key), Err(CursorError::Version(2)));
+}
+
+/// A position at or past the end is not one the relay hands out.
+#[test]
+fn a_history_cursor_anchored_outside_its_list_is_refused() {
+    let key = tree(&[1]);
+    for (pos, total) in [(5, 5), (6, 5), (0, 0)] {
+        let encoded = tx_cursor(pos, total).encode(&key);
+        assert_eq!(TxCursor::decode(&encoded, &key), Err(CursorError::Malformed), "{pos}/{total}");
+    }
+}
+
+/// Each route refuses the other's cursor, by length.
+#[test]
+fn a_cursor_of_the_other_route_is_refused() {
+    let key = tree(&[1]);
+    let boxes = cursor(10, 3).encode(&key);
+    let history = tx_cursor(2, 5).encode(&key);
+    assert_eq!(TxCursor::decode(&boxes, &key), Err(CursorError::Malformed));
+    assert_eq!(Cursor::decode(&history, &key), Err(CursorError::Malformed));
+}

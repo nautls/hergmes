@@ -4,7 +4,7 @@ use dotenvy::dotenv;
 use hergmes::{
     adapters::{BoxCache, BoxFetcher, Follower, TokenChecker, loader::Loader},
     api::{
-        Balances, Pages,
+        Balances, History, Pages,
         http::{self, Api},
         ws,
     },
@@ -83,6 +83,7 @@ async fn run() -> Result<(), AppError> {
         pages: Pages::new(loader.clone(), tokens.clone(), BoxFetcher::new(node.clone(), cache))
             .waiting_for(settled),
         balances: Balances::new(node.clone(), Default::default()),
+        history: History::new(node.clone(), Default::default()),
         network: node.network(),
         policy,
         synced,

@@ -1,4 +1,4 @@
-//! The REST routes: parse, call the page and balance services, serialize.
+//! The REST routes: parse, call the page, balance and history services, serialize.
 //!
 //! Errors are `{ "error": "<code>", "message": "..." }`, and every 503 carries `Retry-After`.
 //! Any origin may read the responses. They are not compressed: that is the reverse proxy's
@@ -20,9 +20,10 @@ use tracing::{debug, warn};
 use crate::{
     adapters::{EngineHandle, engine_tip},
     api::{
-        ApiError, Balances, KeyPolicy, Pages,
+        ApiError, Balances, History, KeyPolicy, Pages, history,
         keys::{address_key, token_key},
-        wire::{BalanceBody, ErrorBody, PageBody, StatusBody, WithPoolBody},
+        pages,
+        wire::{BalanceBody, ErrorBody, HistoryBody, PageBody, StatusBody, WithPoolBody},
     },
     clients::NodeSource,
     engine::TrackingKey,
@@ -41,6 +42,7 @@ pub struct Api<S, E> {
     pub engine: E,
     pub pages: Pages<S>,
     pub balances: Balances<S>,
+    pub history: History<S>,
     /// The node's network: addresses of another one are refused.
     pub network: Network,
     /// The keys clients may name.
@@ -68,6 +70,7 @@ where
         .route("/v1/addresses/{address}/boxes/with-pool", get(address_with_pool::<S, E>))
         .route("/v1/tokens/{token_id}/boxes/with-pool", get(token_with_pool::<S, E>))
         .route("/v1/addresses/{address}/balance", get(address_balance::<S, E>))
+        .route("/v1/addresses/{address}/transactions", get(address_history::<S, E>))
         .route("/v1/status", get(status::<S, E>))
         .with_state(api)
         .layer(cors)
@@ -85,9 +88,11 @@ fn param<'a>(params: &'a Params, name: &str) -> Option<&'a str> {
         .map(|(_, v)| v.as_str())
 }
 
-fn limit(params: &Params) -> Result<Option<u32>, ApiError> {
+/// The `limit` asked for, if any. One that is not a number is refused with the route's
+/// `max`; the service checks the range.
+fn limit(params: &Params, max: u32) -> Result<Option<u32>, ApiError> {
     param(params, "limit")
-        .map(|v| v.parse().map_err(|_| ApiError::InvalidLimit))
+        .map(|v| v.parse().map_err(|_| ApiError::InvalidLimit { max }))
         .transpose()
 }
 
@@ -116,7 +121,7 @@ async fn page<S: NodeSource, E: EngineHandle>(
     key: &TrackingKey,
     params: &Params,
 ) -> Result<Response, ApiError> {
-    let limit = limit(params)?;
+    let limit = limit(params, pages::MAX_LIMIT)?;
     let page = api
         .pages
         .page(&api.engine, key, param(params, "cursor"), limit)
@@ -162,6 +167,23 @@ async fn address_balance<S: NodeSource, E: EngineHandle>(
     Ok(Json(BalanceBody(&balance)).into_response())
 }
 
+async fn address_history<S: NodeSource, E: EngineHandle>(
+    State(api): State<Arc<Api<S, E>>>,
+    address: Result<Path<String>, PathRejection>,
+    params: Params,
+) -> Result<Response, ApiError> {
+    let address = address.map_err(|e| ApiError::InvalidAddress(e.body_text()))?;
+    let TrackingKey::Tree(tree) = address_key(&address, api.network, &api.policy)? else {
+        unreachable!("an address's key is its tree")
+    };
+    let limit = limit(&params, history::MAX_LIMIT)?;
+    let page = api
+        .history
+        .page(&api.engine, &tree, param(&params, "cursor"), limit)
+        .await?;
+    Ok(Json(HistoryBody(&page)).into_response())
+}
+
 /// Cheap enough for health checks: one engine query and no node call. `ready` is the
 /// engine having a tip and being at the node's, and the configured keys having settled, so
 /// that a key not yet tracked can be loaded.
@@ -180,7 +202,7 @@ impl ApiError {
             Self::InvalidAddress(_)
             | Self::InvalidTokenId
             | Self::InvalidCursor(_)
-            | Self::InvalidLimit => StatusCode::BAD_REQUEST,
+            | Self::InvalidLimit { .. } => StatusCode::BAD_REQUEST,
             Self::KeyNotAllowed => StatusCode::FORBIDDEN,
             Self::UnknownToken => StatusCode::NOT_FOUND,
             Self::CursorExpired => StatusCode::GONE,
@@ -207,7 +229,7 @@ impl ApiError {
             Self::InvalidAddress(_)
             | Self::InvalidTokenId
             | Self::InvalidCursor(_)
-            | Self::InvalidLimit
+            | Self::InvalidLimit { .. }
             | Self::KeyNotAllowed
             | Self::UnknownToken
             | Self::CursorExpired

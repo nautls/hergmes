@@ -30,15 +30,21 @@ use crate::{
     types::{
         Digest, HashDigest, HexBytes,
         ergo::{
-            Balance, BlockHeader, BoxId, ErgoTree, HeaderId, IndexedBlock, IndexedBox,
-            IndexedTransaction, NonMandatoryRegisters, Token, TokenBalance, TokenId, TokenInfo,
-            TxId, UTxO, UnconfirmedTransaction,
+            AddressTransaction, AddressTransactions, Balance, BlockHeader, BoxAssets, BoxId,
+            ErgoTree, HeaderId, IndexedBlock, IndexedBox, IndexedTransaction,
+            NonMandatoryRegisters, Token, TokenBalance, TokenId, TokenInfo, TxId, UTxO,
+            UnconfirmedTransaction,
         },
     },
 };
 
 /// The parent id of the genesis block.
 pub const GENESIS_PARENT: HeaderId = Digest([0; 32]);
+
+/// A block's timestamp in milliseconds: two minutes a block, so a history's items carry one.
+pub fn timestamp(height: u32) -> u64 {
+    u64::from(height) * 120_000
+}
 
 /// The wait a `503` asks for.
 pub const RETRY_AFTER: Duration = Duration::from_secs(1);
@@ -1041,6 +1047,55 @@ impl Chain {
     /// Any box the indexer has seen created, spent or not.
     pub fn indexed_box(&self, id: &BoxId) -> Option<IndexedBox> {
         self.indexer.all.get(id).map(Entry::to_indexed)
+    }
+
+    /// The indexer's txs that spend from or pay to `ergo_tree`, newest first, skipping the
+    /// `offset` newest, and how many there are. Like the node's list, it only grows at its end
+    /// and loses its end to a rollback: it is the indexer's branch, oldest block first, each
+    /// block's txs in order. Rejects a limit above [`MAX_PAGE_LIMIT`] like the node.
+    pub fn address_transactions(
+        &self,
+        ergo_tree: &ErgoTree,
+        offset: u32,
+        limit: u32,
+    ) -> Result<AddressTransactions, NodeError> {
+        if limit > MAX_PAGE_LIMIT {
+            return Err(NodeError::Api {
+                status: StatusCode::BAD_REQUEST,
+                reason: "bad.request".to_string(),
+                detail: Some(format!(
+                    "No more than {MAX_PAGE_LIMIT} transactions can be requested"
+                )),
+            });
+        }
+        let assets = |b: &Arc<UTxO>| BoxAssets {
+            ergo_tree: b.ergo_tree.clone(),
+            value: b.value,
+            tokens: b.tokens.clone(),
+        };
+        let mut all = Vec::new();
+        for block in self.branch(&self.indexer.tip) {
+            for tx in &block.txs {
+                let touches = |boxes: &[Arc<UTxO>]| boxes.iter().any(|b| b.ergo_tree == *ergo_tree);
+                if touches(&tx.inputs) || touches(&tx.outputs) {
+                    all.push(AddressTransaction {
+                        id: tx.id,
+                        inclusion_height: block.header.height,
+                        timestamp: timestamp(block.header.height),
+                        inputs: tx.inputs.iter().map(assets).collect(),
+                        outputs: tx.outputs.iter().map(assets).collect(),
+                    });
+                }
+            }
+        }
+        let total = u32::try_from(all.len()).expect("a sim address has few txs");
+        let items = all
+            .into_iter()
+            .rev()
+            .skip(offset as usize)
+            .take(limit as usize)
+            .collect();
+        Ok(AddressTransactions { items, total })
     }
 
     /// Totals of the indexer's unspent boxes guarded by `ergo_tree`, tokens in id order.

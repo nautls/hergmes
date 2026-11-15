@@ -13,7 +13,7 @@ use tokio::{task::JoinHandle, time::sleep};
 use super::*;
 use crate::{
     adapters::{BoxCache, BoxFetcher, EngineHandle, Follower, Loader, TokenChecker},
-    api::{Balances, KeyPolicy, Pages, ws::Closed},
+    api::{Balances, History, KeyPolicy, Pages, ws::Closed},
     engine::{self, Engine, Event, Query, Reply},
     runtime::{Settled, settling, spawn},
     sim::{Chain, Endpoint, SimChain, SimConfig, token_id},
@@ -61,6 +61,7 @@ impl Fixture {
             )
             .waiting_for(settled),
             balances: Balances::new(sim.clone(), Default::default()),
+            history: History::new(sim.clone(), Default::default()),
             network: Network::Mainnet,
             policy: KeyPolicy::default(),
             synced: follower.synced(),

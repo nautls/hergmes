@@ -11,9 +11,9 @@ use tracing::debug;
 use crate::{
     engine::{
         BlockRef, Output, PendingTx, TrackingKey,
-        overlay::{self, DeltaSides, OverlayHash, PendingDelta},
+        overlay::{self, DeltaSides, OverlayHash, PendingDelta, TxDelta},
     },
-    types::ergo::{BoxId, TxId, UTxO, UnconfirmedTransaction},
+    types::ergo::{BoxId, ErgoTree, TxId, UTxO, UnconfirmedTransaction},
 };
 
 /// A snapshot the engine accepted.
@@ -221,6 +221,15 @@ impl Mempool {
         match &self.snapshot {
             Some(s) => overlay::pending_delta(&s.txs, &s.order, key),
             None => PendingDelta::default(),
+        }
+    }
+
+    /// The pending txs that touch the address guarded by `tree`, tracked or not, newest
+    /// first, each with its net change for the address. Empty without a snapshot.
+    pub fn pending_txs(&self, tree: &ErgoTree) -> Vec<TxDelta> {
+        match &self.snapshot {
+            Some(s) => overlay::pending_txs(&s.txs, &s.order, tree),
+            None => Vec::new(),
         }
     }
 

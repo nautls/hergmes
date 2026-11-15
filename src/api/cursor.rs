@@ -1,8 +1,14 @@
-//! The page cursor: where the next page starts, pinned to the first page's block.
+//! The cursors: where the next page starts.
 //!
-//! Opaque to clients: base64url without padding of 81 bytes, so 108 characters. A version
-//! byte, the pinned block (height and header id), the last box returned (inclusion height
-//! and box id), and an 8-byte fingerprint of the key. Integers are big-endian.
+//! A box page's cursor ([`Cursor`]) is pinned to the first page's block. Opaque to clients:
+//! base64url without padding of 81 bytes, so 108 characters. A version byte, the pinned block
+//! (height and header id), the last box returned (inclusion height and box id), and an 8-byte
+//! fingerprint of the key. Integers are big-endian.
+//!
+//! A history page's cursor ([`TxCursor`]) is anchored on a tx instead (DESIGN.md, "Paging by
+//! anchor"): 49 bytes, so 66 characters. A version byte, the fingerprint, the anchor's tx id,
+//! its position from the oldest end and the list's length when it was read. Its length differs
+//! from a box cursor's, so a cursor sent to the other route is `invalid_cursor`.
 //!
 //! The fingerprint turns a cursor sent to another key into `invalid_cursor`. Without it the
 //! pin would be valid and paging would resume after the other key's last box, so the client
@@ -13,7 +19,7 @@ use blake2::{Blake2b256, Digest as _};
 
 use crate::{
     engine::{BlockRef, BoxKey, TrackingKey},
-    types::Digest,
+    types::{Digest, ergo::TxId},
 };
 
 /// Bumped when the layout changes, so an old cursor is `invalid_cursor` rather than misread.
@@ -79,6 +85,65 @@ impl Cursor {
                 box_id: Digest(array(box_id)),
             },
         })
+    }
+}
+
+/// Bumped when the history cursor's layout changes. Independent of [`VERSION`]: the lengths
+/// already tell the two kinds apart.
+pub const TX_VERSION: u8 = 1;
+
+const TX_LEN: usize = 1 + 8 + 32 + 4 + 4;
+
+/// Where a history's next page starts: below `anchor`, the oldest tx of the page before.
+///
+/// An address's tx list only grows at its end and loses its end to a rollback, so a tx's
+/// position counted from the oldest end holds until a reorg reaches it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TxCursor {
+    pub anchor: TxId,
+    /// The anchor's position from the oldest end, from 0.
+    pub pos: u32,
+    /// The list's length when the page was read.
+    pub total: u32,
+}
+
+impl TxCursor {
+    pub fn encode(&self, key: &TrackingKey) -> String {
+        let mut bytes = Vec::with_capacity(TX_LEN);
+        bytes.push(TX_VERSION);
+        bytes.extend_from_slice(&fingerprint(key));
+        bytes.extend_from_slice(&self.anchor.0);
+        bytes.extend_from_slice(&self.pos.to_be_bytes());
+        bytes.extend_from_slice(&self.total.to_be_bytes());
+        URL_SAFE_NO_PAD.encode(bytes)
+    }
+
+    /// Decodes a cursor for `key`. One whose anchor is not inside its list was not made by
+    /// the relay, and is `Malformed`.
+    pub fn decode(encoded: &str, key: &TrackingKey) -> Result<Self, CursorError> {
+        let bytes = URL_SAFE_NO_PAD
+            .decode(encoded)
+            .map_err(|_| CursorError::Malformed)?;
+        let version = *bytes.first().ok_or(CursorError::Malformed)?;
+        if version != TX_VERSION {
+            return Err(CursorError::Version(version));
+        }
+        let bytes: &[u8; TX_LEN] = bytes
+            .as_slice()
+            .try_into()
+            .map_err(|_| CursorError::Malformed)?;
+        let (_, rest) = bytes.split_at(1);
+        let (print, rest) = rest.split_at(8);
+        let (anchor, rest) = rest.split_at(32);
+        let (pos, total) = rest.split_at(4);
+        if print != fingerprint(key) {
+            return Err(CursorError::OtherKey);
+        }
+        let cursor = Self { anchor: Digest(array(anchor)), pos: u32_at(pos), total: u32_at(total) };
+        if cursor.pos >= cursor.total {
+            return Err(CursorError::Malformed);
+        }
+        Ok(cursor)
     }
 }
 

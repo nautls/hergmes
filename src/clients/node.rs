@@ -9,11 +9,19 @@ use crate::{
     types::{
         address::{self, Network, UnknownNetwork},
         ergo::{
-            Balance, BalanceResponse, BoxId, ErgoTree, HeaderId, IndexedBlock, IndexedBox, TokenId,
-            TokenInfo, TxId, UTxO, UnconfirmedTransaction,
+            AddressTransactions, Balance, BalanceResponse, BoxId, ErgoTree, HeaderId, IndexedBlock,
+            IndexedBox, TokenId, TokenInfo, TxId, UTxO, UnconfirmedTransaction,
         },
     },
 };
+
+/// The wait for one page of an address's history, above the client's 30 s. The node sends
+/// every box of every tx in full, and one airdrop tx to thousands of addresses is in each
+/// recipient's history: 25 txs of a P2PK wallet were 22,574 boxes and 23 MB, which the node
+/// took 10 to 16 s to send (DESIGN.md, "Open decisions"). Under nginx's default
+/// `proxy_read_timeout` (60 s) and Cloudflare's 100 s, so a slow page still reaches the client
+/// as the relay's own error rather than the proxy's.
+pub const HISTORY_TIMEOUT: Duration = Duration::from_secs(55);
 
 #[derive(Debug, thiserror::Error)]
 pub enum NodeError {
@@ -290,6 +298,25 @@ impl NodeSource for NodeClient {
     #[tracing::instrument(skip(self))]
     async fn indexed_box(&self, id: &BoxId) -> Result<Option<IndexedBox>, NodeError> {
         fetch_optional(self.get(&format!("blockchain/box/byId/{id}"))).await
+    }
+
+    /// The address goes in the body, as for `/blockchain/balance`: a P2S address can be
+    /// thousands of characters. An address the indexer has never seen is an empty page. Waits
+    /// up to [`HISTORY_TIMEOUT`], not the client's timeout.
+    #[tracing::instrument(skip(self))]
+    async fn address_transactions(
+        &self,
+        ergo_tree: &ErgoTree,
+        offset: u32,
+        limit: u32,
+    ) -> Result<AddressTransactions, NodeError> {
+        let address = address::encode(&ergo_tree.0, self.network);
+        let request = self
+            .post("blockchain/transaction/byAddress")
+            .query(&[("offset", offset), ("limit", limit)])
+            .json(&address)
+            .timeout(HISTORY_TIMEOUT);
+        fetch(request).await
     }
 
     #[tracing::instrument(skip(self))]

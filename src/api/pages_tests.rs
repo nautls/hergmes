@@ -506,7 +506,7 @@ fn a_limit_is_from_1_to_1000() {
     let key = tree_key(&sim, 0);
     for limit in [0, 1001, u32::MAX] {
         let error = ready(pages.page(&engine, &key, None, Some(limit))).unwrap_err();
-        assert_eq!(error, ApiError::InvalidLimit, "{limit}");
+        assert_eq!(error, ApiError::InvalidLimit { max: MAX_LIMIT }, "{limit}");
     }
     assert!(sim.calls().is_empty(), "checked before anything else");
     assert!(ready(pages.page(&engine, &key, None, Some(1000))).is_ok());

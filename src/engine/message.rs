@@ -4,9 +4,12 @@ use serde::Serialize;
 
 use crate::{
     engine::{
-        BlockRef, BoxKey, ChainLink, Spend, StoredBox, Totals, TrackingKey, overlay::PendingDelta,
+        BlockRef, BoxKey, ChainLink, Spend, StoredBox, Totals, TrackingKey,
+        overlay::{PendingDelta, TxDelta},
     },
-    types::ergo::{BoxId, HeaderId, IndexedBlock, IndexedBox, TxId, UTxO, UnconfirmedTransaction},
+    types::ergo::{
+        BoxId, ErgoTree, HeaderId, IndexedBlock, IndexedBox, TxId, UTxO, UnconfirmedTransaction,
+    },
 };
 
 /// An input to the engine, sent by the adapters.
@@ -67,6 +70,9 @@ pub enum Query {
     /// A key's pending delta, tracked or not: the signed pending side of a balance, with the
     /// block it was computed at.
     Pending(TrackingKey),
+    /// The pending txs that touch an address, tracked or not, newest first, each with its
+    /// net change for it, and the block they were decided at: the top of its history.
+    PendingTxs(ErgoTree),
     /// A tracked address's balance at the tip, as the stream sends it. A token key has none.
     Balance(TrackingKey),
     Tip,
@@ -98,6 +104,7 @@ pub enum Reply {
     WithPool(Option<WithPoolIds>),
     Overlay(Vec<PendingTx>),
     Pending(Option<PendingAt>),
+    PendingTxs(Option<PendingTxsAt>),
     Balance(Option<Balance>),
     Tip(Option<BlockRef>),
     Capacity(Option<Capacity>),
@@ -166,6 +173,15 @@ pub enum EngineError {
 pub struct PendingAt {
     pub as_of: BlockRef,
     pub delta: PendingDelta,
+}
+
+/// An address's pending txs and the engine's tip they were decided at. A history's first
+/// page lists them above the indexer's page, which is read after and so is at or above that
+/// tip: a tx confirmed in between is found by the heights on the page.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingTxsAt {
+    pub as_of: BlockRef,
+    pub txs: Vec<TxDelta>,
 }
 
 /// An address's balance at a tip: its running totals, and the signed pending delta of its

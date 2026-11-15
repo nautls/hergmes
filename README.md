@@ -96,6 +96,7 @@ Logging uses `tracing`; set `RUST_LOG` (e.g. `RUST_LOG=hergmes=debug`) to adjust
 | `GET /v1/addresses/{address}/boxes/with-pool` | An address's boxes with the mempool applied       |
 | `GET /v1/tokens/{tokenId}/boxes/with-pool`    | A token's boxes with the mempool applied          |
 | `GET /v1/addresses/{address}/balance`         | An address's confirmed balance and pending change |
+| `GET /v1/addresses/{address}/transactions`    | An address's txs, newest first, pending on top    |
 | `GET /v1/status`                              | Version, network, tip and readiness               |
 
 Box pages take `limit` (default 500, at most 1000) and the `cursor` from the previous page's
@@ -110,6 +111,13 @@ confirmed boxes and every pending one; `truncated` says whether confirmed boxes 
 and `total` is the whole view's size. Its `asOf` is the height only: the view can't be
 followed, so to stream a key, take the snapshot from `/boxes`. "Pending" means this relay's
 node's mempool.
+
+`/transactions` is an address's history, read from the node's indexer: each tx's `txId`,
+`height`, `timestamp` (milliseconds) and `delta`, its signed net change per asset for the
+address. The first page lists the pending txs on top, without `height` or `timestamp`. It
+takes `limit` (default 25, at most 100) and the previous page's `nextCursor`; a page can be
+short and still have one, and `null` means the end. History is not streamed: when a
+subscription says the address changed, read the first page again.
 
 ## WebSocket
 

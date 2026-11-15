@@ -12,9 +12,9 @@ use crate::{
     sim::{
         GENESIS_TOKENS, OutputSpec, SimConfig,
         testing::{ALL, box_of, new_chain, ready},
-        token_id,
+        timestamp, token_id,
     },
-    types::Digest,
+    types::{Digest, ergo::TxId},
 };
 
 fn is_unavailable<T>(result: Result<T, NodeError>) -> bool {
@@ -301,4 +301,82 @@ fn unspent_by_token_lists_every_box_holding_it() {
             .unwrap()
             .is_empty()
     );
+}
+
+// --- Address history ---
+
+fn history_ids(sim: &SimChain, tree: &ErgoTree, offset: u32, limit: u32) -> (Vec<TxId>, u32) {
+    let page = ready(sim.address_transactions(tree, offset, limit)).unwrap();
+    (page.items.iter().map(|t| t.id).collect(), page.total)
+}
+
+#[test]
+fn history_is_newest_first_offset_from_the_newest_end() {
+    let mut chain = new_chain();
+    let trees = chain.trees().to_vec();
+    let mut sent = Vec::new();
+    for index in 1..=3 {
+        let tx = chain.transfer(&[box_of(&chain, index)], &trees[0]);
+        sent.push(tx.id);
+        chain.mine_txs(vec![tx]);
+    }
+    let sim = SimChain::new(chain);
+    let (all, total) = history_ids(&sim, &trees[0], 0, MAX_PAGE_LIMIT);
+    assert_eq!(total as usize, all.len());
+    sent.reverse();
+    assert_eq!(all[..3], sent[..], "the newest txs first");
+    let (tail, same) = history_ids(&sim, &trees[0], 1, 2);
+    assert_eq!((tail.as_slice(), same), (&all[1..3], total));
+    let (past, _) = history_ids(&sim, &trees[0], total, 5);
+    assert!(past.is_empty());
+
+    // A tx's heights and amounts are its block's and its boxes'.
+    let page = ready(sim.address_transactions(&trees[0], 0, 1)).unwrap();
+    let tx = &page.items[0];
+    assert_eq!(tx.inclusion_height, sim.lock().height());
+    assert_eq!(tx.timestamp, timestamp(tx.inclusion_height));
+    assert!(tx.outputs.iter().any(|o| o.ergo_tree == trees[0]));
+}
+
+#[test]
+fn history_grows_at_its_end_and_a_reorg_cuts_it() {
+    let mut chain = new_chain();
+    let trees = chain.trees().to_vec();
+    let tx = chain.transfer(&[box_of(&chain, 1)], &trees[0]);
+    chain.mine_txs(vec![tx.clone()]);
+    let sim = SimChain::new(chain);
+    let (before, total) = history_ids(&sim, &trees[0], 0, MAX_PAGE_LIMIT);
+    assert_eq!(before[0], tx.id);
+
+    // Orphaned: the tx leaves the end of the list, and the rest is unchanged.
+    sim.lock().orphan(1);
+    sim.lock().settle_indexer();
+    let (after, shorter) = history_ids(&sim, &trees[0], 0, MAX_PAGE_LIMIT);
+    assert_eq!(shorter, total - 1);
+    assert_eq!(after[..], before[1..]);
+}
+
+#[test]
+fn history_follows_a_lagging_indexer_and_answers_503_while_it_recovers() {
+    let mut chain = Chain::new(SimConfig { recovery_reads: 1, ..SimConfig::default() });
+    let trees = chain.trees().to_vec();
+    chain.set_indexer_lag(1);
+    let tx = chain.transfer(&[box_of(&chain, 1)], &trees[0]);
+    chain.mine_txs(vec![tx.clone()]);
+    let sim = SimChain::new(chain);
+    let (ids, _) = history_ids(&sim, &trees[0], 0, MAX_PAGE_LIMIT);
+    assert!(!ids.contains(&tx.id), "not indexed yet");
+
+    sim.lock().settle_indexer();
+    let (ids, _) = history_ids(&sim, &trees[0], 0, MAX_PAGE_LIMIT);
+    assert_eq!(ids[0], tx.id);
+
+    // Orphaning the indexed tip: one `503`, then the list without the tx.
+    sim.lock().orphan(1);
+    assert!(is_unavailable(ready(sim.address_transactions(&trees[0], 0, 1))));
+    let (ids, _) = history_ids(&sim, &trees[0], 0, MAX_PAGE_LIMIT);
+    assert!(!ids.contains(&tx.id));
+
+    let over = ready(sim.address_transactions(&trees[0], 0, MAX_PAGE_LIMIT + 1));
+    assert!(matches!(over, Err(NodeError::Api { status: StatusCode::BAD_REQUEST, .. })));
 }

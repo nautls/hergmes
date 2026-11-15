@@ -136,6 +136,27 @@
         "abababababababababababababababababababababababababababababababab"
       ],
       "notes": "No id exists: 200 [] (the spec says 404)."
+    },
+    "transactions_by_address": {
+      "method": "POST",
+      "path": "/blockchain/transaction/byAddress?offset=0&limit=3",
+      "status": 200,
+      "body": "9gsbKAia1ARpA2zyotMzrWnJvmfuqcPemue5pfbm87Mnt5h1Tmm",
+      "notes": "Newest first; offset counts from the newest end. Recorded at height 1917467."
+    },
+    "transactions_by_address_offset": {
+      "method": "POST",
+      "path": "/blockchain/transaction/byAddress?offset=1&limit=2",
+      "status": 200,
+      "body": "9gsbKAia1ARpA2zyotMzrWnJvmfuqcPemue5pfbm87Mnt5h1Tmm",
+      "notes": "Newest first; offset counts from the newest end. Recorded at height 1917467. The tail of transactions_by_address, same total."
+    },
+    "transactions_by_address_empty": {
+      "method": "POST",
+      "path": "/blockchain/transaction/byAddress?offset=0&limit=3",
+      "status": 200,
+      "body": "9iKCdiitfAVb1Wux5nFXiMcdYXGkhdNksAxJHQ28qiAMkxXupbt",
+      "notes": "An address with no txs is an empty page with total 0, not a 404."
     }
   }
 }

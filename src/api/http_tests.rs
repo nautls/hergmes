@@ -22,11 +22,12 @@ use tower::ServiceExt;
 use super::*;
 use crate::{
     adapters::{BoxCache, BoxFetcher, EngineGone, Follower, Loader, TokenChecker},
-    api::cursor::CursorError,
+    api::cursor::{CursorError, TxCursor},
     engine::{Config, Engine},
     runtime::{Settled, settling},
-    sim::{Chain, SimChain, SimConfig, testing::ready, token_id},
+    sim::{self, Chain, SimChain, SimConfig, testing::ready, token_id},
     types::{
+        Digest,
         address::{self, Network},
         ergo::ErgoTree,
     },
@@ -39,7 +40,7 @@ fn every_error() -> Vec<(ApiError, StatusCode, Option<&'static str>)> {
         (ApiError::InvalidAddress("bad".into()), S::BAD_REQUEST, None),
         (ApiError::InvalidTokenId, S::BAD_REQUEST, None),
         (ApiError::InvalidCursor(CursorError::Malformed), S::BAD_REQUEST, None),
-        (ApiError::InvalidLimit, S::BAD_REQUEST, None),
+        (ApiError::InvalidLimit { max: 1000 }, S::BAD_REQUEST, None),
         (ApiError::KeyNotAllowed, S::FORBIDDEN, None),
         (ApiError::UnknownToken, S::NOT_FOUND, None),
         (ApiError::CursorExpired, S::GONE, None),
@@ -147,6 +148,7 @@ impl Fixture {
             )
             .waiting_for(settled),
             balances: Balances::new(sim.clone(), Default::default()),
+            history: History::new(sim.clone(), Default::default()),
             network: Network::Mainnet,
             policy,
             synced: follower.synced(),
@@ -409,7 +411,10 @@ async fn bad_requests_are_refused_with_their_code() {
     f.tick();
     let address = f.address(0);
     let boxes = format!("/v1/addresses/{address}/boxes");
+    let history = format!("/v1/addresses/{address}/transactions");
     let testnet = address::encode(&f.tree(0).0, Network::Testnet);
+    let other_history = TxCursor { anchor: Digest([1; 32]), pos: 0, total: 2 }
+        .encode(&TrackingKey::Tree(f.tree(1)));
     let token = token_id("small-100");
     let other_cursor = {
         let page = f
@@ -435,6 +440,14 @@ async fn bad_requests_are_refused_with_their_code() {
         (format!("{boxes}?limit="), "invalid_limit"),
         (format!("{boxes}?cursor=xyz"), "invalid_cursor"),
         (format!("{boxes}?cursor={other_cursor}"), "invalid_cursor"),
+        ("/v1/addresses/notanaddress/transactions".to_owned(), "invalid_address"),
+        (format!("/v1/addresses/{testnet}/transactions"), "invalid_address"),
+        (format!("{history}?limit=0"), "invalid_limit"),
+        (format!("{history}?limit=101"), "invalid_limit"),
+        (format!("{history}?limit=ten"), "invalid_limit"),
+        (format!("{history}?cursor=xyz"), "invalid_cursor"),
+        (format!("{history}?cursor={other_cursor}"), "invalid_cursor"),
+        (format!("{history}?cursor={other_history}"), "invalid_cursor"),
     ] {
         assert_eq!(f.error(&uri, StatusCode::BAD_REQUEST).await, code, "{uri}");
     }
@@ -459,6 +472,7 @@ async fn every_route_refuses_a_key_the_policy_does_not_admit() {
         format!("/v1/tokens/{}/boxes", token_id("small-100")),
         format!("/v1/addresses/{}/boxes/with-pool", f.address(0)),
         format!("/v1/tokens/{}/boxes/with-pool", token_id("small-100")),
+        format!("/v1/addresses/{}/transactions", f.address(0)),
     ] {
         assert_eq!(f.error(&uri, StatusCode::FORBIDDEN).await, "key_not_allowed", "{uri}");
     }
@@ -467,6 +481,62 @@ async fn every_route_refuses_a_key_the_policy_does_not_admit() {
     f.ok(&format!("/v1/addresses/{}/boxes", f.address(1))).await;
     f.ok(&format!("/v1/addresses/{}/balance", f.address(1)))
         .await;
+}
+
+/// An address's history, newest first, paged to the end: each confirmed tx once, with its
+/// height, timestamp and change; a pending tx on top of the first page, with neither.
+#[tokio::test]
+async fn an_address_history_pages_newest_first_with_pending_on_top() {
+    let mut f = Fixture::new();
+    let tree = f.tree(0);
+    {
+        let mut chain = f.sim.lock();
+        for index in 1..=2 {
+            let input = sim::testing::box_of(&chain, index);
+            let tx = chain.transfer(&[input], &tree);
+            chain.mine_txs(vec![tx]);
+        }
+        let input = sim::testing::box_of(&chain, 3);
+        let tx = chain.transfer(&[input], &tree);
+        chain.submit(tx);
+    }
+    f.tick();
+    let history = format!("/v1/addresses/{}/transactions", f.address(0));
+    let first = f.ok(&format!("{history}?limit=1")).await;
+    assert_eq!(first.as_object().unwrap().keys().collect::<Vec<_>>(), ["items", "nextCursor"]);
+    let items = first["items"].as_array().unwrap();
+    assert_eq!(items.len(), 2, "the pending tx, then one confirmed");
+    assert_eq!(items[0].as_object().unwrap().keys().collect::<Vec<_>>(), ["delta", "txId"]);
+    assert!(items[0]["delta"]["nanoErgs"].is_string());
+    let keys = items[1].as_object().unwrap().keys().collect::<Vec<_>>();
+    assert_eq!(keys, ["delta", "height", "timestamp", "txId"]);
+    let tip = f.sim.lock().tip().height;
+    assert_eq!(items[1]["height"], tip);
+    assert_eq!(items[1]["timestamp"], sim::timestamp(tip));
+
+    let mut ids = vec![items[1]["txId"].clone()];
+    let mut cursor = first["nextCursor"].as_str().expect("more pages").to_owned();
+    loop {
+        let page = f.ok(&format!("{history}?cursor={cursor}&limit=1")).await;
+        let items = page["items"].as_array().unwrap();
+        assert!(items.iter().all(|i| !i["height"].is_null()), "pending only on the first page");
+        ids.extend(items.iter().map(|i| i["txId"].clone()));
+        match page["nextCursor"].as_str() {
+            Some(next) => cursor = next.to_owned(),
+            None => break,
+        }
+    }
+    let total = ready(f.sim.address_transactions(&tree, 0, 1))
+        .unwrap()
+        .total;
+    assert_eq!(ids.len(), total as usize);
+    ids.dedup();
+    assert_eq!(ids.len(), total as usize, "no tx twice");
+
+    // The default limit holds the whole history, the pending tx on top.
+    let all = f.ok(&history).await;
+    assert_eq!(all["items"].as_array().unwrap().len(), total as usize + 1);
+    assert_eq!(all["nextCursor"], Value::Null);
 }
 
 #[tokio::test]

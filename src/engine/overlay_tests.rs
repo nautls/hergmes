@@ -205,3 +205,69 @@ fn a_box_spent_by_both_sides_of_a_conflict_is_subtracted_once() {
     assert_eq!(order.len(), 2);
     assert_eq!(pending_delta(&mempool, &order, &owner()).nano_ergs, -1);
 }
+
+// --- A tx's change for one address (history) ---
+
+fn valued(n: u8, owner: u8, value: u64, tokens: &[(u8, u64)]) -> UTxO {
+    UTxO { value, ..utxo(n, 0, owner, tokens) }
+}
+
+fn owner_tree() -> ErgoTree {
+    HexBytes(vec![OWNER])
+}
+
+#[test]
+fn a_tx_delta_nets_the_change_returned_to_the_address() {
+    // 100 in from the owner; 10 to another, 89 back as change, 1 fee.
+    let tx = tx(
+        0x50,
+        vec![valued(1, OWNER, 100, &[(TOKEN, 5)])],
+        vec![
+            valued(0x51, OTHER, 10, &[(TOKEN, 2)]),
+            valued(0x52, OWNER, 89, &[(TOKEN, 3)]),
+            valued(0x53, OTHER, 1, &[]),
+        ],
+    );
+    let delta = tx_delta(&owner_tree(), &tx.inputs, &tx.outputs).expect("touches the owner");
+    assert_eq!(delta.nano_ergs, -11);
+    assert_eq!(delta.tokens, BTreeMap::from([(digest(TOKEN), -2)]));
+
+    // The receiver sees the other side.
+    let other = HexBytes(vec![OTHER]);
+    let delta = tx_delta(&other, &tx.inputs, &tx.outputs).expect("pays the other");
+    assert_eq!(delta.nano_ergs, 11);
+    assert_eq!(delta.tokens, BTreeMap::from([(digest(TOKEN), 2)]));
+}
+
+#[test]
+fn a_tx_that_does_not_touch_the_address_has_no_delta() {
+    let tx = tx(0x50, vec![valued(1, OTHER, 5, &[])], vec![valued(0x51, OTHER, 5, &[])]);
+    assert_eq!(tx_delta(&owner_tree(), &tx.inputs, &tx.outputs), None);
+}
+
+/// A tx that re-creates the owner's box as it was, with someone else paying the fee, still
+/// touches the address: it is listed, with no change.
+#[test]
+fn a_tx_with_no_net_change_is_an_empty_delta() {
+    let tx = tx(
+        0x50,
+        vec![valued(1, OWNER, 7, &[(TOKEN, 1)]), valued(2, OTHER, 3, &[])],
+        vec![valued(0x51, OWNER, 7, &[(TOKEN, 1)]), valued(0x52, OTHER, 2, &[])],
+    );
+    let delta = tx_delta(&owner_tree(), &tx.inputs, &tx.outputs);
+    assert_eq!(delta, Some(PendingDelta::default()));
+}
+
+/// Newest first: a child above the parent it spends from, and only txs touching the address.
+#[test]
+fn pending_txs_are_the_overlay_reversed_with_each_txs_delta() {
+    let mut mempool = family();
+    mempool.push(tx(0x60, vec![utxo(3, 0, OTHER, &[])], vec![utxo(0x61, 0x60, OTHER, &[])]));
+    let confirmed: HashSet<BoxId> = [1, 2, 3].iter().map(|&n| digest(n)).collect();
+    let order = pending_order(&mempool, |b| confirmed.contains(&b.id));
+    let txs = pending_txs(&mempool, &order, &owner_tree());
+    let ids: Vec<u8> = txs.iter().map(|t| t.tx_id.0[0]).collect();
+    assert_eq!(ids, vec![0x10, 0x30, 0x20], "the overlay's order [0x20, 0x30, 0x10] reversed");
+    // Each moves one box of value 1 from the owner to the owner.
+    assert!(txs.iter().all(|t| t.delta == PendingDelta::default()));
+}

@@ -1,5 +1,5 @@
 //! What the relay sends, as JSON (DESIGN.md, "REST: confirmed snapshot", "Boxes with the
-//! pool" and "Balances").
+//! pool", "Balances" and "Transaction history").
 //!
 //! These types borrow what the services return and serialize it in the client's shape. They
 //! are separate from the node-facing types, whose derived `Serialize` writes amounts as
@@ -16,7 +16,10 @@ use serde::{
 };
 
 use crate::{
-    api::{AddressBalance, BoxPage, WithPoolBoxes},
+    api::{
+        AddressBalance, BoxPage, WithPoolBoxes,
+        history::{HistoryItem, HistoryPage},
+    },
     engine::{BlockRef, StoredBox, Totals, overlay::PendingDelta},
     types::{
         HexBytes,
@@ -218,6 +221,40 @@ fn assets<S: Serializer, T: Display + Copy>(
     s.serialize_field("nanoErgs", &Amount(nano_ergs))?;
     s.serialize_field("tokens", &tokens)?;
     s.end()
+}
+
+/// `GET /v1/addresses/{address}/transactions`: one list, newest first, pending txs on top. A
+/// pending tx is told apart by having no `height` and no `timestamp`. `delta` is the tx's
+/// signed net change for the address, per asset. No `asOf`: the page is not pinned to a
+/// block, and each confirmed tx carries its own height.
+pub struct HistoryBody<'a>(pub &'a HistoryPage);
+
+impl Serialize for HistoryBody<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let page = self.0;
+        let items: Vec<_> = page.items.iter().map(HistoryEntry).collect();
+        let mut s = serializer.serialize_struct("History", 2)?;
+        s.serialize_field("items", &items)?;
+        s.serialize_field("nextCursor", &page.next_cursor)?;
+        s.end()
+    }
+}
+
+struct HistoryEntry<'a>(&'a HistoryItem);
+
+impl Serialize for HistoryEntry<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let item = self.0;
+        let fields = if item.included.is_some() { 4 } else { 2 };
+        let mut s = serializer.serialize_struct("HistoryItem", fields)?;
+        s.serialize_field("txId", &item.tx_id)?;
+        if let Some(included) = item.included {
+            s.serialize_field("height", &included.height)?;
+            s.serialize_field("timestamp", &included.timestamp)?;
+        }
+        s.serialize_field("delta", &Pending(&item.delta))?;
+        s.end()
+    }
 }
 
 /// `GET /v1/status`. `tip` is `null` until the engine has applied a block.

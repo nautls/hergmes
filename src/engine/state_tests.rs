@@ -7,7 +7,7 @@ use proptest::{prelude::*, sample::Index};
 
 use super::*;
 use crate::{
-    engine::PendingTx,
+    engine::{PendingTx, overlay::TxDelta},
     sim::{self, Chain, Oracle, SimConfig, SimOp, strategy, testing::reference_delta},
     types::ergo::{TxId, UnconfirmedTransaction},
 };
@@ -785,6 +785,41 @@ impl Harness {
         }
     }
 
+    /// `key`'s pending txs as a history lists them: the reference overlay newest first, each
+    /// with what it pays to the address minus what it takes from it, from the snapshot's full
+    /// txs and summed with the oracle's totals.
+    fn reference_pending_txs(&self, key: &TrackingKey, utxo: &HashSet<BoxId>) -> Vec<TxDelta> {
+        let mut overlay = self.reference_overlay(key, utxo);
+        overlay.reverse();
+        overlay
+            .into_iter()
+            .map(|p| {
+                let tx = self
+                    .held_tx(&p.tx_id)
+                    .expect("an overlay tx is in the snapshot");
+                let spent: Vec<&UTxO> = tx.inputs.iter().filter(|i| key.matches(i)).collect();
+                let created = sim::totals(p.created.iter().map(|b| &**b));
+                let spent = sim::totals(spent);
+                let mut delta = PendingDelta {
+                    nano_ergs: i128::from(created.nano_ergs) - i128::from(spent.nano_ergs),
+                    ..PendingDelta::default()
+                };
+                for (id, a) in created.tokens {
+                    *delta.tokens.entry(id).or_default() += i128::from(a);
+                }
+                for (id, a) in spent.tokens {
+                    *delta.tokens.entry(id).or_default() -= i128::from(a);
+                }
+                delta.tokens.retain(|_, a| *a != 0);
+                TxDelta { tx_id: p.tx_id, delta }
+            })
+            .collect()
+    }
+
+    fn held_tx(&self, id: &TxId) -> Option<&UnconfirmedTransaction> {
+        self.held.as_deref()?.iter().find(|tx| tx.id == *id)
+    }
+
     /// `key`'s balance values and overlay at the engine's tip.
     fn expected(&self, key: &TrackingKey) -> Expected {
         let oracle = self.oracle();
@@ -899,6 +934,54 @@ impl Harness {
         for key in self.chain.keys() {
             let reference = self.reference_overlay(&key, &ids);
             assert_eq!(self.engine.mempool.overlay(&key), reference, "{key:?}'s overlay");
+        }
+
+        // Every address's pending txs, tracked or not, are the reference overlay's, newest
+        // first, each with its own change; with no conflict, they add up to its pending delta.
+        for key in self.chain.keys() {
+            let TrackingKey::Tree(tree) = &key else { continue };
+            let reference = self.reference_pending_txs(&key, &ids);
+            let txs = self.engine.mempool.pending_txs(tree);
+            assert_eq!(txs, reference, "{key:?}'s pending txs");
+            let spends: Vec<BoxId> = self
+                .reference_overlay(&key, &ids)
+                .iter()
+                .flat_map(|p| p.spent.iter().copied())
+                .collect();
+            let conflict = spends.len() > spends.iter().collect::<HashSet<_>>().len();
+            let mut summed = PendingDelta::default();
+            for tx in &txs {
+                summed.nano_ergs += tx.delta.nano_ergs;
+                for (id, amount) in &tx.delta.tokens {
+                    *summed.tokens.entry(*id).or_default() += amount;
+                }
+            }
+            summed.tokens.retain(|_, a| *a != 0);
+            if conflict {
+                self.seen.insert("pending history of a conflict");
+            } else {
+                assert_eq!(summed, self.engine.mempool.pending_delta(&key), "{key:?}'s sum");
+            }
+            if txs.len() >= 2 {
+                let created: HashSet<TxId> = self
+                    .reference_overlay(&key, &ids)
+                    .iter()
+                    .flat_map(|p| p.created.iter().map(|b| b.transaction_id))
+                    .collect();
+                // A child listed before a parent whose output it spends.
+                let child_first = txs.iter().enumerate().any(|(i, child)| {
+                    self.held_tx(&child.tx_id).is_some_and(|tx| {
+                        tx.inputs.iter().any(|input| {
+                            created.contains(&input.transaction_id)
+                                && txs[i + 1..].iter().any(|t| t.tx_id == input.transaction_id)
+                        })
+                    })
+                });
+                if child_first {
+                    self.seen
+                        .insert("pending history lists a child above its parent");
+                }
+            }
         }
 
         // Every tracked key's view with the pool is the reference one, and an address's sums to its
@@ -1100,6 +1183,8 @@ fn random_histories_reach_the_hard_engine_cases() {
         "with-pool view cut to the limit",
         "with-pool view cut to the limit lists every pending box",
         "with-pool view fits the limit only after pending spends",
+        "pending history of a conflict",
+        "pending history lists a child above its parent",
     ] {
         assert!(seen.contains(feature), "no random history reached: {feature}");
     }

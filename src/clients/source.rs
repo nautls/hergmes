@@ -3,8 +3,8 @@ use std::future::Future;
 use crate::{
     clients::node::{IndexedHeightResponse, InfoResponse, NodeError},
     types::ergo::{
-        Balance, BoxId, ErgoTree, HeaderId, IndexedBlock, IndexedBox, TokenId, TokenInfo, UTxO,
-        UnconfirmedTransaction,
+        AddressTransactions, Balance, BoxId, ErgoTree, HeaderId, IndexedBlock, IndexedBox, TokenId,
+        TokenInfo, UTxO, UnconfirmedTransaction,
     },
 };
 
@@ -73,6 +73,17 @@ pub trait NodeSource: Send + Sync {
         &self,
         id: &BoxId,
     ) -> impl Future<Output = Result<Option<IndexedBox>, NodeError>> + Send;
+
+    /// Up to `limit` txs of the address guarded by `ergo_tree`, newest first, skipping the
+    /// `offset` newest, and how many it has in all. The node counts `offset` from the newest
+    /// end and has no other order (`BlockchainApiRoute.getTxsByAddress`,
+    /// `Segment.getFromSegments`), so a tx that arrives between two reads shifts the next one.
+    fn address_transactions(
+        &self,
+        ergo_tree: &ErgoTree,
+        offset: u32,
+        limit: u32,
+    ) -> impl Future<Output = Result<AddressTransactions, NodeError>> + Send;
 
     /// Confirmed balance of the boxes guarded by `ergo_tree`.
     fn confirmed_balance(

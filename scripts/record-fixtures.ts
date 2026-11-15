@@ -4,6 +4,10 @@
  * Usage:
  *   node scripts/record-fixtures.ts [--node URL] [--out DIR]
  *       [--address ADDR] [--small-token TOKEN_ID]
+ *   node scripts/record-fixtures.ts --history-only [--node URL] [--out DIR]
+ *
+ * --history-only records only the address tx history fixtures, for the sample address of
+ * the existing manifest.json, and adds them to it, leaving every other fixture as it is.
  *
  * Runs on Node 23.6+ (native type stripping) with no dependencies.
  * The node URL defaults to $ERGO_NODE_URL. The node must run the extra indexer.
@@ -16,7 +20,7 @@
  * a real response and say how in their notes.
  */
 
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
@@ -24,6 +28,9 @@ import { parseArgs } from "node:util";
 const UNKNOWN_ID = "ab".repeat(32);
 // Valid mainnet P2PK address (Fleet SDK test vectors) that holds no boxes.
 const EMPTY_ADDRESS = "9gNvAv97W71Wm33GoXgSQBFJxinFubKvE6wh2dEhFTSgYEe783j";
+// Valid mainnet P2PK address of a random curve point, so no one holds its key: no box and no
+// tx has ever touched it. EMPTY_ADDRESS holds no boxes but has a history.
+const UNUSED_ADDRESS = "9iKCdiitfAVb1Wux5nFXiMcdYXGkhdNksAxJHQ28qiAMkxXupbt";
 const SMALL_SUPPLY_LIMIT = 100;
 const BLOCKS_TO_SCAN = 50;
 const MEMPOOL_LIMIT = 20;
@@ -200,6 +207,72 @@ async function discover(
   return { address: address!, nft: nft!, small: small!, large: large! };
 }
 
+/**
+ * An address's tx history, newest first, offset from the newest end. Two overlapping reads
+ * are recorded together, and kept only if the second is the first's tail with the same total,
+ * which is what the relay's anchored cursor relies on. A tx that lands between the two reads
+ * breaks that, so they are read again.
+ */
+async function recordHistory(rec: Recorder, address: string, height: number) {
+  const path = (offset: number, limit: number) =>
+    `/blockchain/transaction/byAddress?offset=${offset}&limit=${limit}`;
+  const notes = `Newest first; offset counts from the newest end. Recorded at height ${height}.`;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    const first = await rec.node.request("POST", path(0, 3), address);
+    const later = await rec.node.request("POST", path(1, 2), address);
+    if (first.status !== 200 || later.status !== 200) {
+      fail(`transaction/byAddress returned ${first.status} and ${later.status}`);
+    }
+    const ids = (r: Response) => r.value.items.map((t: Json) => t.id);
+    const tail = ids(first).slice(1);
+    const same =
+      first.value.total === later.value.total &&
+      // More than the first read holds, so the offset read pages into a longer list.
+      first.value.total > 3 &&
+      JSON.stringify(tail) === JSON.stringify(ids(later));
+    if (!same) {
+      console.log(`  (history moved between reads, attempt ${attempt})`);
+      continue;
+    }
+    const entry = (offset: number, limit: number) => ({
+      method: "POST" as Method,
+      path: path(offset, limit),
+      status: 200,
+      body: address,
+    });
+    rec.save("transactions_by_address", { ...entry(0, 3), notes }, first.exact);
+    rec.save(
+      "transactions_by_address_offset",
+      { ...entry(1, 2), notes: `${notes} The tail of transactions_by_address, same total.` },
+      later.exact,
+    );
+    await rec.record(
+      "transactions_by_address_empty",
+      "POST",
+      path(0, 3),
+      UNUSED_ADDRESS,
+      "An address with no txs is an empty page with total 0, not a 404.",
+    );
+    return;
+  }
+  fail("The sample address's history kept moving; try again.");
+}
+
+async function historyOnly(node: Node, outDir: string) {
+  const manifestPath = join(outDir, "manifest.json");
+  const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+  const info = await node.ok("GET", "/info");
+  if (info.appVersion !== manifest.nodeVersion) {
+    fail(`The node runs ${info.appVersion}, the fixtures were recorded from ${manifest.nodeVersion}`);
+  }
+  const rec = new Recorder(node, outDir);
+  console.log(`Recording history fixtures for ${manifest.samples.address} into ${outDir}`);
+  await recordHistory(rec, manifest.samples.address, info.fullHeight);
+  manifest.fixtures = { ...manifest.fixtures, ...rec.manifest };
+  writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + "\n");
+  console.log(`Added ${Object.keys(rec.manifest).length} fixtures to manifest.json`);
+}
+
 async function main() {
   const { values: args } = parseArgs({
     options: {
@@ -207,6 +280,7 @@ async function main() {
       out: { type: "string", default: fileURLToPath(new URL("../tests/fixtures", import.meta.url)) },
       address: { type: "string" },
       "small-token": { type: "string" },
+      "history-only": { type: "boolean", default: false },
     },
   });
   if (!args.node) fail("Pass --node or set ERGO_NODE_URL");
@@ -214,6 +288,7 @@ async function main() {
   const node = new Node(args.node);
   const outDir = resolve(args.out!);
   mkdirSync(outDir, { recursive: true });
+  if (args["history-only"]) return historyOnly(node, outDir);
   const rec = new Recorder(node, outDir);
 
   const info = await node.ok("GET", "/info");
@@ -320,6 +395,7 @@ async function main() {
     "Empty set is 200 [] (the spec says 404).",
   );
   await rec.record("balance", "POST", "/blockchain/balance", address);
+  await recordHistory(rec, address, info.fullHeight);
   await rec.record("balance_empty", "POST", "/blockchain/balance", EMPTY_ADDRESS);
 
   // Tokens
