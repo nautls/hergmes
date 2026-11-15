@@ -13,6 +13,7 @@
 use std::{collections::HashMap, sync::Arc};
 
 use axum::extract::ws::{CloseFrame, Message, close_code};
+use serde_json::value::RawValue;
 use tokio::{
     sync::mpsc,
     task::{JoinError, JoinSet},
@@ -26,7 +27,7 @@ use crate::{
     api::{
         ApiError,
         http::Api,
-        protocol::{self, ClientKey, ClientMessage, Reject, ServerMessage, SubscribeId},
+        protocol::{self, ClientMessage, Echo, Reject, ServerMessage, SubscribeId},
         ws::{
             CLOSE_TIMEOUT, Config, MISSED_PINGS, PING_INTERVAL, RecvError, SINK_CAPACITY, Socket,
             WRITE_TIMEOUT,
@@ -89,7 +90,7 @@ type Step = Result<(), End>;
 
 /// A key's subscription on this connection, and the key as the client last spelled it.
 struct Entry {
-    echo: ClientKey,
+    echo: Echo,
     state: State,
 }
 
@@ -212,8 +213,9 @@ impl<S: NodeSource + 'static, K: Socket> Connection<S, K> {
     async fn on_message(&mut self, message: ClientMessage) -> Step {
         let (network, policy) = (self.api.network, &self.api.policy);
         match message {
-            ClientMessage::Subscribe { key: echo, from, id } => {
-                let key = match echo.resolve(network, policy) {
+            ClientMessage::Subscribe { key: client_key, from, id } => {
+                let echo = client_key.echo();
+                let key = match client_key.resolve(network, policy) {
                     Ok(key) => key,
                     Err(error) => return self.reject(&echo, Reject::Api(error), id).await,
                 };
@@ -248,7 +250,7 @@ impl<S: NodeSource + 'static, K: Socket> Connection<S, K> {
     fn open(
         &mut self,
         key: TrackingKey,
-        echo: ClientKey,
+        echo: Echo,
         from: Option<BlockRef>,
         id: Option<SubscribeId>,
         replaced: Option<Replaced>,
@@ -329,7 +331,8 @@ impl<S: NodeSource + 'static, K: Socket> Connection<S, K> {
         match opened {
             Opened::Live { id, catch_up, feed } => {
                 let entry = self.keys.get_mut(&key).expect("current");
-                // Live before the catch-up is written, so a failed write still unsubscribes.
+                // A failed write below ends the connection, and the dropped `feed` ends the
+                // subscription, as on any disconnect (`serve`).
                 entry.state = State::Live(id);
                 // Once per subscribe; each live output borrows the echo instead.
                 let echo = entry.echo.clone();
@@ -394,7 +397,7 @@ impl<S: NodeSource + 'static, K: Socket> Connection<S, K> {
 
     /// Logged as REST logs its errors: a node failure's details at `warn`, since the client
     /// gets only the code, and other refusals at `debug`.
-    async fn reject(&mut self, echo: &ClientKey, reject: Reject, id: Option<SubscribeId>) -> Step {
+    async fn reject(&mut self, echo: &RawValue, reject: Reject, id: Option<SubscribeId>) -> Step {
         match &reject {
             Reject::Api(ApiError::EngineGone(_)) => return Err(End::EngineGone),
             Reject::Api(error @ ApiError::NodeError(_)) => {

@@ -7,6 +7,7 @@
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize, Serializer, ser::SerializeStruct};
+use serde_json::value::{RawValue, to_raw_value};
 
 use crate::{
     api::{
@@ -15,7 +16,7 @@ use crate::{
         keys::{address_key, token_key},
         wire::{AsOf, Confirmed, Pending, WireBox},
     },
-    engine::{BlockRef, Output, PendingTx, ResyncReason, StoredBox, TrackingKey},
+    engine::{BlockRef, Output, PendingTx, ResyncReason, TrackingKey},
     types::{
         address::Network,
         ergo::{BoxId, HeaderId},
@@ -32,7 +33,16 @@ pub enum ClientKey {
     TokenId(String),
 }
 
+/// A key as every message for it spells it: the client's spelling, as JSON. Serialized once
+/// per subscribe, and copied into each message for the key.
+pub type Echo = Box<RawValue>;
+
 impl ClientKey {
+    /// The key as every message for it spells it.
+    pub fn echo(&self) -> Echo {
+        to_raw_value(self).expect("a key serializes")
+    }
+
     /// The tracking key, through the same checks as a REST route: the network, the token id's
     /// form and the operator's policy.
     pub fn resolve(&self, network: Network, policy: &KeyPolicy) -> Result<TrackingKey, ApiError> {
@@ -44,14 +54,17 @@ impl ClientKey {
 }
 
 /// What a client sends.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(tag = "op", rename_all = "lowercase", deny_unknown_fields)]
 pub enum ClientMessage {
     /// With `from`, the key's boxes from that block on; without, its balance only.
     Subscribe {
         key: ClientKey,
+        #[serde(default)]
         from: Option<BlockRef>,
         /// The client's name for this subscribe, echoed in its answer, so an answer to an
         /// older subscribe of the key is never taken for the newer one's.
+        #[serde(default)]
         id: Option<SubscribeId>,
     },
     Unsubscribe {
@@ -62,30 +75,11 @@ pub enum ClientMessage {
 /// A subscribe's id, chosen by the client. An integer that JavaScript holds exactly.
 pub type SubscribeId = u32;
 
-#[derive(Deserialize)]
-#[serde(tag = "op", rename_all = "lowercase", deny_unknown_fields)]
-enum RawMessage {
-    Subscribe {
-        key: ClientKey,
-        #[serde(default)]
-        from: Option<BlockRef>,
-        #[serde(default)]
-        id: Option<SubscribeId>,
-    },
-    Unsubscribe {
-        key: ClientKey,
-    },
-}
-
 impl ClientMessage {
     /// Parses a client's text message. A message that does not parse is malformed: the
     /// error says why, and the connection is closed with it.
     pub fn parse(text: &str) -> Result<Self, String> {
-        let raw: RawMessage = serde_json::from_str(text).map_err(|e| e.to_string())?;
-        Ok(match raw {
-            RawMessage::Subscribe { key, from, id } => Self::Subscribe { key, from, id },
-            RawMessage::Unsubscribe { key } => Self::Unsubscribe { key },
-        })
+        serde_json::from_str(text).map_err(|e| e.to_string())
     }
 }
 
@@ -128,20 +122,20 @@ pub enum ServerMessage<'a> {
     /// new subscription starts, since after a replace or an unsubscribe the old one's
     /// messages may still be on their way, and every message names only the key.
     Subscribed {
-        key: &'a ClientKey,
+        key: &'a RawValue,
         id: Option<SubscribeId>,
     },
     Output {
-        key: &'a ClientKey,
+        key: &'a RawValue,
         output: &'a Output,
     },
     Resync {
-        key: &'a ClientKey,
+        key: &'a RawValue,
         reason: ResyncReason,
         id: Option<SubscribeId>,
     },
     Rejected {
-        key: &'a ClientKey,
+        key: &'a RawValue,
         reject: &'a Reject,
         id: Option<SubscribeId>,
     },
@@ -171,17 +165,18 @@ pub fn keyless(output: &Output) -> Box<str> {
 
 /// The text of [`ServerMessage::Output`] for `key`, from the output's [`keyless`] text:
 /// the key goes right after `type`, where the message has it.
-pub fn with_key(keyless: &str, key: &ClientKey) -> String {
+pub fn with_key(keyless: &str, key: &RawValue) -> String {
     const TYPE: &str = r#"{"type":""#;
     debug_assert!(keyless.starts_with(TYPE), "{keyless}");
     // A type is a fixed word, so its value ends at the next quote.
     let at = TYPE.len() + keyless[TYPE.len()..].find('"').expect("a closed type") + 1;
-    let mut text = Vec::with_capacity(keyless.len() + 64);
-    text.extend_from_slice(&keyless.as_bytes()[..at]);
-    text.extend_from_slice(br#","key":"#);
-    serde_json::to_writer(&mut text, key).expect("a key serializes");
-    text.extend_from_slice(&keyless.as_bytes()[at..]);
-    String::from_utf8(text).expect("JSON is UTF-8")
+    let key = key.get();
+    let mut text = String::with_capacity(keyless.len() + r#","key":"#.len() + key.len());
+    text.push_str(&keyless[..at]);
+    text.push_str(r#","key":"#);
+    text.push_str(key);
+    text.push_str(&keyless[at..]);
+    text
 }
 
 impl Serialize for ServerMessage<'_> {
@@ -189,18 +184,19 @@ impl Serialize for ServerMessage<'_> {
         match self {
             Self::Output { key, output } => serialize_output(serializer, Some(key), output),
             Self::Subscribed { key, id } => {
-                let s = answer(serializer, "Subscribed", "subscribed", *id, key, 0)?;
+                let s = start(serializer, "Subscribed", "subscribed", *id, Some(key), 0)?;
                 s.end()
             }
             Self::Resync { key, reason, id } => {
-                let mut s = answer(serializer, "ResyncRequired", "resync_required", *id, key, 1)?;
+                let name = "ResyncRequired";
+                let mut s = start(serializer, name, "resync_required", *id, Some(key), 1)?;
                 s.serialize_field("reason", reason)?;
                 s.end()
             }
             Self::Rejected { key, reject, id } => {
                 let retry_after = reject.retry_after().map(seconds);
                 let fields = 1 + usize::from(retry_after.is_some());
-                let mut s = answer(serializer, "Rejected", "rejected", *id, key, fields)?;
+                let mut s = start(serializer, "Rejected", "rejected", *id, Some(key), fields)?;
                 s.serialize_field("reason", reject.code())?;
                 if let Some(retry_after) = retry_after {
                     s.serialize_field("retryAfter", &retry_after)?;
@@ -211,35 +207,22 @@ impl Serialize for ServerMessage<'_> {
     }
 }
 
-/// An answer's `type`, its subscribe's `id` if it had one, and its `key`, with `fields` more
-/// to come.
-fn answer<S: Serializer>(
-    serializer: S,
-    name: &'static str,
-    kind: &'static str,
-    id: Option<SubscribeId>,
-    key: &ClientKey,
-    fields: usize,
-) -> Result<S::SerializeStruct, S::Error> {
-    let mut s = serializer.serialize_struct(name, 2 + usize::from(id.is_some()) + fields)?;
-    s.serialize_field("type", kind)?;
-    if let Some(id) = id {
-        s.serialize_field("id", &id)?;
-    }
-    s.serialize_field("key", key)?;
-    Ok(s)
-}
-
-/// A message's `type` and, unless it is [`keyless`], its `key`, with `fields` more to come.
+/// A message's `type`; the subscribe's `id`, if the message answers a subscribe that had one;
+/// and, unless the message is [`keyless`], its `key`. `fields` more are to come.
 fn start<S: Serializer>(
     serializer: S,
     name: &'static str,
     kind: &'static str,
-    key: Option<&ClientKey>,
+    id: Option<SubscribeId>,
+    key: Option<&RawValue>,
     fields: usize,
 ) -> Result<S::SerializeStruct, S::Error> {
-    let mut s = serializer.serialize_struct(name, 1 + usize::from(key.is_some()) + fields)?;
+    let len = 1 + usize::from(id.is_some()) + usize::from(key.is_some()) + fields;
+    let mut s = serializer.serialize_struct(name, len)?;
     s.serialize_field("type", kind)?;
+    if let Some(id) = id {
+        s.serialize_field("id", &id)?;
+    }
     if let Some(key) = key {
         s.serialize_field("key", key)?;
     }
@@ -248,7 +231,7 @@ fn start<S: Serializer>(
 
 fn serialize_output<S: Serializer>(
     serializer: S,
-    key: Option<&ClientKey>,
+    key: Option<&RawValue>,
     output: &Output,
 ) -> Result<S::Ok, S::Error> {
     match output {
@@ -260,25 +243,25 @@ fn serialize_output<S: Serializer>(
             delta(serializer, "block", key, block, parent_id, &created, spent)
         }
         Output::Rollback { block, parent_id, created, spent, .. } => {
-            let created: Vec<_> = created.iter().map(confirmed_box).collect();
+            let created: Vec<_> = created.iter().map(WireBox::from).collect();
             delta(serializer, "rollback", key, block, parent_id, &created, spent)
         }
         Output::Mempool { tip_height, pending, .. } => {
             let pending: Vec<_> = pending.iter().map(WirePendingTx).collect();
-            let mut s = start(serializer, "Mempool", "mempool", key, 2)?;
+            let mut s = start(serializer, "Mempool", "mempool", None, key, 2)?;
             s.serialize_field("tipHeight", tip_height)?;
             s.serialize_field("pending", &pending)?;
             s.end()
         }
         Output::Balance { balance, .. } => {
-            let mut s = start(serializer, "Balance", "balance", key, 3)?;
+            let mut s = start(serializer, "Balance", "balance", None, key, 3)?;
             s.serialize_field("asOf", &AsOf::from(&balance.as_of))?;
             s.serialize_field("confirmed", &Confirmed(&balance.confirmed))?;
             s.serialize_field("pending", &Pending(&balance.pending))?;
             s.end()
         }
         Output::ResyncRequired { reason, .. } => {
-            let mut s = start(serializer, "ResyncRequired", "resync_required", key, 1)?;
+            let mut s = start(serializer, "ResyncRequired", "resync_required", None, key, 1)?;
             s.serialize_field("reason", reason)?;
             s.end()
         }
@@ -288,20 +271,16 @@ fn serialize_output<S: Serializer>(
     }
 }
 
-fn confirmed_box(b: &StoredBox) -> WireBox<'_> {
-    WireBox { utxo: &b.utxo, inclusion_height: Some(b.inclusion_height) }
-}
-
 fn delta<S: Serializer>(
     serializer: S,
     kind: &'static str,
-    key: Option<&ClientKey>,
+    key: Option<&RawValue>,
     block: &BlockRef,
     parent_id: &HeaderId,
     created: &[WireBox<'_>],
     spent: &[crate::engine::Spend],
 ) -> Result<S::Ok, S::Error> {
-    let mut s = start(serializer, "Delta", kind, key, 5)?;
+    let mut s = start(serializer, "Delta", kind, None, key, 5)?;
     s.serialize_field("height", &block.height)?;
     s.serialize_field("headerId", &block.header_id)?;
     s.serialize_field("parentId", parent_id)?;

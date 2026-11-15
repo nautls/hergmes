@@ -6,7 +6,7 @@ use std::{collections::BTreeMap, sync::Arc, time::Duration};
 use super::*;
 use crate::{
     api::cursor::CursorError,
-    engine::{Balance, Spend, Totals, overlay::PendingDelta},
+    engine::{Balance, Spend, StoredBox, Totals, overlay::PendingDelta},
     sim::testing::digest,
     types::{
         HexBytes,
@@ -42,9 +42,14 @@ fn address() -> ClientKey {
     ClientKey::Address(ADDRESS.to_owned())
 }
 
+/// [`address`] as every message for it spells it.
+fn echo() -> Echo {
+    address().echo()
+}
+
 /// An output's message, checked to be the same text whether serialized whole, as for a
 /// catch-up, or from its shared keyless text, as for a routed output.
-fn output(key: &ClientKey, output: &Output) -> String {
+fn output(key: &RawValue, output: &Output) -> String {
     let whole = ServerMessage::Output { key, output }.to_text();
     let keyless = keyless(output);
     assert!(!keyless.contains(r#""key""#), "{keyless}");
@@ -196,7 +201,7 @@ fn a_block_carries_its_boxes_with_its_height_and_the_key_as_sent() {
         hex(3),
         hex(4),
     );
-    assert_eq!(output(&key, &block), expected);
+    assert_eq!(output(&key.echo(), &block), expected);
 }
 
 #[test]
@@ -221,7 +226,7 @@ fn a_rollback_restores_boxes_with_the_heights_that_included_them() {
         hex(3),
         hex(4),
     );
-    assert_eq!(output(&address(), &rollback), expected);
+    assert_eq!(output(&echo(), &rollback), expected);
 }
 
 #[test]
@@ -246,7 +251,7 @@ fn a_mempool_overlay_has_no_inclusion_heights_and_spends_by_id() {
         wire_box(&created, None),
         hex(3),
     );
-    assert_eq!(output(&address(), &mempool), expected);
+    assert_eq!(output(&echo(), &mempool), expected);
     assert!(!expected.contains("inclusionHeight"));
 }
 
@@ -275,7 +280,7 @@ fn a_balance_is_as_of_a_height_and_header_with_string_amounts() {
         hex(9),
         hex(9),
     );
-    assert_eq!(output(&address(), &balance), expected);
+    assert_eq!(output(&echo(), &balance), expected);
 }
 
 #[test]
@@ -287,13 +292,13 @@ fn resyncs_name_their_reason() {
     };
     let routed =
         Output::ResyncRequired { key: tracking_key(), reason: ResyncReason::ForkBeyondWindow };
-    assert_eq!(output(&address(), &routed), expected("fork_beyond_window"));
+    assert_eq!(output(&echo(), &routed), expected("fork_beyond_window"));
     for (reason, code) in [
         (ResyncReason::OutsideWindow, "outside_window"),
         (ResyncReason::NotTracked, "not_tracked"),
         (ResyncReason::SlowConsumer, "slow_consumer"),
     ] {
-        let text = ServerMessage::Resync { key: &address(), reason, id: None }.to_text();
+        let text = ServerMessage::Resync { key: &echo(), reason, id: None }.to_text();
         assert_eq!(text, expected(code));
     }
 }
@@ -302,7 +307,7 @@ fn resyncs_name_their_reason() {
 #[test]
 fn rejections_carry_retry_after_only_when_it_is_worth_waiting() {
     let rejected = |reject: Reject| {
-        ServerMessage::Rejected { key: &address(), reject: &reject, id: None }.to_text()
+        ServerMessage::Rejected { key: &echo(), reject: &reject, id: None }.to_text()
     };
     let expected = |tail: &str| {
         format!(r#"{{"type":"rejected","key":{{"address":"{ADDRESS}"}},"reason":{tail}}}"#)
@@ -332,14 +337,14 @@ fn rejections_carry_retry_after_only_when_it_is_worth_waiting() {
 
 #[test]
 fn subscribed_names_the_key_as_sent() {
-    let text = ServerMessage::Subscribed { key: &address(), id: None }.to_text();
+    let text = ServerMessage::Subscribed { key: &echo(), id: None }.to_text();
     assert_eq!(text, format!(r#"{{"type":"subscribed","key":{{"address":"{ADDRESS}"}}}}"#));
 }
 
 /// A subscribe's answers carry its `id` right after `type`, and only when it had one.
 #[test]
 fn answers_carry_their_subscribes_id() {
-    let key = &address();
+    let key = &echo();
     let reject = Reject::Api(ApiError::NotReady { retry_after: Duration::from_secs(2) });
     let reason = ResyncReason::NotTracked;
     let cases = [

@@ -815,7 +815,7 @@ async fn a_replace_keeps_the_key_tracked_until_the_new_subscribe_is_answered() {
     let config = engine::Config { grace: 0, ..CONFIG };
     let mut f = Fixture::with(config, Settled::now()).await;
     let key = f.tree_key(0);
-    let echo = ClientKey::Address(f.address(0));
+    let echo = protocol::ClientKey::Address(f.address(0));
     let (socket, _to_server, _from_server) = idle_socket();
     let mut connection = connection(&f, socket);
     let subscribe = |from| ClientMessage::Subscribe { key: echo.clone(), from, id: None };
@@ -893,10 +893,10 @@ async fn reads_do_not_starve_outputs_or_finished_subscribes() {
     connection
         .feeds
         .insert(live.clone(), StreamNotifyClose::new(ReceiverStream::new(feed)));
-    let echo = ClientKey::Address(f.address(1));
+    let echo = protocol::ClientKey::Address(f.address(1));
     connection
         .keys
-        .insert(live, Entry { echo, state: State::Live(id) });
+        .insert(live, Entry { echo: echo.echo(), state: State::Live(id) });
 
     // A subscribe that has finished.
     let opening = f.tree_key(0);
@@ -905,10 +905,10 @@ async fn reads_do_not_starve_outputs_or_finished_subscribes() {
         0,
         Opened::Resync(ResyncReason::NotTracked),
     )));
-    let echo = ClientKey::Address(f.address(0));
+    let echo = protocol::ClientKey::Address(f.address(0));
     connection.keys.insert(
         opening,
-        Entry { echo, state: State::Pending { seq: 0, id: None, replaced: None } },
+        Entry { echo: echo.echo(), state: State::Pending { seq: 0, id: None, replaced: None } },
     );
     connection.next_seq = 1;
     tokio::task::yield_now().await;
@@ -1046,10 +1046,10 @@ async fn a_result_for_a_key_that_moved_on_is_discarded() {
     let mut connection = connection(&f, socket);
     connection.next_seq = 2;
     connection.pending.spawn(std::future::pending());
-    let echo = ClientKey::Address(f.address(0));
+    let echo = protocol::ClientKey::Address(f.address(0));
     connection.keys.insert(
         key.clone(),
-        Entry { echo, state: State::Pending { seq: 1, id: None, replaced: None } },
+        Entry { echo: echo.echo(), state: State::Pending { seq: 1, id: None, replaced: None } },
     );
 
     let live = subscribe(&f.api, &key, None).await;
@@ -1097,7 +1097,7 @@ async fn finish(connection: &mut Connection<SimChain, TestSocket>) {
 async fn a_replace_during_a_load_does_not_restart_it() {
     let f = Fixture::new().await;
     let key = f.tree_key(0);
-    let echo = ClientKey::Address(f.address(0));
+    let echo = protocol::ClientKey::Address(f.address(0));
     let (socket, _to_server, mut from_server) = idle_socket();
     let mut connection = connection(&f, socket);
     let subscribe = |id| ClientMessage::Subscribe { key: echo.clone(), from: None, id: Some(id) };
@@ -1129,7 +1129,7 @@ async fn cancelled_subscribes_count_against_the_cap_until_they_finish() {
     let (socket, _to_server, mut from_server) = idle_socket();
     let mut connection = connection(&f, socket);
     connection.config = Config { max_subscriptions: 2 };
-    let echo = |i| ClientKey::Address(f.address(i));
+    let echo = |i| protocol::ClientKey::Address(f.address(i));
     let subscribe = |i, id| ClientMessage::Subscribe { key: echo(i), from: None, id: Some(id) };
 
     // Read back to back: no subscribe has run yet.

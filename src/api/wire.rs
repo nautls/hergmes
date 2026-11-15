@@ -16,7 +16,7 @@ use serde::{
 
 use crate::{
     api::{AddressBalance, BoxPage},
-    engine::{BlockRef, Totals, overlay::PendingDelta},
+    engine::{BlockRef, StoredBox, Totals, overlay::PendingDelta},
     types::{
         HexBytes,
         address::Network,
@@ -38,6 +38,12 @@ impl<T: Display> Serialize for Amount<T> {
 pub struct WireBox<'a> {
     pub utxo: &'a UTxO,
     pub inclusion_height: Option<u32>,
+}
+
+impl<'a> From<&'a StoredBox> for WireBox<'a> {
+    fn from(b: &'a StoredBox) -> Self {
+        Self { utxo: &b.utxo, inclusion_height: Some(b.inclusion_height) }
+    }
 }
 
 impl Serialize for WireBox<'_> {
@@ -120,11 +126,7 @@ pub struct PageBody<'a>(pub &'a BoxPage);
 impl Serialize for PageBody<'_> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let page = self.0;
-        let items: Vec<_> = page
-            .items
-            .iter()
-            .map(|b| WireBox { utxo: &b.utxo, inclusion_height: Some(b.inclusion_height) })
-            .collect();
+        let items: Vec<_> = page.items.iter().map(WireBox::from).collect();
         let mut s = serializer.serialize_struct("Page", 3)?;
         s.serialize_field("asOf", &AsOf::from(&page.as_of))?;
         s.serialize_field("items", &items)?;

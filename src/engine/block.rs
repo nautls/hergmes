@@ -102,7 +102,8 @@ impl ChainLink {
     }
 }
 
-/// A full box kept in the ring buffer.
+/// A confirmed box and the height of the block that included it: kept in the ring buffer,
+/// restored by a rollback, and served in pages.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StoredBox {
     pub inclusion_height: u32,

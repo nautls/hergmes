@@ -28,7 +28,7 @@ pub mod ws;
 
 pub use balances::{AddressBalance, Balances};
 pub use cursor::Cursor;
-pub use pages::{BoxPage, PagedBox, Pages};
+pub use pages::{BoxPage, Pages};
 pub use policy::KeyPolicy;
 
 /// Why a request failed, one variant per error code (DESIGN.md, "Errors"). The code is for

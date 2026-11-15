@@ -12,9 +12,9 @@ use crate::{
     adapters::{BoxFetcher, EngineHandle, Loader, TokenChecker},
     api::{ApiError, Cursor},
     clients::NodeSource,
-    engine::{BlockRef, PageError, PageIds, Query, Reply, TrackingKey},
+    engine::{BlockRef, PageError, PageIds, Query, Reply, StoredBox, TrackingKey},
     runtime::Settled,
-    types::ergo::{BoxId, UTxO},
+    types::ergo::BoxId,
 };
 
 /// Boxes per page when the request names no limit.
@@ -22,17 +22,10 @@ pub const DEFAULT_LIMIT: u32 = 500;
 /// The most boxes per page: one `withPool/byIds` chunk, so a cold page is one node call.
 pub const MAX_LIMIT: u32 = crate::adapters::boxes::CHUNK as u32;
 
-/// A confirmed box and the height of the block that included it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PagedBox {
-    pub utxo: Arc<UTxO>,
-    pub inclusion_height: u32,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BoxPage {
     pub as_of: BlockRef,
-    pub items: Vec<PagedBox>,
+    pub items: Vec<StoredBox>,
     /// `None` exactly on the last page.
     pub next_cursor: Option<String>,
 }
@@ -101,7 +94,7 @@ impl<S: NodeSource> Pages<S> {
             .iter()
             .zip(found)
             .map(|(b, utxo)| match utxo {
-                Some(utxo) => Ok(PagedBox { utxo, inclusion_height: b.inclusion_height }),
+                Some(utxo) => Ok(StoredBox { utxo, inclusion_height: b.inclusion_height }),
                 // A page never leaves a box out.
                 None => Err(ApiError::BoxUnavailable { box_id: b.box_id }),
             })

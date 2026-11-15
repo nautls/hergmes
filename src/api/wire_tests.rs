@@ -5,7 +5,6 @@ use std::{collections::BTreeMap, sync::Arc};
 
 use super::*;
 use crate::{
-    api::PagedBox,
     sim::testing::digest,
     types::ergo::{NonMandatoryRegisters, Token},
 };
@@ -84,7 +83,7 @@ fn a_page_has_its_block_and_a_null_cursor_on_the_last_page() {
     let as_of = BlockRef { height: 12, header_id: digest(9) };
     let mut page = BoxPage {
         as_of,
-        items: vec![PagedBox { utxo: Arc::new(utxo()), inclusion_height: 12 }],
+        items: vec![StoredBox { utxo: Arc::new(utxo()), inclusion_height: 12 }],
         next_cursor: None,
     };
     let text = json(PageBody(&page));

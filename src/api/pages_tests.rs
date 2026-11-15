@@ -28,7 +28,7 @@ use crate::{
         testing::{Yielding, ready, utxo},
         token_id,
     },
-    types::ergo::TokenId,
+    types::ergo::{TokenId, UTxO},
 };
 
 /// Small enough that reorgs reach past the window and keys go idle between pages.
@@ -91,7 +91,7 @@ struct Snapshot {
     limit: u32,
     as_of: Option<BlockRef>,
     cursor: Option<String>,
-    items: Vec<PagedBox>,
+    items: Vec<StoredBox>,
     pages: usize,
 }
 
@@ -453,11 +453,11 @@ fn tree_key(sim: &SimChain, tree: usize) -> TrackingKey {
 }
 
 /// The oracle's boxes of `key` at the node's tip, as a page holds them.
-fn expected(sim: &SimChain, key: &TrackingKey) -> Vec<PagedBox> {
+fn expected(sim: &SimChain, key: &TrackingKey) -> Vec<StoredBox> {
     let chain = sim.lock();
     let tip = chain.tip();
     (chain.oracle().unspent(key, tip.height).into_iter())
-        .map(|(k, utxo)| PagedBox { utxo, inclusion_height: k.inclusion_height })
+        .map(|(k, utxo)| StoredBox { utxo, inclusion_height: k.inclusion_height })
         .collect()
 }
 
