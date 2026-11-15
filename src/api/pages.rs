@@ -1,5 +1,6 @@
 //! The page service: a page of a key's unspent boxes, pinned to the first page's block
-//! (DESIGN.md, "REST: confirmed snapshot").
+//! (DESIGN.md, "REST: confirmed snapshot"), and a key's boxes with its overlay applied at
+//! the tip, in one response (DESIGN.md, "Boxes with the pool").
 //!
 //! The ids come from the engine, so every page of a snapshot is as of one block whatever
 //! happens between requests; the boxes come from the box fetcher. A key that is not tracked
@@ -12,14 +13,17 @@ use crate::{
     adapters::{BoxFetcher, EngineHandle, Loader, TokenChecker},
     api::{ApiError, Cursor},
     clients::NodeSource,
-    engine::{BlockRef, PageError, PageIds, Query, Reply, StoredBox, TrackingKey},
+    engine::{
+        BlockRef, BoxKey, PageError, PageIds, Query, Reply, StoredBox, TrackingKey, WithPoolIds,
+    },
     runtime::Settled,
-    types::ergo::BoxId,
+    types::ergo::{BoxId, UTxO},
 };
 
 /// Boxes per page when the request names no limit.
 pub const DEFAULT_LIMIT: u32 = 500;
 /// The most boxes per page: one `withPool/byIds` chunk, so a cold page is one node call.
+/// Also the most confirmed boxes in a view with the pool, for the same reason.
 pub const MAX_LIMIT: u32 = crate::adapters::boxes::CHUNK as u32;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -28,6 +32,24 @@ pub struct BoxPage {
     pub items: Vec<StoredBox>,
     /// `None` exactly on the last page.
     pub next_cursor: Option<String>,
+}
+
+/// A key's boxes at `as_of` with its overlay applied: the confirmed ones it leaves unspent,
+/// at most [`MAX_LIMIT`], then every pending one it creates and leaves unspent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WithPoolBoxes {
+    pub as_of: BlockRef,
+    pub confirmed: Vec<StoredBox>,
+    pub pending: Vec<Arc<UTxO>>,
+    /// The whole view's size, confirmed boxes left out by the limit included.
+    pub total: usize,
+}
+
+impl WithPoolBoxes {
+    /// Whether confirmed boxes were left out. Pending ones never are.
+    pub fn truncated(&self) -> bool {
+        self.confirmed.len() + self.pending.len() < self.total
+    }
 }
 
 pub struct Pages<S> {
@@ -88,18 +110,52 @@ impl<S: NodeSource> Pages<S> {
             Cursor { at: as_of, after }.encode(key)
         });
 
+        let items = self.fill(engine, &boxes).await?;
+        Ok(BoxPage { as_of, items, next_cursor })
+    }
+
+    /// `key`'s boxes at the tip with its overlay applied, in one response: the mempool can't
+    /// be pinned like a block, so the view is never split into pages. At most [`MAX_LIMIT`]
+    /// confirmed boxes, the ones a node call may have to fill in, so a cold view is at most
+    /// one call; every pending box, which costs none. A key that is not tracked is loaded
+    /// first, as for a first page.
+    pub async fn with_pool(
+        &self,
+        engine: &impl EngineHandle,
+        key: &TrackingKey,
+    ) -> Result<WithPoolBoxes, ApiError> {
+        let query = || Query::WithPool { key: key.clone(), limit: MAX_LIMIT as usize };
+        let ids = match with_pool_ids(engine, query()).await? {
+            Some(ids) => ids,
+            None => {
+                self.load(engine, key).await?;
+                // `None` again: untracked since the load, its load block orphaned.
+                with_pool_ids(engine, query())
+                    .await?
+                    .ok_or(ApiError::NotReady { retry_after: self.loader.config().retry })?
+            }
+        };
+        let WithPoolIds { as_of, confirmed, pending, total } = ids;
+        let confirmed = self.fill(engine, &confirmed).await?;
+        Ok(WithPoolBoxes { as_of, confirmed, pending, total })
+    }
+
+    /// The full boxes of `boxes`, in order. Never leaves a box out.
+    async fn fill(
+        &self,
+        engine: &impl EngineHandle,
+        boxes: &[BoxKey],
+    ) -> Result<Vec<StoredBox>, ApiError> {
         let ids: Vec<BoxId> = boxes.iter().map(|b| b.box_id).collect();
         let found = self.fetcher.fetch(engine, &ids).await?;
-        let items = boxes
+        boxes
             .iter()
             .zip(found)
             .map(|(b, utxo)| match utxo {
                 Some(utxo) => Ok(StoredBox { utxo, inclusion_height: b.inclusion_height }),
-                // A page never leaves a box out.
                 None => Err(ApiError::BoxUnavailable { box_id: b.box_id }),
             })
-            .collect::<Result<_, _>>()?;
-        Ok(BoxPage { as_of, items, next_cursor })
+            .collect()
     }
 
     /// Loads `key` for a client: only once the configured keys have settled, and a token
@@ -165,6 +221,16 @@ async fn page_ids(
     match engine.query(query).await? {
         Reply::Page(page) => Ok(page),
         other => unreachable!("`Query::Page` answered {other:?}"),
+    }
+}
+
+async fn with_pool_ids(
+    engine: &impl EngineHandle,
+    query: Query,
+) -> Result<Option<WithPoolIds>, ApiError> {
+    match engine.query(query).await? {
+        Reply::WithPool(view) => Ok(view),
+        other => unreachable!("`Query::WithPool` answered {other:?}"),
     }
 }
 

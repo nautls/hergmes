@@ -764,3 +764,141 @@ fn node_errors_keep_their_code() {
     };
     assert_eq!(ApiError::from(&failed).code(), "node_error");
 }
+
+// --- Boxes with the pool ---
+
+/// Submits `txs` to the node and gives the engine the node's mempool, observed at its tip.
+fn submit(sim: &SimChain, engine: &Mutex<Engine>, txs: Vec<Arc<crate::sim::SimTx>>) {
+    let (mempool, observed_tip) = {
+        let mut chain = sim.lock();
+        for tx in txs {
+            chain.submit(tx);
+        }
+        (chain.mempool().into(), chain.tip())
+    };
+    let event = Event::MempoolSnapshot { txs: mempool, observed_tip };
+    engine.lock().unwrap().apply(event).unwrap();
+}
+
+/// A view of a key no one tracks: the read loads it, applies the pool to its boxes, and
+/// needs no box call, since confirmed boxes come from the load's seed and pending ones from
+/// the engine's snapshot. A second read makes no node call at all.
+#[test]
+fn a_view_with_the_pool_loads_the_key_and_applies_it() {
+    let (sim, engine, pages) = service(crate::sim::testing::new_chain(), 1 << 20);
+    let key = tree_key(&sim, 0);
+    // Tree 0's first box goes to tree 0 again, and that output on to tree 0 once more: the
+    // first box is spent, the middle one created and spent, the last one pending.
+    let (spent, middle, last) = {
+        let mut chain = sim.lock();
+        let spent = crate::sim::testing::box_of(&chain, 0);
+        let to = chain.trees()[0].clone();
+        let first = chain.transfer(&[spent], &to);
+        let second = chain.transfer(&[first.outputs[0].id], &to);
+        (spent, first, second)
+    };
+    let middle_id = middle.outputs[0].id;
+    let pending = last.outputs[0].clone();
+    submit(&sim, &engine, vec![middle, last]);
+
+    let view = ready(pages.with_pool(&engine, &key)).unwrap();
+    assert!(engine.lock().unwrap().is_tracked(&key));
+    assert_eq!(view.as_of, sim.lock().tip());
+    let confirmed: Vec<StoredBox> = (expected(&sim, &key).into_iter())
+        .filter(|b| b.utxo.id != spent)
+        .collect();
+    assert_eq!(view.confirmed, confirmed);
+    assert_eq!(view.pending, vec![pending]);
+    assert!(view.pending.iter().all(|b| b.id != middle_id));
+    assert_eq!(count(&sim, Endpoint::UnspentByErgoTree), 1);
+    assert_eq!(count(&sim, Endpoint::BoxesWithPool), 0);
+
+    let calls = sim.calls().len();
+    assert_eq!(ready(pages.with_pool(&engine, &key)).unwrap(), view);
+    assert_eq!(sim.calls().len(), calls, "a tracked key is served from memory");
+}
+
+/// The limit takes only confirmed boxes, after the pool's spends: a key one box over it
+/// gets the first 1000 in keyset order and `truncated`, and every pending box on top. A cold
+/// view is one node call, since pending boxes come from the engine's snapshot.
+#[test]
+fn a_view_holds_one_node_page_of_confirmed_boxes_and_every_pending_one() {
+    let mut chain = crate::sim::testing::new_chain();
+    let tree = chain.trees()[0].clone();
+    let held = chain
+        .utxo()
+        .values()
+        .filter(|b| b.ergo_tree == tree)
+        .count();
+    // Tree 1's first box split so tree 0 holds one box more than the limit.
+    let input = crate::sim::testing::box_of(&chain, 1);
+    let source = chain.find_box(&input).unwrap();
+    let n = MAX_LIMIT as usize + 1 - held;
+    let mut outputs: Vec<crate::sim::OutputSpec> = (0..n)
+        .map(|_| crate::sim::OutputSpec { ergo_tree: tree.clone(), value: 0, tokens: Vec::new() })
+        .collect();
+    outputs[0].value = source.value;
+    outputs[0].tokens = source.tokens.clone();
+    let split = chain.tx(&[input], outputs);
+    chain.mine_txs(vec![split]);
+    let (sim, engine, pages) = service(chain, 0);
+    let key = tree_key(&sim, 0);
+    let limit = MAX_LIMIT as usize;
+
+    let view = ready(pages.with_pool(&engine, &key)).unwrap();
+    let all = expected(&sim, &key);
+    assert_eq!(view.confirmed, all[..limit]);
+    assert!(view.pending.is_empty());
+    assert_eq!((view.total, view.truncated()), (limit + 1, true));
+    assert_eq!(count(&sim, Endpoint::BoxesWithPool), 1, "a cold view is one node call");
+
+    // A box coming in from tree 2 is listed on top of the limit.
+    let incoming = {
+        let mut chain = sim.lock();
+        let from = crate::sim::testing::box_of(&chain, 2);
+        chain.transfer(&[from], &tree)
+    };
+    submit(&sim, &engine, vec![incoming.clone()]);
+    let view = ready(pages.with_pool(&engine, &key)).unwrap();
+    assert_eq!(view.confirmed, all[..limit]);
+    assert_eq!(view.pending, incoming.outputs);
+    assert_eq!((view.total, view.truncated()), (limit + 2, true));
+
+    // Two of its boxes merged: the 999 left fit, so nothing is cut, though the view holds
+    // more than the limit.
+    let merge = sim
+        .lock()
+        .transfer(&[all[0].utxo.id, all[1].utxo.id], &tree);
+    submit(&sim, &engine, vec![merge.clone()]);
+    let calls = count(&sim, Endpoint::BoxesWithPool);
+    let view = ready(pages.with_pool(&engine, &key)).unwrap();
+    assert_eq!(view.confirmed, all[2..]);
+    // Two independent txs: overlay order puts the smaller tx id first.
+    let mut txs = [&incoming, &merge];
+    txs.sort_by_key(|tx| tx.id);
+    assert_eq!(view.pending, [txs[0].outputs.clone(), txs[1].outputs.clone()].concat());
+    assert_eq!((view.total, view.truncated()), (limit + 1, false));
+    assert_eq!(count(&sim, Endpoint::BoxesWithPool), calls + 1);
+}
+
+/// The view's errors before any load are a first page's: a token over the supply limit is
+/// refused with no load, and so is any key until the configured keys settle.
+#[test]
+fn a_view_with_the_pool_loads_like_a_first_page() {
+    let (sim, engine, pages) = service(crate::sim::testing::new_chain(), 1 << 20);
+    let over = TrackingKey::Token(token_id("over-101"));
+    let error = ready(pages.with_pool(&engine, &over)).unwrap_err();
+    assert_eq!(error, ApiError::SupplyTooLarge { emission: 101, limit: SUPPLY_LIMIT });
+
+    let small = TrackingKey::Token(token_id("small-100"));
+    let view = ready(pages.with_pool(&engine, &small)).unwrap();
+    assert_eq!(view.confirmed, expected(&sim, &small));
+    assert!(view.pending.is_empty(), "no snapshot yet");
+
+    let (settled, _pending) = crate::runtime::settling(1);
+    let (sim, engine, pages) = service(crate::sim::testing::new_chain(), 0);
+    let pages = pages.waiting_for(settled);
+    let error = ready(pages.with_pool(&engine, &tree_key(&sim, 0))).unwrap_err();
+    assert!(matches!(error, ApiError::NotReady { .. }), "{error:?}");
+    assert!(sim.calls().is_empty());
+}

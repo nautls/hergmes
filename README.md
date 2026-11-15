@@ -4,7 +4,7 @@ A realtime, mempool-aware relay for the [Ergo](https://ergoplatform.org) blockch
 
 hergmes sits in front of an indexed Ergo node and lets clients track the boxes of **addresses**
 and **small-supply tokens** (NFTs and tokens with an emission of at most 100). A client gets a
-key's current boxes and an address's balance, then receives live updates: new boxes, spent
+key's confirmed boxes and an address's balance, then receives live updates: new boxes, spent
 boxes, pending mempool activity, balance changes and reorgs. Pending activity shows in the balance as a signed
 change on top of the confirmed amount ("10 ERG incoming", "10 ERG leaving").
 
@@ -89,17 +89,27 @@ Logging uses `tracing`; set `RUST_LOG` (e.g. `RUST_LOG=hergmes=debug`) to adjust
 
 ## REST API
 
-| Route                                 | What                                              |
-| ------------------------------------- | ------------------------------------------------- |
-| `GET /v1/addresses/{address}/boxes`   | A page of an address's unspent boxes              |
-| `GET /v1/tokens/{tokenId}/boxes`      | A page of a small-supply token's unspent boxes    |
-| `GET /v1/addresses/{address}/balance` | An address's confirmed balance and pending change |
-| `GET /v1/status`                      | Version, network, tip and readiness               |
+| Route                                         | What                                              |
+| --------------------------------------------- | ------------------------------------------------- |
+| `GET /v1/addresses/{address}/boxes`           | A page of an address's unspent boxes              |
+| `GET /v1/tokens/{tokenId}/boxes`              | A page of a small-supply token's unspent boxes    |
+| `GET /v1/addresses/{address}/boxes/with-pool` | An address's boxes with the mempool applied       |
+| `GET /v1/tokens/{tokenId}/boxes/with-pool`    | A token's boxes with the mempool applied          |
+| `GET /v1/addresses/{address}/balance`         | An address's confirmed balance and pending change |
+| `GET /v1/status`                              | Version, network, tip and readiness               |
 
 Box pages take `limit` (default 500, at most 1000) and the `cursor` from the previous page's
 `nextCursor`; every page of a snapshot is pinned to the first page's block (`asOf`). Boxes are in
 Fleet SDK's `Box<string>` shape plus `inclusionHeight`, and every amount is a base-10 integer
 string. Errors are `{ "error": "<code>", "message": "..." }`, and a `503` carries `Retry-After`.
+
+`/boxes/with-pool` is for clients that fetch without keeping state: the key's confirmed boxes
+minus those pending txs spend, then the boxes pending txs create (these have no
+`inclusionHeight`), all at one tip and in one response with no cursor. It holds at most 1000
+confirmed boxes and every pending one; `truncated` says whether confirmed boxes were left out,
+and `total` is the whole view's size. Its `asOf` is the height only: the view can't be
+followed, so to stream a key, take the snapshot from `/boxes`. "Pending" means this relay's
+node's mempool.
 
 ## WebSocket
 

@@ -47,6 +47,11 @@ enum Op {
         at: Index,
         limit: u8,
     },
+    /// A REST read of a key's boxes with the pool, with at most `limit` confirmed ones.
+    WithPool {
+        key: Index,
+        limit: u8,
+    },
 }
 
 fn op() -> impl Strategy<Value = Op> {
@@ -63,6 +68,7 @@ fn op() -> impl Strategy<Value = Op> {
         2 => any::<Index>().prop_map(Op::Resume),
         2 => (any::<Index>(), any::<Index>(), 1..5u8)
             .prop_map(|(key, at, limit)| Op::Page { key, at, limit }),
+        2 => (any::<Index>(), 0..6u8).prop_map(|(key, limit)| Op::WithPool { key, limit }),
     ]
 }
 
@@ -246,6 +252,10 @@ impl Harness {
                     self.fed.iter().chain(&self.reverted).copied().collect();
                 let at = blocks[at.index(blocks.len())];
                 self.page(&key, at, usize::from(*limit));
+            }
+            Op::WithPool { key, limit } => {
+                let key = self.pick_key(key);
+                self.with_pool(&key, usize::from(*limit));
             }
         }
         self.check();
@@ -715,7 +725,56 @@ impl Harness {
         }
     }
 
+    fn with_pool(&mut self, key: &TrackingKey, limit: usize) {
+        let query = Query::WithPool { key: key.clone(), limit };
+        let Reply::WithPool(reply) = self.engine.query(query) else {
+            panic!("a with-pool reply");
+        };
+        let tip = self.tip();
+        let Some(model) = self.keys.get_mut(key) else {
+            assert_eq!(reply, None);
+            return;
+        };
+        model.activity = tip.height;
+        let (mut confirmed, pending) = self.reference_with_pool(key);
+        let total = confirmed.len() + pending.len();
+        let held = self.engine.keys[&self.engine.ids[key]].boxes.len();
+        if confirmed.len() > limit {
+            // Only confirmed boxes are cut, the first ones in keyset order kept.
+            confirmed.truncate(limit);
+            self.seen.insert("with-pool view cut to the limit");
+            if !pending.is_empty() {
+                self.seen
+                    .insert("with-pool view cut to the limit lists every pending box");
+            }
+        } else if held > limit {
+            self.seen
+                .insert("with-pool view fits the limit only after pending spends");
+        }
+        assert_eq!(reply, Some(WithPoolIds { as_of: tip, confirmed, pending, total }));
+    }
+
     // --- Expectations ---
+
+    /// `key`'s view with the pool at the engine's tip: the oracle's unspent boxes the reference
+    /// overlay leaves unspent, then the boxes it creates and leaves unspent, in its order.
+    fn reference_with_pool(&self, key: &TrackingKey) -> (Vec<BoxKey>, Vec<Arc<UTxO>>) {
+        let oracle = self.oracle();
+        let height = self.tip().height;
+        let ids: HashSet<BoxId> = oracle.utxo(height).values().map(|b| b.id).collect();
+        let overlay = self.reference_overlay(key, &ids);
+        let spent: HashSet<BoxId> = overlay
+            .iter()
+            .flat_map(|p| p.spent.iter().copied())
+            .collect();
+        let confirmed = (oracle.unspent(key, height).into_keys())
+            .filter(|k| !spent.contains(&k.box_id))
+            .collect();
+        let pending = (overlay.into_iter().flat_map(|p| p.created))
+            .filter(|b| !spent.contains(&b.id))
+            .collect();
+        (confirmed, pending)
+    }
 
     /// The overlay the engine should hold for `key`: the oracle's over the snapshot in use,
     /// against the confirmed state at the engine's tip.
@@ -840,6 +899,46 @@ impl Harness {
         for key in self.chain.keys() {
             let reference = self.reference_overlay(&key, &ids);
             assert_eq!(self.engine.mempool.overlay(&key), reference, "{key:?}'s overlay");
+        }
+
+        // Every tracked key's view with the pool is the reference one, and an address's sums to its
+        // balance: the overlay applied to the boxes, or to the totals, gives the same assets.
+        // Read without `Query::WithPool`, which would count as activity.
+        let keys: Vec<TrackingKey> = self.keys.keys().cloned().collect();
+        for key in &keys {
+            let view = self
+                .engine
+                .with_pool(key, usize::MAX)
+                .expect("a tracked key has a view");
+            let (confirmed, pending) = self.reference_with_pool(key);
+            let total = confirmed.len() + pending.len();
+            let expected = WithPoolIds { as_of: tip, confirmed, pending, total };
+            assert_eq!(view, expected, "{key:?}'s view");
+            let held = &self.engine.keys[&self.engine.ids[key]].boxes;
+            if view.confirmed.len() < held.len() {
+                self.seen.insert("with-pool view drops a pending-spent box");
+            }
+            if !view.pending.is_empty() {
+                self.seen.insert("with-pool view lists a pending box");
+            }
+            let overlay = self.engine.mempool.overlay(key);
+            let created = overlay.iter().map(|p| p.created.len()).sum::<usize>();
+            if created > view.pending.len() {
+                self.seen
+                    .insert("with-pool view hides a box created and spent in the pool");
+            }
+            if let Some(balance) = self.engine.balance(key) {
+                let boxes = view
+                    .confirmed
+                    .iter()
+                    .map(|k| &*utxo[k])
+                    .chain(view.pending.iter().map(|b| &**b));
+                assert_eq!(
+                    sum(&sim::totals(boxes), &PendingDelta::default()),
+                    sum(&balance.confirmed, &balance.pending),
+                    "{key:?}'s view does not sum to its balance"
+                );
+            }
         }
 
         // Every live client holds the oracle's state at the tip.
@@ -995,6 +1094,12 @@ fn random_histories_reach_the_hard_engine_cases() {
         "partial confirmation",
         "balance sent though confirmed + pending stayed",
         "reorg-returned tx in a snapshot after the rollback",
+        "with-pool view drops a pending-spent box",
+        "with-pool view lists a pending box",
+        "with-pool view hides a box created and spent in the pool",
+        "with-pool view cut to the limit",
+        "with-pool view cut to the limit lists every pending box",
+        "with-pool view fits the limit only after pending spends",
     ] {
         assert!(seen.contains(feature), "no random history reached: {feature}");
     }

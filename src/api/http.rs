@@ -22,7 +22,7 @@ use crate::{
     api::{
         ApiError, Balances, KeyPolicy, Pages,
         keys::{address_key, token_key},
-        wire::{BalanceBody, ErrorBody, PageBody, StatusBody},
+        wire::{BalanceBody, ErrorBody, PageBody, StatusBody, WithPoolBody},
     },
     clients::NodeSource,
     engine::TrackingKey,
@@ -65,6 +65,8 @@ where
     Router::new()
         .route("/v1/addresses/{address}/boxes", get(address_boxes::<S, E>))
         .route("/v1/tokens/{token_id}/boxes", get(token_boxes::<S, E>))
+        .route("/v1/addresses/{address}/boxes/with-pool", get(address_with_pool::<S, E>))
+        .route("/v1/tokens/{token_id}/boxes/with-pool", get(token_with_pool::<S, E>))
         .route("/v1/addresses/{address}/balance", get(address_balance::<S, E>))
         .route("/v1/status", get(status::<S, E>))
         .with_state(api)
@@ -120,6 +122,32 @@ async fn page<S: NodeSource, E: EngineHandle>(
         .page(&api.engine, key, param(params, "cursor"), limit)
         .await?;
     Ok(Json(PageBody(&page)).into_response())
+}
+
+async fn address_with_pool<S: NodeSource, E: EngineHandle>(
+    State(api): State<Arc<Api<S, E>>>,
+    address: Result<Path<String>, PathRejection>,
+) -> Result<Response, ApiError> {
+    let address = address.map_err(|e| ApiError::InvalidAddress(e.body_text()))?;
+    let key = address_key(&address, api.network, &api.policy)?;
+    with_pool(&api, &key).await
+}
+
+async fn token_with_pool<S: NodeSource, E: EngineHandle>(
+    State(api): State<Arc<Api<S, E>>>,
+    token_id: Result<Path<String>, PathRejection>,
+) -> Result<Response, ApiError> {
+    let token_id = token_id.map_err(|_| ApiError::InvalidTokenId)?;
+    let key = token_key(&token_id, &api.policy)?;
+    with_pool(&api, &key).await
+}
+
+async fn with_pool<S: NodeSource, E: EngineHandle>(
+    api: &Api<S, E>,
+    key: &TrackingKey,
+) -> Result<Response, ApiError> {
+    let view = api.pages.with_pool(&api.engine, key).await?;
+    Ok(Json(WithPoolBody(&view)).into_response())
 }
 
 async fn address_balance<S: NodeSource, E: EngineHandle>(

@@ -13,7 +13,7 @@ use crate::{
     engine::{
         Balance, BlockDelta, BlockRef, BoxKey, Capacity, ChainLink, EngineError, Event, KeyDelta,
         KeyId, LoadedBox, Mempool, Output, PageError, PageIds, PendingAt, Query, Reply,
-        ResyncReason, Spend, StoredBox, Totals, TrackingKey,
+        ResyncReason, Spend, StoredBox, Totals, TrackingKey, WithPoolIds,
         overlay::{self, PendingDelta},
     },
     types::ergo::{BoxId, HeaderId, IndexedBlock, UTxO},
@@ -154,6 +154,10 @@ impl Engine {
     pub fn query(&mut self, query: Query) -> Reply {
         match query {
             Query::Page { key, at, after, limit } => Reply::Page(self.page(&key, at, after, limit)),
+            Query::WithPool { key, limit } => {
+                self.touch(&key);
+                Reply::WithPool(self.with_pool(&key, limit))
+            }
             Query::Overlay(key) => Reply::Overlay(self.mempool.overlay(&key)),
             Query::Pending(key) => Reply::Pending(
                 self.tip
@@ -628,6 +632,36 @@ impl Engine {
             .take_while(|b| b.inclusion_height <= at.height);
         let restored = restored.range((lower, Bound::Unbounded));
         Ok(PageIds { as_of: at, boxes: merge(current, restored).take(limit).collect() })
+    }
+
+    /// A tracked key's boxes at the tip with its overlay applied, with at most `limit`
+    /// confirmed ones. The limit is taken after the pending spends, so the boxes cut are ones
+    /// a client could spend.
+    pub(crate) fn with_pool(&self, key: &TrackingKey, limit: usize) -> Option<WithPoolIds> {
+        let key_id = *self.ids.get(key)?;
+        // A tracked key implies a tip: dropping the tip untracks every key.
+        let as_of = self.tip?;
+        let state = &self.keys[&key_id];
+        let overlay = self.mempool.overlay(key);
+        let spent: HashSet<BoxId> = overlay
+            .iter()
+            .flat_map(|p| p.spent.iter().copied())
+            .collect();
+        let pending: Vec<Arc<UTxO>> = (overlay.into_iter().flat_map(|p| p.created))
+            .filter(|b| !spent.contains(&b.id))
+            .collect();
+        // A spent box is either the key's (confirmed) or created by an earlier pending tx.
+        let spent_held = spent
+            .iter()
+            .filter(|id| self.reverse.contains_key(&(**id, key_id)))
+            .count();
+        let total = state.boxes.len() - spent_held + pending.len();
+        let confirmed = (state.boxes.iter())
+            .filter(|b| !spent.contains(&b.box_id))
+            .take(limit)
+            .copied()
+            .collect();
+        Some(WithPoolIds { as_of, confirmed, pending, total })
     }
 
     fn catch_up(&mut self, key: TrackingKey, from: Option<BlockRef>) -> Vec<Output> {

@@ -55,6 +55,13 @@ pub enum Query {
         after: Option<BoxKey>,
         limit: usize,
     },
+    /// A tracked key's boxes at the tip with its overlay applied, in one message so both
+    /// halves are at one tip. At most `limit` confirmed boxes, the ones a node call may have
+    /// to fill in; every pending box, which the snapshot holds in full.
+    WithPool {
+        key: TrackingKey,
+        limit: usize,
+    },
     /// A key's overlay, tracked or not.
     Overlay(TrackingKey),
     /// A key's pending delta, tracked or not: the signed pending side of a balance, with the
@@ -88,6 +95,7 @@ pub enum Query {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Reply {
     Page(Result<PageIds, PageError>),
+    WithPool(Option<WithPoolIds>),
     Overlay(Vec<PendingTx>),
     Pending(Option<PendingAt>),
     Balance(Option<Balance>),
@@ -126,6 +134,19 @@ pub enum PageError {
     NotTracked,
     #[error("block is no longer on the main chain or outside the retention window")]
     CursorExpired,
+}
+
+/// A key's view with the pool: its boxes at `as_of` that the overlay leaves unspent, in keyset
+/// order and cut to the limit, then every box the overlay creates and leaves unspent, in
+/// overlay order. Confirmed boxes are ids, filled in by the box fetcher; pending ones are in
+/// full, from the snapshot.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WithPoolIds {
+    pub as_of: BlockRef,
+    pub confirmed: Vec<BoxKey>,
+    pub pending: Vec<Arc<UTxO>>,
+    /// The whole view's size, confirmed boxes left out by the limit included.
+    pub total: usize,
 }
 
 /// An event the engine cannot apply: the block consumer's view of the chain is not the

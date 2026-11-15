@@ -324,6 +324,55 @@ async fn a_token_snapshot_is_served_and_checked_first() {
     assert_eq!(f.error(&unknown, StatusCode::NOT_FOUND).await, "unknown_token");
 }
 
+/// The view with the pool is one list with no cursor: confirmed boxes with `inclusionHeight`,
+/// then pending ones without, for addresses and tokens alike.
+#[tokio::test]
+async fn boxes_with_pool_list_pending_boxes_after_confirmed_ones() {
+    let mut f = Fixture::new();
+    f.tick();
+    let (spent, pending) = {
+        let mut chain = f.sim.lock();
+        let spent = crate::sim::testing::box_of(&chain, 0);
+        let to = chain.trees()[0].clone();
+        let tx = chain.transfer(&[spent], &to);
+        chain.submit(tx.clone());
+        (spent, tx.outputs[0].id)
+    };
+    f.tick();
+    let view = f
+        .ok(&format!("/v1/addresses/{}/boxes/with-pool?limit=1", f.address(0)))
+        .await;
+    let tip = f.sim.lock().tip();
+    // The height only: no `headerId`, so it can't be passed as a WebSocket `from`.
+    assert_eq!(view["asOf"], serde_json::json!({ "height": tip.height }));
+    assert!(view.get("nextCursor").is_none(), "{view}");
+    assert_eq!(view["truncated"], false);
+    assert_eq!(view["total"], view["items"].as_array().unwrap().len());
+    let items = view["items"].as_array().unwrap();
+    let ids: Vec<&str> = items.iter().map(|b| b["boxId"].as_str().unwrap()).collect();
+    assert!(!ids.contains(&spent.to_string().as_str()), "the spent box is left out");
+    let (last, confirmed) = items.split_last().unwrap();
+    assert_eq!(last["boxId"], pending.to_string());
+    assert!(last.get("inclusionHeight").is_none(), "{last}");
+    assert!(confirmed.iter().all(|b| b["inclusionHeight"].is_u64()));
+    let tree = f.tree(0);
+    let held = f
+        .sim
+        .lock()
+        .utxo()
+        .values()
+        .filter(|b| b.ergo_tree == tree)
+        .count();
+    assert_eq!(confirmed.len(), held - 1);
+
+    let token = f
+        .ok(&format!("/v1/tokens/{}/boxes/with-pool", token_id("small-100")))
+        .await;
+    assert_eq!(token["items"].as_array().unwrap().len(), 4);
+    let over = format!("/v1/tokens/{}/boxes/with-pool", token_id("over-101"));
+    assert_eq!(f.error(&over, StatusCode::UNPROCESSABLE_ENTITY).await, "supply_too_large");
+}
+
 #[tokio::test(start_paused = true)]
 async fn balances_are_served_for_untracked_and_tracked_addresses() {
     let mut f = Fixture::new();
@@ -374,6 +423,9 @@ async fn bad_requests_are_refused_with_their_code() {
         (format!("/v1/addresses/{testnet}/balance"), "invalid_address"),
         ("/v1/addresses/%FF/balance".to_owned(), "invalid_address"),
         ("/v1/tokens/abcd/boxes".to_owned(), "invalid_token_id"),
+        ("/v1/addresses/notanaddress/boxes/with-pool".to_owned(), "invalid_address"),
+        (format!("/v1/addresses/{testnet}/boxes/with-pool"), "invalid_address"),
+        ("/v1/tokens/abcd/boxes/with-pool".to_owned(), "invalid_token_id"),
         (format!("/v1/tokens/{token}0/boxes"), "invalid_token_id"),
         (format!("{boxes}?limit=0"), "invalid_limit"),
         (format!("{boxes}?limit=1001"), "invalid_limit"),
@@ -405,6 +457,8 @@ async fn every_route_refuses_a_key_the_policy_does_not_admit() {
         format!("/v1/addresses/{}/boxes", f.address(0)),
         format!("/v1/addresses/{}/balance", f.address(0)),
         format!("/v1/tokens/{}/boxes", token_id("small-100")),
+        format!("/v1/addresses/{}/boxes/with-pool", f.address(0)),
+        format!("/v1/tokens/{}/boxes/with-pool", token_id("small-100")),
     ] {
         assert_eq!(f.error(&uri, StatusCode::FORBIDDEN).await, "key_not_allowed", "{uri}");
     }

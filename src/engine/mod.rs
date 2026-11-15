@@ -17,6 +17,6 @@ pub use key::TrackingKey;
 pub use mempool::Mempool;
 pub use message::{
     Balance, Capacity, EngineError, Event, LoadedBox, Output, PageError, PageIds, PendingAt,
-    PendingTx, Query, Reply, ResyncReason,
+    PendingTx, Query, Reply, ResyncReason, WithPoolIds,
 };
 pub use state::{Config, Engine};

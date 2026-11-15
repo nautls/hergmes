@@ -1,4 +1,5 @@
-//! What the relay sends, as JSON (DESIGN.md, "REST: confirmed snapshot" and "Balances").
+//! What the relay sends, as JSON (DESIGN.md, "REST: confirmed snapshot", "Boxes with the
+//! pool" and "Balances").
 //!
 //! These types borrow what the services return and serialize it in the client's shape. They
 //! are separate from the node-facing types, whose derived `Serialize` writes amounts as
@@ -15,7 +16,7 @@ use serde::{
 };
 
 use crate::{
-    api::{AddressBalance, BoxPage},
+    api::{AddressBalance, BoxPage, WithPoolBoxes},
     engine::{BlockRef, StoredBox, Totals, overlay::PendingDelta},
     types::{
         HexBytes,
@@ -119,6 +120,14 @@ impl<'a> From<&'a BlockRef> for AsOf<'a> {
     }
 }
 
+/// The height a one-off read is as of, with no `headerId`: a balance or a view with the
+/// pool is not something to apply deltas to, so it must not look like a WebSocket `from`,
+/// which needs both.
+#[derive(Serialize)]
+struct AsOfHeight {
+    height: u32,
+}
+
 /// `GET /v1/{addresses,tokens}/.../boxes`: a page of a key's boxes, `nextCursor` `null`
 /// exactly on the last page.
 pub struct PageBody<'a>(pub &'a BoxPage);
@@ -135,19 +144,44 @@ impl Serialize for PageBody<'_> {
     }
 }
 
+/// `GET /v1/{addresses,tokens}/.../boxes/with-pool`: one list, confirmed boxes first. A pending
+/// box is told apart by having no `inclusionHeight`, so clients hand the list to Fleet as it
+/// is. `truncated` is always present, and `total` is the whole view's size, so a client can
+/// tell a view cut to the limit from a complete one. `asOf` is the height only: the view has
+/// the pool applied, so it is no point to stream from.
+pub struct WithPoolBody<'a>(pub &'a WithPoolBoxes);
+
+impl Serialize for WithPoolBody<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let view = self.0;
+        let pending = view
+            .pending
+            .iter()
+            .map(|utxo| WireBox { utxo, inclusion_height: None });
+        let items: Vec<_> = view
+            .confirmed
+            .iter()
+            .map(WireBox::from)
+            .chain(pending)
+            .collect();
+        let mut s = serializer.serialize_struct("WithPool", 4)?;
+        s.serialize_field("asOf", &AsOfHeight { height: view.as_of.height })?;
+        s.serialize_field("items", &items)?;
+        s.serialize_field("truncated", &view.truncated())?;
+        s.serialize_field("total", &view.total)?;
+        s.end()
+    }
+}
+
 /// `GET /v1/addresses/{address}/balance`. The confirmed half is unsigned; the pending half
 /// is a signed delta per asset, negative for what is leaving.
 pub struct BalanceBody<'a>(pub &'a AddressBalance);
 
 impl Serialize for BalanceBody<'_> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        #[derive(Serialize)]
-        struct Height {
-            height: u32,
-        }
         let b = self.0;
         let mut s = serializer.serialize_struct("Balance", 3)?;
-        s.serialize_field("asOf", &Height { height: b.height })?;
+        s.serialize_field("asOf", &AsOfHeight { height: b.height })?;
         s.serialize_field("confirmed", &Confirmed(&b.confirmed))?;
         s.serialize_field("pending", &Pending(&b.pending))?;
         s.end()

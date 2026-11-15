@@ -159,3 +159,25 @@ fn status_names_the_network_and_has_a_null_tip_before_the_first_block() {
         )
     );
 }
+
+#[test]
+fn a_view_with_the_pool_lists_confirmed_boxes_then_pending_ones_and_says_if_it_was_cut() {
+    let confirmed = Arc::new(utxo());
+    let pending = Arc::new(UTxO { id: digest(9), ..utxo() });
+    let view = WithPoolBoxes {
+        as_of: BlockRef { height: 12, header_id: digest(5) },
+        confirmed: vec![StoredBox { utxo: confirmed.clone(), inclusion_height: 11 }],
+        pending: vec![pending.clone()],
+        total: 2,
+    };
+    let body = |truncated: bool, total: usize| {
+        format!(
+            r#"{{"asOf":{{"height":12}},"items":[{},{}],"truncated":{truncated},"total":{total}}}"#,
+            json(WireBox { utxo: &confirmed, inclusion_height: Some(11) }),
+            json(WireBox { utxo: &pending, inclusion_height: None }),
+        )
+    };
+    assert_eq!(json(WithPoolBody(&view)), body(false, 2));
+    let cut = WithPoolBoxes { total: 3, ..view };
+    assert_eq!(json(WithPoolBody(&cut)), body(true, 3));
+}
