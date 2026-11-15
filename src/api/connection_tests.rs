@@ -900,7 +900,7 @@ async fn reads_do_not_starve_outputs_or_finished_subscribes() {
 
     // A subscribe that has finished.
     let opening = f.tree_key(0);
-    let abort = connection.pending.spawn(std::future::ready((
+    connection.pending.spawn(std::future::ready((
         opening.clone(),
         0,
         Opened::Resync(ResyncReason::NotTracked),
@@ -908,7 +908,7 @@ async fn reads_do_not_starve_outputs_or_finished_subscribes() {
     let echo = ClientKey::Address(f.address(0));
     connection.keys.insert(
         opening,
-        Entry { echo, state: State::Pending { seq: 0, id: None, abort, replaced: None } },
+        Entry { echo, state: State::Pending { seq: 0, id: None, replaced: None } },
     );
     connection.next_seq = 1;
     tokio::task::yield_now().await;
@@ -1015,10 +1015,10 @@ async fn an_unsubscribe_stops_the_messages_at_once() {
     assert!(client.closed.is_none());
 }
 
-/// A subscribe and an unsubscribe of one key read back to back: the subscribe's task has
-/// not run when the unsubscribe cancels it, so nothing is sent and no count is left.
+/// A subscribe and an unsubscribe of one key read back to back: the subscribe runs on, but
+/// nothing is sent and no count is left.
 #[tokio::test(start_paused = true)]
-async fn an_unsubscribe_cancels_a_pending_subscribe() {
+async fn an_unsubscribe_discards_a_pending_subscribe() {
     let mut f = Fixture::new().await;
     let key = f.tree_key(3);
     let echo = json!({ "address": f.address(3) });
@@ -1045,11 +1045,11 @@ async fn a_result_for_a_key_that_moved_on_is_discarded() {
     let (socket, _to_server, mut from_server) = idle_socket();
     let mut connection = connection(&f, socket);
     connection.next_seq = 2;
-    let abort = connection.pending.spawn(std::future::pending());
+    connection.pending.spawn(std::future::pending());
     let echo = ClientKey::Address(f.address(0));
     connection.keys.insert(
         key.clone(),
-        Entry { echo, state: State::Pending { seq: 1, id: None, abort, replaced: None } },
+        Entry { echo, state: State::Pending { seq: 1, id: None, replaced: None } },
     );
 
     let live = subscribe(&f.api, &key, None).await;
@@ -1067,6 +1067,93 @@ async fn a_result_for_a_key_that_moved_on_is_discarded() {
     assert!(from_server.try_recv().is_err(), "nothing written");
     assert!(connection.feeds.is_empty(), "nothing installed");
     assert!(matches!(connection.keys[&key].state, State::Pending { seq: 1, .. }));
+}
+
+fn count(f: &Fixture, endpoint: Endpoint) -> usize {
+    f.sim.calls().iter().filter(|e| **e == endpoint).count()
+}
+
+/// Every message the connection has written so far.
+fn written(from_server: &mut mpsc::Receiver<Message>) -> Vec<Value> {
+    let mut messages = Vec::new();
+    while let Ok(Message::Text(text)) = from_server.try_recv() {
+        messages.push(serde_json::from_str(&text).unwrap());
+    }
+    messages
+}
+
+/// Joins the connection's subscribes as they finish, until none is left.
+async fn finish(connection: &mut Connection<SimChain, TestSocket>) {
+    while let Some(joined) = connection.pending.join_next().await {
+        connection.on_opened(joined).await.unwrap();
+    }
+}
+
+/// A replace while the key is loading does not restart the load: the older subscribe runs
+/// on, its answer discarded, and the newer one waits for the same load. Cancelled, the load
+/// started over, so a client that subscribed again faster than a large key loads kept it from
+/// ever finishing, paging the node each time.
+#[tokio::test(start_paused = true)]
+async fn a_replace_during_a_load_does_not_restart_it() {
+    let f = Fixture::new().await;
+    let key = f.tree_key(0);
+    let echo = ClientKey::Address(f.address(0));
+    let (socket, _to_server, mut from_server) = idle_socket();
+    let mut connection = connection(&f, socket);
+    let subscribe = |id| ClientMessage::Subscribe { key: echo.clone(), from: None, id: Some(id) };
+
+    f.sim
+        .set_latency(Endpoint::UnspentByErgoTree, Duration::from_secs(10));
+    connection.on_message(subscribe(1)).await.unwrap();
+    while count(&f, Endpoint::UnspentByErgoTree) == 0 {
+        tokio::task::yield_now().await;
+    }
+    // The load is reading its page.
+    connection.on_message(subscribe(2)).await.unwrap();
+    finish(&mut connection).await;
+
+    assert_eq!(count(&f, Endpoint::UnspentByErgoTree), 1, "one load");
+    let messages = written(&mut from_server);
+    assert_eq!(types(&messages), ["subscribed", "balance"]);
+    assert_eq!(messages[0]["id"], 2, "only the newest subscribe is answered");
+    assert!(matches!(connection.keys[&key].state, State::Live(_)));
+}
+
+/// Subscribes the client has replaced or unsubscribed run on, so they count against the cap
+/// until they finish: if they didn't, a client could start loads without bound by cancelling
+/// them. A replace of a pending subscribe adds one, and when refused it ends the key's
+/// subscribe, as every refusal does.
+#[tokio::test(start_paused = true)]
+async fn cancelled_subscribes_count_against_the_cap_until_they_finish() {
+    let f = Fixture::new().await;
+    let (socket, _to_server, mut from_server) = idle_socket();
+    let mut connection = connection(&f, socket);
+    connection.config = Config { max_subscriptions: 2 };
+    let echo = |i| ClientKey::Address(f.address(i));
+    let subscribe = |i, id| ClientMessage::Subscribe { key: echo(i), from: None, id: Some(id) };
+
+    // Read back to back: no subscribe has run yet.
+    connection.on_message(subscribe(0, 1)).await.unwrap();
+    let unsubscribe = ClientMessage::Unsubscribe { key: echo(0) };
+    connection.on_message(unsubscribe).await.unwrap();
+    connection.on_message(subscribe(1, 2)).await.unwrap();
+    connection.on_message(subscribe(1, 3)).await.unwrap();
+    connection.on_message(subscribe(2, 4)).await.unwrap();
+    let refused = written(&mut from_server);
+    assert_eq!(types(&refused), ["rejected", "rejected"]);
+    for (message, id) in refused.iter().zip([3, 4]) {
+        assert_eq!(message["reason"], "too_many_subscriptions");
+        assert_eq!(message["id"], id);
+    }
+    assert!(connection.keys.is_empty(), "the refused replace ended the key's subscribe");
+
+    finish(&mut connection).await;
+    assert!(written(&mut from_server).is_empty(), "cancelled subscribes are not answered");
+    assert!(connection.feeds.is_empty());
+    // Finished, they make room.
+    connection.on_message(subscribe(2, 5)).await.unwrap();
+    finish(&mut connection).await;
+    assert_eq!(types(&written(&mut from_server)), ["subscribed", "balance"]);
 }
 
 // --- Backpressure and keepalive ---

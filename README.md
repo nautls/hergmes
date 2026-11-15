@@ -126,10 +126,12 @@ where REST would send `Retry-After`, and two codes of its own: `too_many_subscri
 `from_required` (a token has no balance). `resync_required` means: take a new snapshot, or for a
 balance-only subscription, subscribe again.
 
-The server pings every 30 s and drops a connection that leaves two pings unanswered, so proxies' idle timeouts
-never close a quiet subscription. A client that falls behind gets `resync_required`
+The server pings every 30 s, so proxies' idle timeouts never close a quiet subscription, and
+closes a connection that leaves two pings unanswered (close code 1008, `pings unanswered`). A client that falls behind gets `resync_required`
 (`slow_consumer`) and is disconnected; one that sends malformed JSON is disconnected with close
-code 1008 and the reason. Messages from clients are limited to 16 KiB.
+code 1008 and the reason. Messages from clients are limited to 16 KiB; a larger one closes the
+connection with 1009. The subscription cap counts a subscribe the client replaced or unsubscribed
+until it finishes, since it may still be loading the key.
 
 ## Development
 

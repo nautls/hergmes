@@ -55,7 +55,8 @@ pub mod vars {
     pub const MAX_TRACKED_BOXES: &str = "HERGMES_MAX_TRACKED_BOXES";
     /// The IP address and port the REST API and the WebSocket listen on.
     pub const LISTEN_ADDR: &str = "HERGMES_LISTEN_ADDR";
-    /// The most subscriptions one WebSocket connection holds, live and pending.
+    /// The most subscriptions one WebSocket connection holds, live and pending, counting
+    /// subscribes the client cancelled until they finish.
     pub const MAX_SUBSCRIPTIONS_PER_CONNECTION: &str = "HERGMES_MAX_SUBSCRIPTIONS_PER_CONNECTION";
 }
 

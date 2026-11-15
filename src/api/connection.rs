@@ -3,17 +3,19 @@
 //!
 //! Forwarding never waits on a subscribe: a connection that stopped forwarding during a load
 //! would let its other sinks fill, and the engine task would end them as slow consumers. So
-//! subscribes run as tasks, in parallel across keys, with one pending operation per key. A
-//! newer `subscribe` or `unsubscribe` for a key cancels that key's pending one, and one that
-//! finishes after its key moved on is discarded. Order is kept per key, the only order the
-//! protocol promises.
+//! subscribes run as tasks, in parallel across keys, with one current operation per key. A
+//! newer `subscribe` or `unsubscribe` for a key makes that key's pending one stale, and its
+//! result is discarded. A stale subscribe still runs to its end, never aborted: aborted, it
+//! drops the key's load midway, and the next caller starts it over, so a client subscribing
+//! again faster than a key loads would keep it from ever finishing. Order is kept per key, the
+//! only order the protocol promises.
 
 use std::{collections::HashMap, sync::Arc};
 
 use axum::extract::ws::{CloseFrame, Message, close_code};
 use tokio::{
     sync::mpsc,
-    task::{AbortHandle, JoinError, JoinSet},
+    task::{JoinError, JoinSet},
     time::{Instant, MissedTickBehavior, interval_at, sleep, timeout},
 };
 use tokio_stream::{StreamExt, StreamMap, StreamNotifyClose, wrappers::ReceiverStream};
@@ -97,7 +99,6 @@ enum State {
     Pending {
         seq: u64,
         id: Option<SubscribeId>,
-        abort: AbortHandle,
         replaced: Option<Replaced>,
     },
     Live(SubscriptionId),
@@ -133,6 +134,7 @@ struct Connection<S, K> {
     keys: HashMap<TrackingKey, Entry>,
     /// The live subscriptions' outputs, by key.
     feeds: StreamMap<TrackingKey, Feed>,
+    /// Every subscribe not yet joined, stale ones included.
     pending: JoinSet<(TrackingKey, u64, Opened)>,
     next_seq: u64,
     /// Pings sent since the client last sent anything.
@@ -217,15 +219,20 @@ impl<S: NodeSource + 'static, K: Socket> Connection<S, K> {
                 };
                 // A subscribe ends the key's old subscription whatever comes of it, so after
                 // `rejected` the client holds none, however the refusal came.
-                if matches!(key, TrackingKey::Token(_)) && from.is_none() {
-                    self.end(&key).await?;
-                    return self.reject(&echo, Reject::FromRequired, id).await;
-                }
-                if !self.keys.contains_key(&key) && self.keys.len() >= self.config.max_subscriptions
-                {
-                    return self.reject(&echo, Reject::TooManySubscriptions, id).await;
-                }
                 let replaced = self.take(&key);
+                let refusal = if matches!(key, TrackingKey::Token(_)) && from.is_none() {
+                    Some(Reject::FromRequired)
+                } else if self.held() >= self.config.max_subscriptions {
+                    Some(Reject::TooManySubscriptions)
+                } else {
+                    None
+                };
+                if let Some(reject) = refusal {
+                    if let Some(replaced) = replaced {
+                        unsubscribe(&self.api.engine, replaced.id).await?;
+                    }
+                    return self.reject(&echo, reject, id).await;
+                }
                 self.open(key, echo, from, id, replaced);
                 Ok(())
             }
@@ -250,23 +257,27 @@ impl<S: NodeSource + 'static, K: Socket> Connection<S, K> {
         self.next_seq += 1;
         let api = self.api.clone();
         let task_key = key.clone();
-        let abort = self.pending.spawn(async move {
+        self.pending.spawn(async move {
             let opened = subscribe(&api, &task_key, from).await;
             (task_key, seq, opened)
         });
         self.keys
-            .insert(key, Entry { echo, state: State::Pending { seq, id, abort, replaced } });
+            .insert(key, Entry { echo, state: State::Pending { seq, id, replaced } });
+    }
+
+    /// What counts against the cap: live subscriptions and unfinished subscribes, stale ones
+    /// included, since each may be loading. A replaced subscription waiting on its successor
+    /// is out of the merge and not counted, so a replace of a live subscription adds none.
+    fn held(&self) -> usize {
+        self.feeds.len() + self.pending.len()
     }
 
     /// Takes `key`'s subscription out of the connection, for a subscribe that replaces it:
-    /// a pending one is cancelled, and the live one, its own or the one it was replacing,
-    /// passes to the new subscribe.
+    /// a pending one is left to finish as stale, and the live one, its own or the one it was
+    /// replacing, passes to the new subscribe.
     fn take(&mut self, key: &TrackingKey) -> Option<Replaced> {
         match self.keys.remove(key)?.state {
-            State::Pending { abort, replaced, .. } => {
-                abort.abort();
-                replaced
-            }
+            State::Pending { replaced, .. } => replaced,
             State::Live(id) => {
                 let feed = self.feeds.remove(key).expect("a live key's feed is merged");
                 Some(Replaced { id, _feed: feed })
@@ -285,7 +296,8 @@ impl<S: NodeSource + 'static, K: Socket> Connection<S, K> {
     async fn on_opened(&mut self, joined: Result<(TrackingKey, u64, Opened), JoinError>) -> Step {
         let (key, seq, opened) = match joined {
             Ok(joined) => joined,
-            // Cancelled by a newer message for its key, which already took its place.
+            // Subscribes are aborted only when the connection drops, which never joins them;
+            // hand-driven tests abort them to hold a gap open.
             Err(error) if error.is_cancelled() => return Ok(()),
             Err(error) => {
                 error!(%error, "A WebSocket subscribe failed, closing the connection");
@@ -297,7 +309,7 @@ impl<S: NodeSource + 'static, K: Socket> Connection<S, K> {
             Some(Entry { state: State::Pending { seq: s, .. }, .. }) if *s == seq
         );
         if !current {
-            // A newer message for the key came while the result was queued.
+            // A newer message for the key came while the subscribe ran.
             return match opened {
                 Opened::Live { id, .. } => unsubscribe(&self.api.engine, id).await,
                 Opened::EngineGone => Err(End::EngineGone),

@@ -221,6 +221,8 @@ pub struct Chain {
     nonce: u64,
     pub(super) calls: Vec<Endpoint>,
     pub(super) hook: Option<Hook>,
+    /// How long each endpoint's calls take, on tokio's clock; none by default.
+    pub(super) latency: HashMap<Endpoint, Duration>,
 }
 
 impl Chain {
@@ -250,6 +252,7 @@ impl Chain {
             nonce: 0,
             calls: Vec::new(),
             hook: None,
+            latency: HashMap::new(),
         };
         let genesis = chain.genesis_tx();
         chain.push_block(vec![genesis]);

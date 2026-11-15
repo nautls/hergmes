@@ -1,6 +1,11 @@
 //! [`SimChain`]: a shared [`Chain`] served through [`NodeSource`].
 
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::{
+    sync::{Arc, Mutex, MutexGuard, PoisonError},
+    time::Duration,
+};
+
+use tokio::time::sleep;
 
 use crate::{
     clients::{
@@ -42,7 +47,7 @@ pub type Hook = Box<dyn FnMut(Endpoint, &mut Chain) + Send>;
 
 /// A shared handle on a [`Chain`]: adapters read it through [`NodeSource`] while the test
 /// drives it through [`SimChain::lock`]. Clones share the chain. Every call locks it briefly
-/// and never across an `.await`, so it answers immediately.
+/// and never across an `.await`, so it answers immediately, unless given a latency.
 #[derive(Clone)]
 pub struct SimChain(Arc<Mutex<Chain>>);
 
@@ -63,18 +68,32 @@ impl SimChain {
         self.lock().hook = Some(Box::new(hook));
     }
 
+    /// Makes every call to `endpoint` take `latency` on tokio's clock, so a test can act while
+    /// one is in flight. The call is logged when it starts, and answered from the chain as it
+    /// is when the wait ends.
+    pub fn set_latency(&self, endpoint: Endpoint, latency: Duration) {
+        self.lock().latency.insert(endpoint, latency);
+    }
+
     /// The endpoints called so far, in order.
     pub fn calls(&self) -> Vec<Endpoint> {
         self.lock().calls.clone()
     }
 
-    fn serve<T>(
+    async fn serve<T>(
         &self,
         endpoint: Endpoint,
         answer: impl FnOnce(&Chain) -> Result<T, NodeError>,
     ) -> Result<T, NodeError> {
+        let latency = {
+            let mut chain = self.lock();
+            chain.calls.push(endpoint);
+            chain.latency.get(&endpoint).copied()
+        };
+        if let Some(latency) = latency {
+            sleep(latency).await;
+        }
         let mut chain = self.lock();
-        chain.calls.push(endpoint);
         if let Some(mut hook) = chain.hook.take() {
             hook(endpoint, &mut chain);
             if chain.hook.is_none() {
@@ -90,19 +109,21 @@ impl SimChain {
 
 impl NodeSource for SimChain {
     async fn info(&self) -> Result<InfoResponse, NodeError> {
-        self.serve(Endpoint::Info, |c| Ok(c.info()))
+        self.serve(Endpoint::Info, |c| Ok(c.info())).await
     }
 
     async fn indexed_height(&self) -> Result<IndexedHeightResponse, NodeError> {
         self.serve(Endpoint::IndexedHeight, |c| Ok(c.indexed_height()))
+            .await
     }
 
     async fn indexed_block(&self, header_id: &HeaderId) -> Result<Option<IndexedBlock>, NodeError> {
         self.serve(Endpoint::IndexedBlock, |c| Ok(c.indexed_block(header_id)))
+            .await
     }
 
     async fn mempool(&self) -> Result<Vec<UnconfirmedTransaction>, NodeError> {
-        self.serve(Endpoint::Mempool, |c| Ok(c.mempool()))
+        self.serve(Endpoint::Mempool, |c| Ok(c.mempool())).await
     }
 
     async fn unspent_by_ergo_tree(
@@ -113,6 +134,7 @@ impl NodeSource for SimChain {
         self.serve(Endpoint::UnspentByErgoTree, |c| {
             c.indexed_unspent(|b| b.ergo_tree == *ergo_tree, page)
         })
+        .await
     }
 
     async fn unspent_by_token(
@@ -123,22 +145,27 @@ impl NodeSource for SimChain {
         self.serve(Endpoint::UnspentByToken, |c| {
             c.indexed_unspent(|b| b.tokens.iter().any(|t| t.id == *token_id), page)
         })
+        .await
     }
 
     async fn token_info(&self, token_id: &TokenId) -> Result<Option<TokenInfo>, NodeError> {
         self.serve(Endpoint::TokenInfo, |c| Ok(c.token_info(token_id)))
+            .await
     }
 
     async fn boxes_with_pool(&self, ids: &[BoxId]) -> Result<Vec<UTxO>, NodeError> {
         self.serve(Endpoint::BoxesWithPool, |c| Ok(c.boxes_with_pool(ids)))
+            .await
     }
 
     async fn indexed_box(&self, id: &BoxId) -> Result<Option<IndexedBox>, NodeError> {
         self.serve(Endpoint::IndexedBox, |c| Ok(c.indexed_box(id)))
+            .await
     }
 
     async fn confirmed_balance(&self, ergo_tree: &ErgoTree) -> Result<Balance, NodeError> {
         self.serve(Endpoint::ConfirmedBalance, |c| Ok(c.confirmed_balance(ergo_tree)))
+            .await
     }
 }
 

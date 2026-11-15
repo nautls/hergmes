@@ -47,7 +47,8 @@ pub const MAX_MESSAGE: usize = 16 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Config {
-    /// The most subscriptions one connection holds, live and pending.
+    /// The most subscriptions one connection holds, live and pending, counting subscribes
+    /// the client cancelled until they finish.
     pub max_subscriptions: usize,
 }
 
