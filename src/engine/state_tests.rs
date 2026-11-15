@@ -90,7 +90,8 @@ struct Client {
     resumable: bool,
     epoch: u64,
     tip: BlockRef,
-    boxes: BTreeMap<BoxId, Arc<UTxO>>,
+    /// The boxes held, with the heights that included them.
+    boxes: BTreeMap<BoxId, (u32, Arc<UTxO>)>,
     overlay: Vec<PendingTx>,
     balance: Option<Balance>,
 }
@@ -106,7 +107,8 @@ impl Client {
                     assert!(self.boxes.remove(&s.box_id).is_some(), "spends unknown {}", s.box_id);
                 }
                 for b in created {
-                    assert!(self.boxes.insert(b.id, b.clone()).is_none(), "creates held {}", b.id);
+                    let held = self.boxes.insert(b.id, (block.height, b.clone()));
+                    assert!(held.is_none(), "creates held {}", b.id);
                 }
                 self.tip = *block;
             }
@@ -116,7 +118,9 @@ impl Client {
                     assert!(self.boxes.remove(&s.box_id).is_some(), "undoes unknown {}", s.box_id);
                 }
                 for b in created {
-                    assert!(self.boxes.insert(b.id, b.clone()).is_none(), "restores held {}", b.id);
+                    let id = b.utxo.id;
+                    let held = self.boxes.insert(id, (b.inclusion_height, b.utxo.clone()));
+                    assert!(held.is_none(), "restores held {id}");
                 }
                 self.tip = BlockRef { height: block.height - 1, header_id: *parent_id };
             }
@@ -545,7 +549,10 @@ impl Harness {
             let ids = self.pages(&key, tip, 3).expect("the tip is always served");
             client.boxes = ids
                 .iter()
-                .map(|k| (k.box_id, self.chain.find_box(&k.box_id).expect("a built box")))
+                .map(|k| {
+                    let utxo = self.chain.find_box(&k.box_id).expect("a built box");
+                    (k.box_id, (k.inclusion_height, utxo))
+                })
                 .collect();
         }
         let outputs = self.feed(Event::Subscribed(key.clone()));
@@ -840,10 +847,10 @@ impl Harness {
             let (balance, overlay) = expected_for(self, &client.key, &utxo, &ids);
             if !client.balance_only {
                 assert_eq!(client.tip, tip);
-                let expected: BTreeMap<BoxId, Arc<UTxO>> = oracle
+                let expected: BTreeMap<BoxId, (u32, Arc<UTxO>)> = oracle
                     .unspent(&client.key, tip.height)
-                    .into_values()
-                    .map(|b| (b.id, b))
+                    .into_iter()
+                    .map(|(k, b)| (k.box_id, (k.inclusion_height, b)))
                     .collect();
                 assert_eq!(client.boxes, expected, "a client of {:?} diverged", client.key);
                 assert_eq!(client.overlay, overlay);
@@ -1136,7 +1143,16 @@ fn a_block_moves_a_box_between_keys_and_its_rollback_moves_it_back() {
 
     // The rollback is the delta with its sides swapped, and restores the state exactly.
     let outputs = f.revert();
-    let spent_box = f.chain.find_box(&source).expect("built");
+    let spent_box = StoredBox {
+        inclusion_height: before
+            .0
+            .0
+            .iter()
+            .find(|k| k.box_id == source)
+            .expect("held")
+            .inclusion_height,
+        utxo: f.chain.find_box(&source).expect("built"),
+    };
     assert_eq!(
         find(&outputs, "rollback", &zero),
         &Output::Rollback {

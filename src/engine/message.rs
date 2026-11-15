@@ -3,7 +3,9 @@ use std::sync::Arc;
 use serde::Serialize;
 
 use crate::{
-    engine::{BlockRef, BoxKey, ChainLink, Spend, Totals, TrackingKey, overlay::PendingDelta},
+    engine::{
+        BlockRef, BoxKey, ChainLink, Spend, StoredBox, Totals, TrackingKey, overlay::PendingDelta,
+    },
     types::ergo::{BoxId, HeaderId, IndexedBlock, IndexedBox, TxId, UTxO, UnconfirmedTransaction},
 };
 
@@ -166,14 +168,14 @@ pub enum Output {
         created: Vec<Arc<UTxO>>,
         spent: Vec<Spend>,
     },
-    /// The inverse of an orphaned block's delta: `created` are the boxes it had spent, and
-    /// `spent` the boxes it had created (with the tx that created them). Afterwards the
-    /// subscriber is at `parent_id`.
+    /// The inverse of an orphaned block's delta: `created` are the boxes it had spent, with
+    /// the heights that included them, and `spent` the boxes it had created (with the tx that
+    /// created them). Afterwards the subscriber is at `parent_id`.
     Rollback {
         key: TrackingKey,
         block: BlockRef,
         parent_id: HeaderId,
-        created: Vec<Arc<UTxO>>,
+        created: Vec<StoredBox>,
         spent: Vec<Spend>,
     },
     /// The key's whole pending state, replacing the previous one.

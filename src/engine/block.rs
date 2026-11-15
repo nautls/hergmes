@@ -3,13 +3,14 @@ use std::{
     sync::Arc,
 };
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::types::ergo::{BlockHeader, BoxId, HeaderId, TokenId, TxId, UTxO};
 
-/// A block's position and identity.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
-#[serde(rename_all = "camelCase")]
+/// A block's position and identity. Deserialized strictly, since clients send it as a
+/// subscription's `from`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BlockRef {
     pub height: u32,
     pub header_id: HeaderId,

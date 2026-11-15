@@ -16,7 +16,7 @@
 
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
-    sync::Arc,
+    sync::{Arc, OnceLock},
 };
 
 use tokio::{
@@ -38,7 +38,23 @@ pub const INBOX: usize = 1024;
 
 /// Where a subscription's live outputs go. Bounded: the task never waits on a subscriber,
 /// so a full sink ends the subscription (see [`Handle::subscribe`]).
-pub type Sink = mpsc::Sender<Arc<Output>>;
+pub type Sink = mpsc::Sender<Arc<Routed>>;
+
+/// An output as its key's subscribers get it: one copy shared between them, with a slot for
+/// a transport's encoding of it. The first subscriber that sends it fills the slot and the
+/// others reuse it, so an output is encoded once however many connections follow its key,
+/// and never on the engine task.
+#[derive(Debug)]
+pub struct Routed {
+    pub output: Output,
+    pub encoded: OnceLock<Box<str>>,
+}
+
+impl Routed {
+    pub fn new(output: Output) -> Self {
+        Self { output, encoded: OnceLock::new() }
+    }
+}
 
 /// A registered subscription, unique for the life of the task.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -174,8 +190,14 @@ impl EngineTask {
                 let subscription = self
                     .router
                     .subscribe(&mut self.engine, key.clone(), from, sink);
-                if let Subscription::Resync(reason) = &subscription {
-                    info!(?key, ?reason, "Resync required");
+                match &subscription {
+                    // A balance-only subscribe of an untracked key is answered this way on
+                    // its way to loading the key: routine, not a resync.
+                    Subscription::Resync(ResyncReason::NotTracked) if from.is_none() => {
+                        debug!(?key, "Subscribe to an untracked key");
+                    }
+                    Subscription::Resync(reason) => info!(?key, ?reason, "Resync required"),
+                    Subscription::Live { .. } => {}
                 }
                 if let Err(Subscription::Live { id, .. }) = reply.send(subscription) {
                     debug!(?id, "Subscriber left before its reply, unsubscribing");
@@ -287,15 +309,16 @@ impl Router {
             let balance = matches!(output, Output::Balance { .. });
             // Moved into an `Arc` shared by the key's subscribers, only if one of them takes it.
             let mut output = Some(output);
-            let mut shared: Option<Arc<Output>> = None;
+            let mut shared: Option<Arc<Routed>> = None;
             let mut ended = Vec::new();
             for id in ids {
                 let registered = &self.subscriptions[id];
                 if registered.balance_only && !balance && !resync {
                     continue;
                 }
-                let shared =
-                    shared.get_or_insert_with(|| Arc::new(output.take().expect("moved only once")));
+                let shared = shared.get_or_insert_with(|| {
+                    Arc::new(Routed::new(output.take().expect("moved only once")))
+                });
                 if let Err(error) = registered.sink.try_send(shared.clone()) {
                     debug!(?id, key = ?registered.key, %error, "Subscriber can't take more, ending it");
                     ended.push(*id);

@@ -2,9 +2,6 @@
 //!
 //! The relay's own settings start with `HERGMES_`, so they can't clash with other variables
 //! in a shared environment. `ERGO_NODE_URL` names the node, not the relay, and has no prefix.
-//!
-//! The cap on subscriptions per connection is not here yet: nothing reads it until the
-//! WebSocket (step 9).
 
 use std::{
     net::{IpAddr, Ipv4Addr, SocketAddr},
@@ -13,7 +10,10 @@ use std::{
 
 use crate::{
     adapters::{follower, loader, mempool, tokens::SUPPLY_LIMIT},
-    api::policy::{AddressRule, KeyPolicy},
+    api::{
+        policy::{AddressRule, KeyPolicy},
+        ws,
+    },
     engine::{self, TrackingKey},
     types::{
         address::{Address, Network},
@@ -53,8 +53,10 @@ pub mod vars {
     pub const MAX_BOXES_PER_KEY: &str = "HERGMES_MAX_BOXES_PER_KEY";
     /// The most boxes tracked over all keys, checked when a key is loaded.
     pub const MAX_TRACKED_BOXES: &str = "HERGMES_MAX_TRACKED_BOXES";
-    /// The IP address and port the REST API listens on.
+    /// The IP address and port the REST API and the WebSocket listen on.
     pub const LISTEN_ADDR: &str = "HERGMES_LISTEN_ADDR";
+    /// The most subscriptions one WebSocket connection holds, live and pending.
+    pub const MAX_SUBSCRIPTIONS_PER_CONNECTION: &str = "HERGMES_MAX_SUBSCRIPTIONS_PER_CONNECTION";
 }
 
 /// Loopback by default, so a fresh install is not exposed until the operator chooses: usually
@@ -82,6 +84,7 @@ pub struct Config {
     /// The box cache's budget in bytes, read in MiB; 0 disables the cache.
     pub box_cache_bytes: u64,
     pub listen_addr: SocketAddr,
+    pub ws: ws::Config,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -160,6 +163,13 @@ impl Config {
             allow_tokens: allowlist(vars::ALLOW_TOKENS, get(vars::ALLOW_TOKENS), token_id)?,
             box_cache_bytes,
             listen_addr: number(vars::LISTEN_ADDR, get(vars::LISTEN_ADDR), LISTEN_ADDR)?,
+            ws: ws::Config {
+                max_subscriptions: at_least_one(
+                    vars::MAX_SUBSCRIPTIONS_PER_CONNECTION,
+                    get(vars::MAX_SUBSCRIPTIONS_PER_CONNECTION),
+                    ws::Config::default().max_subscriptions,
+                )?,
+            },
         })
     }
 
@@ -258,7 +268,8 @@ where
     }
 }
 
-/// A count of at least 1: a cap of 0 would refuse every key that has a box.
+/// A count of at least 1: a cap of 0 would refuse every key that has a box, or every
+/// subscription.
 fn at_least_one(
     var: &'static str,
     value: Option<String>,

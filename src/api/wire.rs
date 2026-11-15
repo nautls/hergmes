@@ -34,7 +34,7 @@ impl<T: Display> Serialize for Amount<T> {
 }
 
 /// A box in Fleet's `Box<string>` shape, so clients hand it to Fleet as it is. Confirmed
-/// boxes carry the height of the block that included them; mempool outputs (step 9) do not.
+/// boxes carry the height of the block that included them; mempool outputs do not.
 pub struct WireBox<'a> {
     pub utxo: &'a UTxO,
     pub inclusion_height: Option<u32>,
@@ -99,9 +99,9 @@ impl Serialize for Registers<'_> {
     }
 }
 
-/// The block a page is pinned to.
+/// The block a page or a streamed balance is as of.
 #[derive(Serialize)]
-struct AsOf<'a> {
+pub(super) struct AsOf<'a> {
     height: u32,
     #[serde(rename = "headerId")]
     header_id: &'a HeaderId,
@@ -152,7 +152,7 @@ impl Serialize for BalanceBody<'_> {
     }
 }
 
-struct Confirmed<'a>(&'a Totals);
+pub(super) struct Confirmed<'a>(pub &'a Totals);
 
 impl Serialize for Confirmed<'_> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
@@ -160,7 +160,7 @@ impl Serialize for Confirmed<'_> {
     }
 }
 
-struct Pending<'a>(&'a PendingDelta);
+pub(super) struct Pending<'a>(pub &'a PendingDelta);
 
 impl Serialize for Pending<'_> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {

@@ -222,7 +222,7 @@ impl IntoResponse for ApiError {
 }
 
 /// Whole seconds, rounded up, and at least 1: a wait under a second must not read as "now".
-fn seconds(wait: Duration) -> u64 {
+pub(crate) fn seconds(wait: Duration) -> u64 {
     let secs = wait.as_secs() + u64::from(wait.subsec_nanos() > 0);
     secs.max(1)
 }

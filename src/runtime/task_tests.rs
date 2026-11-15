@@ -254,7 +254,7 @@ struct Harness {
     sim: SimChain,
     task: Handle,
     reference: Mutex<Reference>,
-    receivers: BTreeMap<u64, mpsc::Receiver<Arc<Output>>>,
+    receivers: BTreeMap<u64, mpsc::Receiver<Arc<Routed>>>,
     /// Every subscription made, for unsubscribes.
     ids: Vec<u64>,
     /// Blocks the engine has been at, for `from`.
@@ -371,7 +371,7 @@ impl Harness {
         let mut got = Vec::new();
         let end = loop {
             match receiver.try_recv() {
-                Ok(output) => got.push(Arc::unwrap_or_clone(output)),
+                Ok(output) => got.push(output.output.clone()),
                 Err(end) => break end,
             }
         };
@@ -559,9 +559,9 @@ async fn outputs_reach_subscribers_before_the_apply_returns() {
     let first = receiver
         .try_recv()
         .expect("delivered before the apply returned");
-    assert!(matches!(&*first, Output::Block { block: b, .. } if *b == block), "{first:?}");
+    assert!(matches!(&first.output, Output::Block { block: b, .. } if *b == block), "{first:?}");
     while let Ok(output) = receiver.try_recv() {
-        assert_eq!(*output.key(), key);
+        assert_eq!(*output.output.key(), key);
     }
 }
 

@@ -6,6 +6,7 @@ use hergmes::{
     api::{
         Balances, Pages,
         http::{self, Api},
+        ws,
     },
     clients::NodeClient,
     config::Config,
@@ -31,7 +32,7 @@ async fn main() -> Result<(), AppError> {
     result
 }
 
-/// Binds the REST API's address, starts the engine task, the follower, a keeper per
+/// Binds the API's address, starts the engine task, the follower, a keeper per
 /// configured key and the server, and runs until the engine is gone or the server stops.
 /// The engine task ends only by panicking, which can leave it half-changed, and the
 /// follower and keepers then stop with `EngineGone`: nothing can serve, so the process
@@ -86,8 +87,9 @@ async fn run() -> Result<(), AppError> {
         policy,
         synced,
     });
-    let mut server = tokio::spawn(axum::serve(listener, http::router(api)).into_future());
-    info!(%addr, "Serving the REST API");
+    let routes = http::router(api.clone()).merge(ws::router(api, config.ws));
+    let mut server = tokio::spawn(axum::serve(listener, routes).into_future());
+    info!(%addr, max_subscriptions = config.ws.max_subscriptions, "Serving the REST API and the WebSocket");
 
     let keeper = Arc::new(Keeper::new(engine, loader, tokens, Default::default()));
     let mut keepers = JoinSet::new();

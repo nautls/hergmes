@@ -155,7 +155,7 @@ impl<S: NodeSource> Keeper<S> {
             }
             let mut resync = false;
             while let Some(output) = stream.recv().await {
-                resync |= matches!(*output, Output::ResyncRequired { .. });
+                resync |= matches!(output.output, Output::ResyncRequired { .. });
             }
             tracked = !resync;
             if resync {

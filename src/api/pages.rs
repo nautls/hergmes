@@ -109,6 +109,26 @@ impl<S: NodeSource> Pages<S> {
         Ok(BoxPage { as_of, items, next_cursor })
     }
 
+    /// Loads `key` for a client: only once the configured keys have settled, and a token
+    /// only after the supply check. A key already tracked is a duplicate the engine ignores.
+    /// Pages and the WebSocket's balance-only subscriptions load through here.
+    pub async fn load(
+        &self,
+        engine: &impl EngineHandle,
+        key: &TrackingKey,
+    ) -> Result<(), ApiError> {
+        if !self.loads() {
+            return Err(ApiError::NotReady { retry_after: self.loader.config().retry });
+        }
+        if let TrackingKey::Token(id) = key {
+            self.tokens.check(id).await?;
+        }
+        if let Err(error) = self.loader.load(engine, key).await {
+            return Err((&*error).into());
+        }
+        Ok(())
+    }
+
     /// The page's ids, loading the key if it is not tracked and the page is a first one.
     async fn ids(
         &self,
@@ -133,15 +153,7 @@ impl<S: NodeSource> Pages<S> {
             Err(PageError::NotTracked) => {}
         }
 
-        if !self.loads() {
-            return Err(ApiError::NotReady { retry_after: self.loader.config().retry });
-        }
-        if let TrackingKey::Token(id) = key {
-            self.tokens.check(id).await?;
-        }
-        if let Err(error) = self.loader.load(engine, key).await {
-            return Err((&*error).into());
-        }
+        self.load(engine, key).await?;
         match page_ids(engine, query()).await? {
             Ok(ids) => Ok(ids),
             // Untracked again since the load: its load block was orphaned.

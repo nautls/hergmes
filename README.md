@@ -9,7 +9,8 @@ boxes, pending mempool activity, balance changes and reorgs. Pending activity sh
 change on top of the confirmed amount ("10 ERG incoming", "10 ERG leaving").
 
 > **Status:** early development. The relay follows the node, tracks the keys named in its
-> configuration and serves the REST API. The WebSocket layer is still being built.
+> configuration, and serves the REST API and the WebSocket stream. The client SDK is not
+> built yet.
 
 ## How it works
 
@@ -37,23 +38,24 @@ cp .env.example .env
 cargo run
 ```
 
-| Variable                     | Default        | Description                                                                       |
-| ---------------------------- | -------------- | --------------------------------------------------------------------------------- |
-| `ERGO_NODE_URL`              |                | URL of an indexed Ergo node (required)                                            |
-| `HERGMES_WINDOW_BLOCKS`      | 720            | Blocks of deltas kept for replays, rollbacks and pinned pages                     |
-| `HERGMES_GRACE_BLOCKS`       | 5              | Blocks a key with no subscribers stays tracked                                    |
-| `HERGMES_POLL_INTERVAL_MS`   | 1000           | How often the node's status is read to spot a new block or mempool change         |
-| `HERGMES_MEMPOOL_REFRESH_MS` | 10000          | Most time between full mempool fetches, even if the node's status shows no change |
-| `HERGMES_TOKEN_SUPPLY_LIMIT` | 100            | Largest token emission that can be tracked                                        |
-| `HERGMES_TRACK_ADDRESSES`    |                | Addresses tracked for the life of the process, comma-separated                    |
-| `HERGMES_TRACK_TOKENS`       |                | Token ids tracked for the life of the process, comma-separated                    |
-| `HERGMES_ALLOW_ADDRESSES`    | any            | Addresses clients may name: `p2pk`, `p2sh`, `p2s`, addresses or `none`            |
-| `HERGMES_DENY_ADDRESSES`     |                | Addresses clients may not name; deny wins over allow                              |
-| `HERGMES_ALLOW_TOKENS`       | any            | Token ids clients may name, or `none`                                             |
-| `HERGMES_BOX_CACHE_MB`       | 128            | Memory for full boxes kept to serve pages, in MiB; 0 disables it                  |
-| `HERGMES_MAX_BOXES_PER_KEY`  | 50000          | Most boxes an address or token can have to be tracked                             |
-| `HERGMES_MAX_TRACKED_BOXES`  | 2000000        | Most boxes tracked over all keys (about 110 bytes each)                           |
-| `HERGMES_LISTEN_ADDR`        | 127.0.0.1:8080 | IP and port of the REST API                                                       |
+| Variable                                   | Default        | Description                                                                       |
+| ------------------------------------------ | -------------- | --------------------------------------------------------------------------------- |
+| `ERGO_NODE_URL`                            |                | URL of an indexed Ergo node (required)                                            |
+| `HERGMES_WINDOW_BLOCKS`                    | 720            | Blocks of deltas kept for replays, rollbacks and pinned pages                     |
+| `HERGMES_GRACE_BLOCKS`                     | 5              | Blocks a key with no subscribers stays tracked                                    |
+| `HERGMES_POLL_INTERVAL_MS`                 | 1000           | How often the node's status is read to spot a new block or mempool change         |
+| `HERGMES_MEMPOOL_REFRESH_MS`               | 10000          | Most time between full mempool fetches, even if the node's status shows no change |
+| `HERGMES_TOKEN_SUPPLY_LIMIT`               | 100            | Largest token emission that can be tracked                                        |
+| `HERGMES_TRACK_ADDRESSES`                  |                | Addresses tracked for the life of the process, comma-separated                    |
+| `HERGMES_TRACK_TOKENS`                     |                | Token ids tracked for the life of the process, comma-separated                    |
+| `HERGMES_ALLOW_ADDRESSES`                  | any            | Addresses clients may name: `p2pk`, `p2sh`, `p2s`, addresses or `none`            |
+| `HERGMES_DENY_ADDRESSES`                   |                | Addresses clients may not name; deny wins over allow                              |
+| `HERGMES_ALLOW_TOKENS`                     | any            | Token ids clients may name, or `none`                                             |
+| `HERGMES_BOX_CACHE_MB`                     | 128            | Memory for full boxes kept to serve pages, in MiB; 0 disables it                  |
+| `HERGMES_MAX_BOXES_PER_KEY`                | 50000          | Most boxes an address or token can have to be tracked                             |
+| `HERGMES_MAX_TRACKED_BOXES`                | 2000000        | Most boxes tracked over all keys (about 110 bytes each)                           |
+| `HERGMES_LISTEN_ADDR`                      | 127.0.0.1:8080 | IP and port of the REST API and the WebSocket                                     |
+| `HERGMES_MAX_SUBSCRIPTIONS_PER_CONNECTION` | 100            | Most subscriptions one WebSocket connection holds                                 |
 
 By default (`any`), the relay serves any address and any token within the supply limit. The allow and deny
 lists narrow that, for an instance run for one dapp or one wallet; a refused key is
@@ -99,6 +101,36 @@ Box pages take `limit` (default 500, at most 1000) and the `cursor` from the pre
 Fleet SDK's `Box<string>` shape plus `inclusionHeight`, and every amount is a base-10 integer
 string. Errors are `{ "error": "<code>", "message": "..." }`, and a `503` carries `Retry-After`.
 
+## WebSocket
+
+`GET /v1/ws` streams what happens to a key after its snapshot. Clients send JSON text:
+
+```jsonc
+{ "op": "subscribe", "key": { "address": "9f..." }, "from": { "height": 1234567, "headerId": "..." } }
+{ "op": "subscribe", "key": { "tokenId": "..." }, "from": { "height": 1234567, "headerId": "..." } }
+{ "op": "subscribe", "key": { "address": "9f..." }, "id": 7 }   // balance only; `id` is optional
+{ "op": "unsubscribe", "key": { "address": "9f..." } }
+```
+
+A subscribe that takes effect is answered with `subscribed`. A subscription with `from` (a page's
+`asOf`) then replays the blocks since, or rolls back to the fork point, and sends the current
+`mempool` overlay and, for an address, its `balance`; `block`, `rollback`, `mempool` and `balance`
+messages follow live. One without `from` gets only `balance` messages, and loads the address if no
+one tracks it. Subscribing again to a key replaces its subscription, even if the new subscribe is
+refused; after a replace or an unsubscribe, a key's messages before the next `subscribed` belong to
+the old subscription. A subscribe's answer (`subscribed`, `rejected` or `resync_required`) carries
+its `id`, an integer the client picks: an older subscribe's answer can arrive after the client sent
+a newer message for the key, so a client drops the key's messages until the answer with its latest
+`id` (or, sending no ids, waits for a key's answer before its next message). A refused subscribe gets `rejected`, with REST's error codes, `retryAfter` (seconds)
+where REST would send `Retry-After`, and two codes of its own: `too_many_subscriptions` and
+`from_required` (a token has no balance). `resync_required` means: take a new snapshot, or for a
+balance-only subscription, subscribe again.
+
+The server pings every 30 s and drops a connection that leaves two pings unanswered, so proxies' idle timeouts
+never close a quiet subscription. A client that falls behind gets `resync_required`
+(`slow_consumer`) and is disconnected; one that sends malformed JSON is disconnected with close
+code 1008 and the reason. Messages from clients are limited to 16 KiB.
+
 ## Development
 
 ```sh
@@ -127,6 +159,6 @@ cargo test
 | `src/adapters/`   | Node I/O feeding the engine                               |
 | `src/runtime/`    | The engine task, output routing, configured keys          |
 | `src/config.rs`   | Configuration from environment variables                  |
-| `src/api/`        | REST routes and their services; WebSocket (in progress)   |
+| `src/api/`        | REST routes and their services, and the WebSocket         |
 | `src/sim/`        | Simulated chain for tests (`sim` feature)                 |
 | `tests/fixtures/` | Recorded node responses                                   |

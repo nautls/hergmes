@@ -724,7 +724,7 @@ fn rollback(key: &TrackingKey, delta: &BlockDelta, key_delta: Option<&KeyDelta>)
         Some(d) => (
             d.spent
                 .iter()
-                .map(|s| delta.boxes[&s.box_id].utxo.clone())
+                .map(|s| delta.boxes[&s.box_id].clone())
                 .collect(),
             d.created
                 .iter()

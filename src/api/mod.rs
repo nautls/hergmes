@@ -4,7 +4,8 @@
 //! key's box ids from the engine, loading the key first if it is not tracked, and fills in
 //! full boxes; the balance service answers an address's balance, from the engine if it is
 //! tracked and from the indexer and the engine's mempool snapshot if not. The HTTP layer
-//! (`http`) parses, calls them and serializes through the wire types (`wire`).
+//! (`http`) parses, calls them and serializes through the wire types (`wire`). The WebSocket
+//! (`ws`) runs a task per connection (`connection`), speaking the messages in `protocol`.
 
 use std::time::Duration;
 
@@ -15,12 +16,15 @@ use crate::{
 };
 
 pub mod balances;
+pub mod connection;
 pub mod cursor;
 pub mod http;
 pub mod keys;
 pub mod pages;
 pub mod policy;
+pub mod protocol;
 pub mod wire;
+pub mod ws;
 
 pub use balances::{AddressBalance, Balances};
 pub use cursor::Cursor;
