@@ -10,7 +10,7 @@ use tracing::debug;
 
 use crate::{
     engine::{
-        BlockRef, Output, PendingTx, TrackingKey,
+        BlockRef, Output, PendingTx, PoolBox, TrackingKey,
         overlay::{self, DeltaSides, OverlayHash, PendingDelta, TxDelta},
     },
     types::ergo::{BoxId, ErgoTree, TxId, UTxO, UnconfirmedTransaction},
@@ -211,6 +211,23 @@ impl Mempool {
     /// The snapshot in use as received, and the block it was observed at.
     pub fn latest(&self) -> Option<(Arc<[UnconfirmedTransaction]>, BlockRef)> {
         self.snapshot.as_ref().map(|s| (s.txs.clone(), s.observed))
+    }
+
+    /// What the snapshot in use says of box `id`, over the txs valid at the tip: spent if one
+    /// spends it, which wins over a tx creating it. A scan of the snapshot, as the node's own
+    /// read of a pool box is (`UtxoStateReader.withUnconfirmedTransactions`).
+    pub fn pool_box(&self, id: &BoxId) -> Option<PoolBox> {
+        let s = self.snapshot.as_ref()?;
+        let mut created = None;
+        for tx in s.order.iter().map(|&i| &s.txs[i]) {
+            if tx.inputs.iter().any(|b| b.id == *id) {
+                return Some(PoolBox::Spent);
+            }
+            if created.is_none() {
+                created = tx.outputs.iter().find(|b| b.id == *id);
+            }
+        }
+        created.map(|b| PoolBox::Created(Arc::new(b.clone())))
     }
 
     /// `key`'s overlay, tracked or not. Empty without a snapshot.

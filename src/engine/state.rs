@@ -184,6 +184,7 @@ impl Engine {
                     .collect(),
             ),
             Query::Boxes(ids) => Reply::Boxes(self.ring_boxes(&ids)),
+            Query::PoolBox(id) => Reply::PoolBox(self.mempool.pool_box(&id)),
             Query::MempoolSnapshot => Reply::MempoolSnapshot(self.mempool.latest()),
             Query::CatchUp { key, from } => Reply::CatchUp(self.catch_up(key, from)),
             Query::Stats => Reply::Stats(self.stats()),

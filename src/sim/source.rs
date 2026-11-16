@@ -5,6 +5,7 @@ use std::{
     time::Duration,
 };
 
+use reqwest::StatusCode;
 use tokio::time::sleep;
 
 use crate::{
@@ -14,8 +15,8 @@ use crate::{
     },
     sim::Chain,
     types::ergo::{
-        AddressTransactions, Balance, BlockHeader, BoxId, ErgoTree, HeaderId, IndexedBlock,
-        IndexedBox, TokenId, TokenInfo, UTxO, UnconfirmedTransaction,
+        AddressTransactions, Balance, BlockHeader, BoxById, BoxId, ErgoTree, HeaderId,
+        IndexedBlock, IndexedBox, TokenId, TokenInfo, TxId, UTxO, UnconfirmedTransaction,
     },
 };
 
@@ -35,15 +36,22 @@ pub enum Endpoint {
     ConfirmedBalance,
     AddressTransactions,
     BoxCount,
+    SubmitTransaction,
 }
 
 impl Endpoint {
     /// Answers `503` while the indexer recovers: every `/blockchain` endpoint except
-    /// `indexedHeight`, which the node serves before its recovery check.
+    /// `indexedHeight`, which the node serves before its recovery check. `/transactions` and
+    /// the other routes don't read the indexer.
     pub fn gated_by_recovery(self) -> bool {
         !matches!(
             self,
-            Self::Info | Self::Header | Self::Mempool | Self::BoxesWithPool | Self::IndexedHeight
+            Self::Info
+                | Self::Header
+                | Self::Mempool
+                | Self::BoxesWithPool
+                | Self::IndexedHeight
+                | Self::SubmitTransaction
         )
     }
 }
@@ -169,7 +177,7 @@ impl NodeSource for SimChain {
             .await
     }
 
-    async fn indexed_box(&self, id: &BoxId) -> Result<Option<IndexedBox>, NodeError> {
+    async fn indexed_box(&self, id: &BoxId) -> Result<Option<BoxById>, NodeError> {
         self.serve(Endpoint::IndexedBox, |c| Ok(c.indexed_box(id)))
             .await
     }
@@ -194,6 +202,19 @@ impl NodeSource for SimChain {
     async fn box_count(&self, ergo_tree: &ErgoTree) -> Result<u64, NodeError> {
         self.serve(Endpoint::BoxCount, |c| Ok(c.box_count(ergo_tree)))
             .await
+    }
+
+    /// The simulator has no serialized txs, so it takes none: a `501`, which the relay
+    /// answers as a node failure.
+    async fn submit_transaction(&self, _hex: &str, _broadcast: bool) -> Result<TxId, NodeError> {
+        self.serve(Endpoint::SubmitTransaction, |_| {
+            Err(NodeError::Api {
+                status: StatusCode::NOT_IMPLEMENTED,
+                reason: "not-implemented".to_string(),
+                detail: None,
+            })
+        })
+        .await
     }
 }
 

@@ -21,7 +21,7 @@ use std::{
 
 use hergmes::{
     adapters::{BoxCache, BoxFetcher, Follower, TokenChecker, loader::Loader},
-    api::{ApiError, Balances, History, Pages, pages},
+    api::{ApiError, Balances, Boxes, History, Pages, Refusal, Transactions, pages},
     clients::NodeClient,
     engine::{BlockRef, Engine, StoredBox, Totals, TrackingKey},
     runtime::{self, Handle},
@@ -49,6 +49,8 @@ struct Relay {
     pages: Pages<NodeClient>,
     balances: Balances<NodeClient>,
     history: History<NodeClient>,
+    boxes: Boxes<NodeClient>,
+    transactions: Transactions<NodeClient>,
     _follower: JoinHandle<()>,
 }
 
@@ -103,7 +105,9 @@ impl Relay {
             engine,
             pages: Pages::new(loader, tokens, BoxFetcher::new(node.clone(), cache)),
             balances: Balances::new(node.clone(), Default::default()),
-            history: History::new(node, Default::default()),
+            history: History::new(node.clone(), Default::default()),
+            boxes: Boxes::new(node.clone()),
+            transactions: Transactions::new(node),
             _follower: follower,
         }
     }
@@ -265,6 +269,42 @@ async fn an_address_an_nft_and_a_small_supply_token_are_tracked_and_served() {
         return;
     }
     panic!("the tip moved between the pages and the balance {ATTEMPTS} times");
+}
+
+/// A box read by id is the one the address's page served, and an unknown id is not found.
+/// Garbage hex checked without a broadcast is `unparseable` from the node: not the signed tx
+/// of the fixtures, whose input is spent sooner or later, which would turn the answer
+/// `invalid`.
+#[tokio::test]
+#[ignore = "needs a real node: set ERGO_NODE_URL"]
+async fn a_box_by_id_and_a_garbage_tx_check() {
+    let relay = Relay::start().await;
+    let (_, address) = address();
+    let boxes = boxes_of(&relay, &address).await;
+    // A box a pool tx spends is not found, so the first of a few that is found counts.
+    let mut served = 0;
+    for b in boxes.iter().take(5) {
+        match relay.boxes.by_id(&relay.engine, &b.utxo.id).await {
+            Ok(found) => {
+                assert_eq!(*found.utxo, *b.utxo);
+                assert_eq!(found.inclusion_height, Some(b.inclusion_height));
+                served += 1;
+            }
+            Err(ApiError::BoxNotFound) => println!("{} is spent since its page", b.utxo.id),
+            Err(error) => panic!("{error}"),
+        }
+    }
+    assert!(served > 0, "no box of the page was served by id");
+    let unknown: BoxId = "ab".repeat(32).parse().unwrap();
+    let error = relay.boxes.by_id(&relay.engine, &unknown).await;
+    assert_eq!(error.unwrap_err(), ApiError::BoxNotFound);
+
+    match relay.transactions.submit("deadbeef", false).await {
+        Err(ApiError::TransactionRejected { reason: Refusal::Unparseable, message }) => {
+            assert!(message.starts_with("Can not parse transaction bytes"), "{message}");
+        }
+        other => panic!("{other:?}"),
+    }
 }
 
 async fn boxes_of(relay: &Relay, key: &TrackingKey) -> Vec<StoredBox> {

@@ -188,6 +188,108 @@
       "status": 200,
       "body": "9iKCdiitfAVb1Wux5nFXiMcdYXGkhdNksAxJHQ28qiAMkxXupbt",
       "notes": "An address the indexer never saw is total 0, not a 404."
+    },
+    "tx_send_unparseable": {
+      "method": "POST",
+      "path": "/transactions/bytes",
+      "status": 400,
+      "body": "deadbeef"
+    },
+    "tx_send_invalid": {
+      "method": "POST",
+      "path": "/transactions/bytes",
+      "status": 400,
+      "body": "015c65777f34573642468e6ca4b34d9d044bd82b5d8c698afca7ddfbaeefb2867538617020c981b455d7f3a4f21e402d23a4d1daab32d4c9085e913ff5116ca226c689eaedc7497cd95f3818970cebceeafadae7cc7cf17ab6730000036f008c450ca7c6d56a917e23755ee1bc4010f06bfcd086a4b1396afa785b2938af3ef8430e3e318e924433422593dcb1bdd9b6b74f2bc5b81b0f07d2dca01346e023c5f382b6e96fbd878f6811aac73345489032157ad5affb84aefd4956c29703c0843d0008cd02f31eb1d87a89b28cee6a4a458380c4651965bfe9096ef5c31e4452400a8461899b8a7501000a030e0a7465737420746f6b656e0e0b6465736372697074696f6e0404e091431005040004000e36100204a00b08cd0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798ea02d192a39a8cc7a701730073011001020402d19683030193a38cc7b2a57300000193c2b2a57301007473027303830108cdeeac93b1a573049b8a7500008ccee7db030008cd02f31eb1d87a89b28cee6a4a458380c4651965bfe9096ef5c31e4452400a8461899b8a7502010a02904e00",
+      "notes": "tx_signed.hex with its input replaced by 5c65777f34573642468e6ca4b34d9d044bd82b5d8c698afca7ddfbaeefb28675 (spent): missing from the UTXO set."
+    },
+    "tx_check_unparseable": {
+      "method": "POST",
+      "path": "/transactions/checkBytes",
+      "status": 400,
+      "body": "deadbeef"
+    },
+    "tx_check_invalid": {
+      "method": "POST",
+      "path": "/transactions/checkBytes",
+      "status": 400,
+      "body": "015c65777f34573642468e6ca4b34d9d044bd82b5d8c698afca7ddfbaeefb2867538617020c981b455d7f3a4f21e402d23a4d1daab32d4c9085e913ff5116ca226c689eaedc7497cd95f3818970cebceeafadae7cc7cf17ab6730000036f008c450ca7c6d56a917e23755ee1bc4010f06bfcd086a4b1396afa785b2938af3ef8430e3e318e924433422593dcb1bdd9b6b74f2bc5b81b0f07d2dca01346e023c5f382b6e96fbd878f6811aac73345489032157ad5affb84aefd4956c29703c0843d0008cd02f31eb1d87a89b28cee6a4a458380c4651965bfe9096ef5c31e4452400a8461899b8a7501000a030e0a7465737420746f6b656e0e0b6465736372697074696f6e0404e091431005040004000e36100204a00b08cd0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798ea02d192a39a8cc7a701730073011001020402d19683030193a38cc7b2a57300000193c2b2a57301007473027303830108cdeeac93b1a573049b8a7500008ccee7db030008cd02f31eb1d87a89b28cee6a4a458380c4651965bfe9096ef5c31e4452400a8461899b8a7502010a02904e00",
+      "notes": "tx_signed.hex with its input replaced by 5c65777f34573642468e6ca4b34d9d044bd82b5d8c698afca7ddfbaeefb28675 (spent): missing from the UTXO set."
+    },
+    "tx_check_signed": {
+      "method": "POST",
+      "path": "/transactions/checkBytes",
+      "status": 200,
+      "body": "016f008c450ca7c6d56a917e23755ee1bc4010f06bfcd086a4b1396afa785b293838617020c981b455d7f3a4f21e402d23a4d1daab32d4c9085e913ff5116ca226c689eaedc7497cd95f3818970cebceeafadae7cc7cf17ab6730000036f008c450ca7c6d56a917e23755ee1bc4010f06bfcd086a4b1396afa785b2938af3ef8430e3e318e924433422593dcb1bdd9b6b74f2bc5b81b0f07d2dca01346e023c5f382b6e96fbd878f6811aac73345489032157ad5affb84aefd4956c29703c0843d0008cd02f31eb1d87a89b28cee6a4a458380c4651965bfe9096ef5c31e4452400a8461899b8a7501000a030e0a7465737420746f6b656e0e0b6465736372697074696f6e0404e091431005040004000e36100204a00b08cd0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798ea02d192a39a8cc7a701730073011001020402d19683030193a38cc7b2a57300000193c2b2a57301007473027303830108cdeeac93b1a573049b8a7500008ccee7db030008cd02f31eb1d87a89b28cee6a4a458380c4651965bfe9096ef5c31e4452400a8461899b8a7502010a02904e00",
+      "notes": "tx_signed.hex, checked while its input 6f008c450ca7c6d56a917e23755ee1bc4010f06bfcd086a4b1396afa785b2938 was unspent. Never sent."
+    },
+    "box_by_id_unspent": {
+      "method": "GET",
+      "path": "/blockchain/box/byId/6f008c450ca7c6d56a917e23755ee1bc4010f06bfcd086a4b1396afa785b2938",
+      "status": 200,
+      "notes": "Unspent box (tx_signed.hex's input): spentTransactionId is null."
+    },
+    "tx_send_signed": {
+      "method": "POST",
+      "path": "/transactions/bytes",
+      "status": 200,
+      "handWritten": true,
+      "notes": "The id as a JSON string, as tx_check_signed (ErgoBaseApiRoute.sendLocalTransactionRoute)."
+    },
+    "tx_send_double_spend": {
+      "method": "POST",
+      "path": "/transactions/bytes",
+      "status": 400,
+      "handWritten": true,
+      "notes": "From ErgoBaseApiRoute.sendLocalTransactionRoute, on ErgoMemPool.acceptIfNoDoubleSpend's DoubleSpendingLoser."
+    },
+    "tx_send_fee_too_low": {
+      "method": "POST",
+      "path": "/transactions/bytes",
+      "status": 400,
+      "handWritten": true,
+      "notes": "From ErgoMemPool.process."
+    },
+    "tx_send_already_in_pool": {
+      "method": "POST",
+      "path": "/transactions/bytes",
+      "status": 400,
+      "handWritten": true,
+      "notes": "From ErgoMemPool.process."
+    },
+    "tx_send_pool_full": {
+      "method": "POST",
+      "path": "/transactions/bytes",
+      "status": 400,
+      "handWritten": true,
+      "notes": "From ErgoMemPool.process."
+    },
+    "tx_send_pool_outbid": {
+      "method": "POST",
+      "path": "/transactions/bytes",
+      "status": 400,
+      "handWritten": true,
+      "notes": "From ErgoMemPool.acceptIfNoDoubleSpend."
+    },
+    "tx_send_policy_reemission": {
+      "method": "POST",
+      "path": "/transactions/bytes",
+      "status": 400,
+      "handWritten": true,
+      "notes": "From ErgoMemPool.process."
+    },
+    "tx_send_policy_storage_rent": {
+      "method": "POST",
+      "path": "/transactions/bytes",
+      "status": 400,
+      "handWritten": true,
+      "notes": "From ErgoMemPool.process."
+    },
+    "tx_send_policy_blacklisted": {
+      "method": "POST",
+      "path": "/transactions/bytes",
+      "status": 400,
+      "handWritten": true,
+      "notes": "From ErgoMemPool.process."
     }
   }
 }

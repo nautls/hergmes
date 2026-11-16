@@ -1,0 +1,5 @@
+{
+  "error": 400,
+  "reason": "bad.request",
+  "detail": "Pool can not accept transaction bf43e4564063c180a4d1eb2ba3b889659e96a85d7cae23811c88299a7f1f244c, it is already in the mempool"
+}

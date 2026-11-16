@@ -9,8 +9,9 @@ use axum::{
     http::{
         Request,
         header::{
-            ACCESS_CONTROL_ALLOW_METHODS, ACCESS_CONTROL_ALLOW_ORIGIN,
-            ACCESS_CONTROL_EXPOSE_HEADERS, ACCESS_CONTROL_REQUEST_METHOD, ORIGIN,
+            ACCESS_CONTROL_ALLOW_HEADERS, ACCESS_CONTROL_ALLOW_METHODS,
+            ACCESS_CONTROL_ALLOW_ORIGIN, ACCESS_CONTROL_EXPOSE_HEADERS,
+            ACCESS_CONTROL_REQUEST_HEADERS, ACCESS_CONTROL_REQUEST_METHOD, CONTENT_TYPE, ORIGIN,
         },
     },
 };
@@ -22,7 +23,10 @@ use tower::ServiceExt;
 use super::*;
 use crate::{
     adapters::{BoxCache, BoxFetcher, EngineGone, Follower, HeaderReader, Loader, TokenChecker},
-    api::cursor::{CursorError, TxCursor},
+    api::{
+        Refusal,
+        cursor::{CursorError, TxCursor},
+    },
     engine::{Config, Engine},
     runtime::{Settled, settling},
     sim::{self, Chain, SimChain, SimConfig, testing::ready, token_id},
@@ -39,10 +43,21 @@ fn every_error() -> Vec<(ApiError, StatusCode, Option<&'static str>)> {
     vec![
         (ApiError::InvalidAddress("bad".into()), S::BAD_REQUEST, None),
         (ApiError::InvalidTokenId, S::BAD_REQUEST, None),
+        (ApiError::InvalidBoxId, S::BAD_REQUEST, None),
+        (ApiError::InvalidBroadcast, S::BAD_REQUEST, None),
+        (
+            ApiError::TransactionRejected {
+                reason: Refusal::FeeTooLow,
+                message: "Min fee not met: 0.001 ergs required, 1.0E-4 ergs given".into(),
+            },
+            S::BAD_REQUEST,
+            None,
+        ),
         (ApiError::InvalidCursor(CursorError::Malformed), S::BAD_REQUEST, None),
         (ApiError::InvalidLimit { max: 1000 }, S::BAD_REQUEST, None),
         (ApiError::KeyNotAllowed, S::FORBIDDEN, None),
         (ApiError::UnknownToken, S::NOT_FOUND, None),
+        (ApiError::BoxNotFound, S::NOT_FOUND, None),
         (ApiError::CursorExpired, S::GONE, None),
         (ApiError::SupplyTooLarge { emission: 101, limit: 100 }, S::UNPROCESSABLE_ENTITY, None),
         (ApiError::TooManyBoxes { max: 5 }, S::UNPROCESSABLE_ENTITY, None),
@@ -89,6 +104,13 @@ async fn every_error_has_its_status_code_and_retry_after() {
         let message = body["message"].as_str().expect("a message");
         assert!(!message.is_empty(), "{code}");
         assert!(!message.contains("10.0.0.1"), "{code}: the node's address leaked: {message}");
+        // Only a refused tx has a reason, and its message is the node's.
+        if code == "transaction_rejected" {
+            assert_eq!(body["reason"], "fee_too_low");
+            assert!(message.starts_with("Min fee not met"), "{message}");
+        } else {
+            assert!(body.get("reason").is_none(), "{code}: {body}");
+        }
     }
 }
 
@@ -96,7 +118,7 @@ async fn every_error_has_its_status_code_and_retry_after() {
 fn every_variant_is_in_the_table() {
     let codes: std::collections::BTreeSet<_> =
         every_error().iter().map(|(e, ..)| e.code()).collect();
-    assert_eq!(codes.len(), 15, "{codes:?}");
+    assert_eq!(codes.len(), 19, "{codes:?}");
 }
 
 #[test]
@@ -150,6 +172,8 @@ impl Fixture {
             balances: Balances::new(sim.clone(), Default::default()),
             history: History::new(sim.clone(), Default::default()),
             headers: Headers::new(HeaderReader::new(sim.clone(), follower.headers())),
+            boxes: Boxes::new(sim.clone()),
+            transactions: Transactions::new(sim.clone()),
             network: Network::Mainnet,
             policy,
             synced: follower.synced(),
@@ -639,5 +663,197 @@ async fn any_origin_may_read_responses_and_errors() {
         .unwrap();
     let preflight = f.send(preflight).await;
     assert_eq!(preflight.status(), StatusCode::OK);
-    assert_eq!(preflight.headers()[ACCESS_CONTROL_ALLOW_METHODS], "GET");
+    assert_eq!(preflight.headers()[ACCESS_CONTROL_ALLOW_METHODS], "GET,POST");
+
+    // A tx sent as JSON passes the preflight.
+    let preflight = Request::options("/v1/transactions")
+        .header(ORIGIN, "https://wallet.example")
+        .header(ACCESS_CONTROL_REQUEST_METHOD, "POST")
+        .header(ACCESS_CONTROL_REQUEST_HEADERS, "content-type")
+        .body(Body::empty())
+        .unwrap();
+    let preflight = f.send(preflight).await;
+    assert_eq!(preflight.status(), StatusCode::OK);
+    assert_eq!(preflight.headers()[ACCESS_CONTROL_ALLOW_HEADERS], "content-type");
+
+    // A tx is a simple request (`text/plain`, no preflight), and its refusal is readable.
+    let post = Request::post("/v1/transactions")
+        .header(ORIGIN, "https://wallet.example")
+        .header(CONTENT_TYPE, "text/plain")
+        .body(Body::from("zz"))
+        .unwrap();
+    let refused = f.send(post).await;
+    assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(refused.headers()[ACCESS_CONTROL_ALLOW_ORIGIN], "*");
+}
+
+// --- Box by id ---
+
+#[tokio::test(start_paused = true)]
+async fn a_box_by_id_is_served_alone_in_either_case() {
+    let mut f = Fixture::new();
+    f.tick();
+    let (key, utxo) = f.sim.lock().utxo().into_iter().next().unwrap();
+    let id = utxo.id.to_string();
+    for id in [id.clone(), id.to_uppercase()] {
+        let body = f.ok(&format!("/v1/boxes/{id}")).await;
+        assert_eq!(body["boxId"], utxo.id.to_string());
+        assert_eq!(body["inclusionHeight"], key.inclusion_height);
+        assert_eq!(body["value"], utxo.value.to_string());
+        assert!(body.get("asOf").is_none(), "{body}");
+    }
+    for bad in ["abcd", &format!("{id}0"), "%FF"] {
+        let uri = format!("/v1/boxes/{bad}");
+        assert_eq!(f.error(&uri, StatusCode::BAD_REQUEST).await, "invalid_box_id", "{uri}");
+    }
+    let unknown = format!("/v1/boxes/{}", "ab".repeat(32));
+    assert_eq!(f.error(&unknown, StatusCode::NOT_FOUND).await, "box_not_found");
+}
+
+/// A box id is not a key: a box of an address the policy refuses is served.
+#[tokio::test(start_paused = true)]
+async fn a_box_by_id_is_outside_the_key_policy() {
+    let chain = Chain::new(SimConfig::default());
+    let tree = chain.trees()[0].clone();
+    let denied = address::Address::from_ergo_tree(tree.clone(), Network::Mainnet);
+    let policy = KeyPolicy::new(None, [&denied], Some(&[]), &[]);
+    let mut f = Fixture::with_policy(chain, policy);
+    f.tick();
+    let held = f
+        .sim
+        .lock()
+        .utxo()
+        .into_values()
+        .find(|b| b.ergo_tree == tree)
+        .unwrap();
+    let body = f.ok(&format!("/v1/boxes/{}", held.id)).await;
+    assert_eq!(body["boxId"], held.id.to_string());
+}
+
+// --- Transactions ---
+
+impl Fixture {
+    async fn post(&self, uri: &str, body: impl Into<Body>) -> Response {
+        let request = Request::post(uri)
+            .header(CONTENT_TYPE, "text/plain")
+            .body(body.into())
+            .unwrap();
+        self.send(request).await
+    }
+
+    /// A refused tx's reason, after checking it is a refusal.
+    async fn refused(&self, uri: &str, body: impl Into<Body>) -> String {
+        let response = self.post(uri, body).await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{uri}");
+        let body = body_json(response).await;
+        assert_eq!(body["error"], "transaction_rejected", "{body}");
+        assert!(!body["message"].as_str().unwrap().is_empty());
+        body["reason"].as_str().unwrap().to_owned()
+    }
+}
+
+/// The relay refuses a body that is not hex, not UTF-8 or too long with the reason the node
+/// would give, unread past the limit and with no node call; `broadcast` is `true` or `false`.
+#[tokio::test]
+async fn a_tx_body_is_checked_before_the_node_sees_it() {
+    let f = Fixture::new();
+    let calls = f.sim.calls().len();
+    assert_eq!(f.refused("/v1/transactions", "zz").await, "unparseable");
+    assert_eq!(f.refused("/v1/transactions", vec![0xff, 0xfe]).await, "unparseable");
+    let over = "0".repeat(MAX_TX_BODY + 1);
+    assert_eq!(f.refused("/v1/transactions", over).await, "too_large");
+    let over = "00".repeat(crate::api::transactions::MAX_TX_BYTES + 1);
+    assert_eq!(f.refused("/v1/transactions?broadcast=false", over).await, "too_large");
+    // Unread past the limit or read and checked, a body too long gets one message.
+    let mut messages = Vec::new();
+    for over in ["0".repeat(MAX_TX_BODY + 1), "00".repeat(MAX_HEX_CHARS)] {
+        let body = body_json(f.post("/v1/transactions", over).await).await;
+        messages.push(body["message"].clone());
+    }
+    assert_eq!(messages[0], messages[1]);
+    for value in ["", "yes", "TRUE", "1"] {
+        let uri = format!("/v1/transactions?broadcast={value}");
+        let response = f.post(&uri, "00").await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{uri}");
+        assert_eq!(body_json(response).await["error"], "invalid_broadcast", "{uri}");
+    }
+    assert_eq!(f.sim.calls().len(), calls, "{:?}", &f.sim.calls()[calls..]);
+
+    // Hex goes to the node, which here takes no tx: a node failure, not a refusal.
+    for uri in ["/v1/transactions", "/v1/transactions?broadcast=true&broadcast=x"] {
+        let response = f.post(uri, "00").await;
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY, "{uri}");
+    }
+    let response = f.get("/v1/transactions").await;
+    assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
+}
+
+/// Through the router to a node that answers: the id on success, the node's message and its
+/// reason on a refusal.
+#[tokio::test]
+async fn a_tx_is_answered_with_its_id_or_the_nodes_refusal() {
+    use wiremock::{Mock, MockServer, ResponseTemplate, matchers};
+
+    use crate::{clients::NodeClient, fixtures};
+
+    let server = MockServer::start().await;
+    let recorded = |name: &str| {
+        ResponseTemplate::new(fixtures::status(name))
+            .set_body_raw(fixtures::text(name), "application/json")
+    };
+    Mock::given(matchers::path("/transactions/checkBytes"))
+        .respond_with(recorded("tx_check_signed"))
+        .mount(&server)
+        .await;
+    Mock::given(matchers::path("/transactions/bytes"))
+        .respond_with(recorded("tx_send_invalid"))
+        .mount(&server)
+        .await;
+    let node = NodeClient::new(reqwest::Client::new(), &server.uri(), Network::Mainnet);
+    let f = Fixture::new();
+    let api = Arc::new(Api {
+        engine: Mutex::new(Engine::new(Config::default())),
+        pages: Pages::new(
+            Arc::new(Loader::new(node.clone(), Default::default())),
+            Arc::new(TokenChecker::new(node.clone(), 100)),
+            BoxFetcher::new(node.clone(), BoxCache::new(0)),
+        ),
+        balances: Balances::new(node.clone(), Default::default()),
+        history: History::new(node.clone(), Default::default()),
+        headers: Headers::new(HeaderReader::new(node.clone(), f.follower.headers())),
+        boxes: Boxes::new(node.clone()),
+        transactions: Transactions::new(node),
+        network: Network::Mainnet,
+        policy: KeyPolicy::default(),
+        synced: f.follower.synced(),
+        metrics: Default::default(),
+    });
+    let router = router(api);
+    let post = |uri: &str| {
+        Request::post(uri)
+            .body(Body::from(fixtures::signed_tx()))
+            .unwrap()
+    };
+
+    let checked = router
+        .clone()
+        .oneshot(post("/v1/transactions?broadcast=false"))
+        .await
+        .unwrap();
+    assert_eq!(checked.status(), StatusCode::OK);
+    let id: String = fixtures::load("tx_check_signed");
+    assert_eq!(body_json(checked).await, serde_json::json!({ "transactionId": id }));
+
+    let sent = router.oneshot(post("/v1/transactions")).await.unwrap();
+    assert_eq!(sent.status(), StatusCode::BAD_REQUEST);
+    let body = body_json(sent).await;
+    let node_error: crate::clients::node::ApiError = fixtures::load("tx_send_invalid");
+    assert_eq!(
+        body,
+        serde_json::json!({
+            "error": "transaction_rejected",
+            "reason": "invalid",
+            "message": node_error.detail.unwrap(),
+        })
+    );
 }

@@ -3,7 +3,7 @@
 use serde_json::Value;
 use wiremock::{
     Mock, MockServer, ResponseTemplate,
-    matchers::{body_json, method, path, query_param},
+    matchers::{body_json, body_string, header, method, path, query_param},
 };
 
 use super::*;
@@ -265,6 +265,33 @@ mod shapes {
         let raw: Value = load("box_by_id_spent");
         assert!(raw["spentTransactionId"].is_string());
         assert!(raw.get("spendingHeight").is_none(), "node now sends spendingHeight");
+    }
+
+    #[test]
+    fn box_by_id_unspent() {
+        let found: BoxById = load("box_by_id_unspent");
+        assert!(!found.spent);
+        let found: BoxById = load("box_by_id_spent");
+        assert!(found.spent);
+    }
+
+    /// Every refusal, recorded or hand-written, is the node's `400` with a message in
+    /// `detail`; an accepted tx is its id as a JSON string.
+    #[test]
+    fn tx_answers() {
+        let id: TxId = load("tx_check_signed");
+        assert_eq!(load::<TxId>("tx_send_signed"), id);
+        let fixtures = manifest()["fixtures"].as_object().unwrap().clone();
+        let refusals: Vec<_> = fixtures
+            .keys()
+            .filter(|n| n.starts_with("tx_") && status(n) == 400)
+            .collect();
+        assert_eq!(refusals.len(), 12);
+        for name in refusals {
+            let error: ApiError = load(name);
+            assert_eq!(error.reason, "bad.request", "{name}");
+            assert!(error.detail.is_some_and(|d| !d.is_empty()), "{name}");
+        }
     }
 
     #[test]
@@ -591,8 +618,57 @@ mod source {
             .mount(&server)
             .await;
 
-        assert_eq!(node.indexed_box(&spent).await.unwrap().unwrap().utxo.id, spent);
+        let unspent = manifest()["fixtures"]["box_by_id_unspent"]["path"]
+            .as_str()
+            .unwrap()
+            .rsplit('/')
+            .next()
+            .map(digest)
+            .unwrap();
+        Mock::given(path(format!("/blockchain/box/byId/{unspent}")))
+            .respond_with(recorded("box_by_id_unspent"))
+            .mount(&server)
+            .await;
+
+        let found = node.indexed_box(&spent).await.unwrap().unwrap();
+        assert_eq!((found.indexed.utxo.id, found.spent), (spent, true));
+        let found = node.indexed_box(&unspent).await.unwrap().unwrap();
+        assert_eq!((found.indexed.utxo.id, found.spent), (unspent, false));
         assert_eq!(node.indexed_box(&unknown).await.unwrap(), None);
+    }
+
+    /// The hex goes as it is, as `text/plain`, to the route `broadcast` picks.
+    async fn submitted(route: &str, fixture: &str, broadcast: bool) -> Result<TxId, NodeError> {
+        let (server, node) = node().await;
+        let hex = fixtures::signed_tx();
+        Mock::given(method("POST"))
+            .and(path(route))
+            .and(header("content-type", "text/plain"))
+            .and(body_string(hex.clone()))
+            .respond_with(recorded(fixture))
+            .expect(1)
+            .mount(&server)
+            .await;
+        node.submit_transaction(&hex, broadcast).await
+    }
+
+    #[tokio::test]
+    async fn a_tx_is_checked_or_sent_and_its_id_read() {
+        let id: TxId = load("tx_check_signed");
+        let checked = submitted("/transactions/checkBytes", "tx_check_signed", false).await;
+        assert_eq!(checked.unwrap(), id);
+        let sent = submitted("/transactions/bytes", "tx_send_signed", true).await;
+        assert_eq!(sent.unwrap(), id);
+    }
+
+    #[tokio::test]
+    async fn a_refused_tx_is_a_400_with_the_nodes_message() {
+        let error = submitted("/transactions/bytes", "tx_send_invalid", true).await;
+        let Err(NodeError::Api { status, detail: Some(detail), .. }) = error else {
+            panic!("{error:?}")
+        };
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(detail.starts_with("Malformed transaction: "), "{detail}");
     }
 
     #[tokio::test]

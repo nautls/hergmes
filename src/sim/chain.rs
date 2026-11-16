@@ -30,10 +30,10 @@ use crate::{
     types::{
         Digest, HashDigest, HexBytes,
         ergo::{
-            AddressTransaction, AddressTransactions, Balance, BlockHeader, BoxAssets, BoxId,
-            ErgoTree, GENESIS_PARENT_ID, HeaderId, IndexedBlock, IndexedBox, IndexedTransaction,
-            NonMandatoryRegisters, Token, TokenBalance, TokenId, TokenInfo, TxId, UTxO,
-            UnconfirmedTransaction,
+            AddressTransaction, AddressTransactions, Balance, BlockHeader, BoxAssets, BoxById,
+            BoxId, ErgoTree, GENESIS_PARENT_ID, HeaderId, IndexedBlock, IndexedBox,
+            IndexedTransaction, NonMandatoryRegisters, Token, TokenBalance, TokenId, TokenInfo,
+            TxId, UTxO, UnconfirmedTransaction,
         },
     },
 };
@@ -1041,9 +1041,10 @@ impl Chain {
         Some(TokenInfo { emission_amount: emission })
     }
 
-    /// Any box the indexer has seen created, spent or not.
-    pub fn indexed_box(&self, id: &BoxId) -> Option<IndexedBox> {
-        self.indexer.all.get(id).map(Entry::to_indexed)
+    /// Any box the indexer has seen created, spent or not, and which.
+    pub fn indexed_box(&self, id: &BoxId) -> Option<BoxById> {
+        let indexed = self.indexer.all.get(id).map(Entry::to_indexed)?;
+        Some(BoxById { indexed, spent: !self.indexer.unspent.contains_key(id) })
     }
 
     /// The indexer's txs that spend from or pay to `ergo_tree`, newest first, skipping the

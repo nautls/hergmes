@@ -17,14 +17,14 @@ use serde_json::value::RawValue;
 
 use crate::{
     api::{
-        AddressBalance, BoxPage, HeadersPage, WithPoolBoxes,
+        AddressBalance, BoxPage, FoundBox, HeadersPage, WithPoolBoxes,
         history::{HistoryItem, HistoryPage},
     },
     engine::{BlockRef, StoredBox, Totals, overlay::PendingDelta},
     types::{
         HexBytes,
         address::Network,
-        ergo::{HeaderId, NonMandatoryRegisters, TokenId, UTxO},
+        ergo::{HeaderId, NonMandatoryRegisters, TokenId, TxId, UTxO},
     },
 };
 
@@ -279,6 +279,25 @@ impl Serialize for HeadersBody<'_> {
     }
 }
 
+/// `GET /v1/boxes/{boxId}`: the box alone, as one item of a view with the pool, so a pending
+/// one has no `inclusionHeight`. No `asOf`: a confirmed box carries its own height.
+pub struct BoxBody<'a>(pub &'a FoundBox);
+
+impl Serialize for BoxBody<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let found = self.0;
+        WireBox { utxo: &found.utxo, inclusion_height: found.inclusion_height }
+            .serialize(serializer)
+    }
+}
+
+/// `POST /v1/transactions`: the id of the tx the node took, sent or only checked.
+#[derive(Serialize)]
+pub struct SubmittedBody<'a> {
+    #[serde(rename = "transactionId")]
+    pub transaction_id: &'a TxId,
+}
+
 /// `GET /v1/status`. `tip` is `null` until the engine has applied a block.
 pub struct StatusBody<'a> {
     pub network: Network,
@@ -297,10 +316,13 @@ impl Serialize for StatusBody<'_> {
     }
 }
 
-/// An error: the code for programs, the message for people.
+/// An error: the code for programs, the message for people. A refused tx also has the
+/// reason, from a fixed set like the code.
 #[derive(Serialize)]
 pub struct ErrorBody<'a> {
     pub error: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<&'a str>,
     pub message: &'a str,
 }
 

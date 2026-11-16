@@ -7,9 +7,12 @@ use proptest::{prelude::*, sample::Index};
 
 use super::*;
 use crate::{
-    engine::{PendingTx, overlay::TxDelta},
+    engine::{PendingTx, PoolBox, overlay::TxDelta},
     sim::{self, Chain, Oracle, SimConfig, SimOp, strategy, testing::reference_delta},
-    types::ergo::{TxId, UnconfirmedTransaction},
+    types::{
+        Digest,
+        ergo::{TxId, UnconfirmedTransaction},
+    },
 };
 
 /// Small enough that random histories reach the window and grace edges: reorgs go up to 5
@@ -1049,6 +1052,39 @@ impl Harness {
             }
         }
 
+        // What the snapshot says of a box is the reference order's: spent if a tx spends it,
+        // else created if one creates it. Asked of every box the snapshot names, every
+        // confirmed one and an unknown one.
+        let order = match &self.held {
+            Some(txs) => sim::pending_order(&ids, txs),
+            None => Vec::new(),
+        };
+        let named: BTreeSet<BoxId> = (self.held.iter().flat_map(|txs| txs.iter()))
+            .flat_map(|tx| tx.inputs.iter().chain(&tx.outputs).map(|b| b.id))
+            .chain(ids.iter().copied())
+            .chain([Digest([0xee; 32])])
+            .collect();
+        for id in named {
+            let Reply::PoolBox(answer) = self.engine.query(Query::PoolBox(id)) else {
+                panic!("a pool box reply");
+            };
+            let spent = order.iter().any(|tx| tx.inputs.iter().any(|b| b.id == id));
+            let created = order.iter().flat_map(|tx| &tx.outputs).find(|b| b.id == id);
+            let expected = match (spent, created) {
+                (true, _) => Some(PoolBox::Spent),
+                (false, Some(b)) => Some(PoolBox::Created(Arc::new(b.clone()))),
+                (false, None) => None,
+            };
+            assert_eq!(answer, expected, "pool box {id}");
+            if spent && created.is_some() {
+                self.seen.insert("pool box created and spent in the pool");
+            } else if spent {
+                self.seen.insert("pool box spends a confirmed box");
+            } else if created.is_some() {
+                self.seen.insert("pool box created");
+            }
+        }
+
         // Every live client holds the oracle's state at the tip.
         for client in self.clients.iter().filter(|c| c.live) {
             let (balance, overlay) = expected_for(self, &client.key, &utxo, &ids);
@@ -1210,6 +1246,9 @@ fn random_histories_reach_the_hard_engine_cases() {
         "with-pool view fits the limit only after pending spends",
         "pending history of a conflict",
         "pending history lists a child above its parent",
+        "pool box created and spent in the pool",
+        "pool box spends a confirmed box",
+        "pool box created",
     ] {
         assert!(seen.contains(feature), "no random history reached: {feature}");
     }

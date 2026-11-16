@@ -221,12 +221,14 @@ fn indexed_box_returns_spent_boxes() {
     let source = box_of(&chain, 0);
     let to = chain.trees()[1].clone();
     let tx = chain.transfer(&[source], &to);
-    chain.mine_txs(vec![tx]);
+    chain.mine_txs(vec![tx.clone()]);
     let start = chain.config().start_height;
     let sim = SimChain::new(chain);
 
     let spent = ready(sim.indexed_box(&source)).unwrap().unwrap();
-    assert_eq!(spent.inclusion_height, start);
+    assert_eq!((spent.indexed.inclusion_height, spent.spent), (start, true));
+    let unspent = ready(sim.indexed_box(&tx.outputs[0].id)).unwrap().unwrap();
+    assert!(!unspent.spent);
     assert!(ready(sim.indexed_box(&Digest([7; 32]))).unwrap().is_none());
 }
 

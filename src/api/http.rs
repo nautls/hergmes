@@ -1,6 +1,8 @@
-//! The REST routes: parse, call the page, balance, history and header services, serialize.
+//! The REST routes: parse, call the page, balance, history, header, box and transaction
+//! services, serialize.
 //!
-//! Errors are `{ "error": "<code>", "message": "..." }`, and every 503 carries `Retry-After`.
+//! Errors are `{ "error": "<code>", "message": "..." }`, with a `reason` for a refused tx,
+//! and every 503 carries `Retry-After`.
 //! Any origin may read the responses. They are not compressed: that is the reverse proxy's
 //! job, like TLS.
 
@@ -8,11 +10,17 @@ use std::{sync::Arc, time::Duration};
 
 use axum::{
     Json, Router,
-    extract::{Path, Query, State, rejection::PathRejection},
-    http::{HeaderValue, Method, StatusCode, header::RETRY_AFTER},
+    extract::{
+        DefaultBodyLimit, Path, Query, State,
+        rejection::{PathRejection, StringRejection},
+    },
+    http::{
+        HeaderValue, Method, StatusCode,
+        header::{CONTENT_TYPE, RETRY_AFTER},
+    },
     middleware::map_response_with_state,
     response::{IntoResponse, Response},
-    routing::get,
+    routing::{get, post},
 };
 use tokio::sync::watch;
 use tower_http::cors::{Any, CorsLayer};
@@ -21,18 +29,25 @@ use tracing::{debug, warn};
 use crate::{
     adapters::{EngineHandle, engine_tip},
     api::{
-        ApiError, Balances, Headers, History, KeyPolicy, Metrics, Pages, headers, history,
+        ApiError, Balances, Boxes, Headers, History, KeyPolicy, Metrics, Pages, Transactions,
+        headers, history,
         keys::{address_key, token_key},
         metrics::Transport,
         pages,
+        transactions::{self, MAX_HEX_CHARS},
         wire::{
-            BalanceBody, ErrorBody, HeadersBody, HistoryBody, PageBody, StatusBody, WithPoolBody,
+            BalanceBody, BoxBody, ErrorBody, HeadersBody, HistoryBody, PageBody, StatusBody,
+            SubmittedBody, WithPoolBody,
         },
     },
     clients::NodeSource,
     engine::TrackingKey,
-    types::address::Network,
+    types::{address::Network, ergo::BoxId},
 };
+
+/// The most a tx body is read to: the longest tx, and room for whitespace around it, which
+/// the service leaves out. A longer body is refused as `too_large` unread.
+const MAX_TX_BODY: usize = MAX_HEX_CHARS + 1024;
 
 /// `Retry-After` for `capacity_exceeded`: about one block, which is when idle keys leave.
 pub const CAPACITY_RETRY: Duration = Duration::from_secs(120);
@@ -48,6 +63,8 @@ pub struct Api<S, E> {
     pub balances: Balances<S>,
     pub history: History<S>,
     pub headers: Headers<S>,
+    pub boxes: Boxes<S>,
+    pub transactions: Transactions<S>,
     /// The node's network: addresses of another one are refused.
     pub network: Network,
     /// The keys clients may name.
@@ -65,11 +82,14 @@ where
     S: NodeSource + 'static,
     E: EngineHandle + 'static,
 {
-    // A public, read-only API with no credentials, used by wallets and dapps on origins no
-    // one knows in advance. `Retry-After` is exposed so a browser client can honour it.
+    // A public API with no credentials, used by wallets and dapps on origins no one knows in
+    // advance. It reads, and sends txs the node validates. `Content-Type` is allowed so a tx
+    // sent with a type other than `text/plain` passes the preflight. `Retry-After` is exposed
+    // so a browser client can honour it.
     let cors = CorsLayer::new()
         .allow_origin(Any)
-        .allow_methods([Method::GET])
+        .allow_methods([Method::GET, Method::POST])
+        .allow_headers([CONTENT_TYPE])
         .expose_headers([RETRY_AFTER]);
     let metrics = api.metrics.clone();
     Router::new()
@@ -80,6 +100,11 @@ where
         .route("/v1/addresses/{address}/balance", get(address_balance::<S, E>))
         .route("/v1/addresses/{address}/transactions", get(address_history::<S, E>))
         .route("/v1/headers", get(last_headers::<S, E>))
+        .route("/v1/boxes/{box_id}", get(box_by_id::<S, E>))
+        .route(
+            "/v1/transactions",
+            post(submit_transaction::<S, E>).layer(DefaultBodyLimit::max(MAX_TX_BODY)),
+        )
         .route("/v1/status", get(status::<S, E>))
         .with_state(api)
         .layer(map_response_with_state(metrics, count_refusal))
@@ -215,6 +240,38 @@ async fn last_headers<S: NodeSource, E: EngineHandle>(
     Ok(Json(HeadersBody(&page)).into_response())
 }
 
+/// Outside the key policy: a box id is not a key (see [`Boxes`]).
+async fn box_by_id<S: NodeSource, E: EngineHandle>(
+    State(api): State<Arc<Api<S, E>>>,
+    box_id: Result<Path<String>, PathRejection>,
+) -> Result<Response, ApiError> {
+    let box_id = box_id.map_err(|_| ApiError::InvalidBoxId)?;
+    let id: BoxId = box_id.parse().map_err(|_| ApiError::InvalidBoxId)?;
+    let found = api.boxes.by_id(&api.engine, &id).await?;
+    Ok(Json(BoxBody(&found)).into_response())
+}
+
+/// The body is the tx's bytes in hex, best as `text/plain`, so a browser sends it without a
+/// CORS preflight; any content type is read. `?broadcast=false` only validates it. A body
+/// over the limit, or not UTF-8, is refused in the service's terms, never the framework's.
+async fn submit_transaction<S: NodeSource, E: EngineHandle>(
+    State(api): State<Arc<Api<S, E>>>,
+    params: Params,
+    body: Result<String, StringRejection>,
+) -> Result<Response, ApiError> {
+    let broadcast = match param(&params, "broadcast") {
+        None | Some("true") => true,
+        Some("false") => false,
+        Some(_) => return Err(ApiError::InvalidBroadcast),
+    };
+    let body = body.map_err(|rejection| match rejection.status() {
+        StatusCode::PAYLOAD_TOO_LARGE => transactions::too_large(),
+        _ => transactions::unparseable(),
+    })?;
+    let id = api.transactions.submit(&body, broadcast).await?;
+    Ok(Json(SubmittedBody { transaction_id: &id }).into_response())
+}
+
 /// Cheap enough for health checks: one engine query and no node call. `ready` is the
 /// engine having a tip and being at the node's, and the configured keys having settled, so
 /// that a key not yet tracked can be loaded.
@@ -232,10 +289,13 @@ impl ApiError {
         match self {
             Self::InvalidAddress(_)
             | Self::InvalidTokenId
+            | Self::InvalidBoxId
+            | Self::InvalidBroadcast
             | Self::InvalidCursor(_)
-            | Self::InvalidLimit { .. } => StatusCode::BAD_REQUEST,
+            | Self::InvalidLimit { .. }
+            | Self::TransactionRejected { .. } => StatusCode::BAD_REQUEST,
             Self::KeyNotAllowed => StatusCode::FORBIDDEN,
-            Self::UnknownToken => StatusCode::NOT_FOUND,
+            Self::UnknownToken | Self::BoxNotFound => StatusCode::NOT_FOUND,
             Self::CursorExpired => StatusCode::GONE,
             Self::SupplyTooLarge { .. } | Self::TooManyBoxes { .. } => {
                 StatusCode::UNPROCESSABLE_ENTITY
@@ -259,10 +319,14 @@ impl ApiError {
             Self::BoxUnavailable { .. } => Some(DEFAULT_RETRY),
             Self::InvalidAddress(_)
             | Self::InvalidTokenId
+            | Self::InvalidBoxId
+            | Self::InvalidBroadcast
             | Self::InvalidCursor(_)
             | Self::InvalidLimit { .. }
+            | Self::TransactionRejected { .. }
             | Self::KeyNotAllowed
             | Self::UnknownToken
+            | Self::BoxNotFound
             | Self::CursorExpired
             | Self::SupplyTooLarge { .. }
             | Self::TooManyBoxes { .. }
@@ -272,7 +336,8 @@ impl ApiError {
     }
 
     /// The message for people. A node failure's details stay in the log: they can name the
-    /// node's address, which is no client's business.
+    /// node's address, which is no client's business. A refused tx's message is the node's
+    /// own text about the client's tx, so it is passed on.
     fn public_message(&self) -> String {
         match self {
             Self::NodeError(_) => "the node failed".to_owned(),
@@ -291,7 +356,11 @@ impl IntoResponse for ApiError {
             debug!(code = self.code(), error = %self, "Request refused");
         }
         let message = self.public_message();
-        let body = ErrorBody { error: self.code(), message: &message };
+        let reason = match &self {
+            Self::TransactionRejected { reason, .. } => Some(reason.code()),
+            _ => None,
+        };
+        let body = ErrorBody { error: self.code(), reason, message: &message };
         let mut response = (status, Json(body)).into_response();
         response.extensions_mut().insert(Refused(self.code()));
         if let Some(wait) = self.retry_after() {

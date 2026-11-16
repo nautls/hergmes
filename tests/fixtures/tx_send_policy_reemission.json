@@ -1,0 +1,5 @@
+{
+  "error": 400,
+  "reason": "bad.request",
+  "detail": "Mempool policy declines a transaction carrying the re-emission token in outputs"
+}

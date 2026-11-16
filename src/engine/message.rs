@@ -85,6 +85,10 @@ pub enum Query {
     /// Full boxes the ring buffer holds, for the box fetcher. Ids it does not hold are left
     /// out.
     Boxes(Vec<BoxId>),
+    /// What the snapshot in use says of one box, for a read of a box by id: `None` if no tx
+    /// of it spends or creates the box, or there is none. Its txs are the ones the overlay
+    /// uses, valid at the tip. Not activity for any key.
+    PoolBox(BoxId),
     MempoolSnapshot,
     /// The messages that bring a client from `from` to the tip: replayed blocks or
     /// rollbacks, then the overlay and the balance, or a resync. Without `from` (a
@@ -113,9 +117,19 @@ pub enum Reply {
     Capacity(Option<Capacity>),
     Chain(Vec<ChainLink>),
     Boxes(Vec<Arc<UTxO>>),
+    PoolBox(Option<PoolBox>),
     MempoolSnapshot(Option<(Arc<[UnconfirmedTransaction]>, BlockRef)>),
     CatchUp(Vec<Output>),
     Stats(Stats),
+}
+
+/// A box the mempool snapshot spends or creates.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PoolBox {
+    /// A pool tx spends it, confirmed or created by another pool tx: it can't be spent now.
+    Spent,
+    /// A pool tx creates it and none spends it: spendable now, but pending.
+    Created(Arc<UTxO>),
 }
 
 /// The engine's sizes, for the metrics.

@@ -7,11 +7,13 @@
  *   node scripts/record-fixtures.ts --history-only [--node URL] [--out DIR]
  *   node scripts/record-fixtures.ts --headers-only [--node URL] [--out DIR]
  *   node scripts/record-fixtures.ts --used-only [--node URL] [--out DIR]
+ *   node scripts/record-fixtures.ts --tx-only [--node URL] [--out DIR]
  *
  * --history-only records only the address tx history fixtures, for the sample address of
  * the existing manifest.json, and adds them to it, leaving every other fixture as it is.
  * --headers-only does the same for the header fixtures, for the manifest's sample header.
  * --used-only does the same for the box count fixtures, which say whether an address is used.
+ * --tx-only does the same for the transaction fixtures (see recordTransactions).
  *
  * Runs on Node 23.6+ (native type stripping) with no dependencies.
  * The node URL defaults to $ERGO_NODE_URL. The node must run the extra indexer.
@@ -58,7 +60,19 @@ interface ManifestEntry {
   status: number;
   body?: Json;
   synthetic?: true;
+  handWritten?: true;
   notes?: string;
+}
+
+/** A request body sent as plain text, not JSON: a serialized tx in hex. */
+class Plain {
+  readonly text: string;
+  constructor(text: string) {
+    this.text = text;
+  }
+  toJSON() {
+    return this.text;
+  }
 }
 
 /** JSON.parse that keeps each number's exact source text (JSON.rawJSON, Node 21+). */
@@ -80,11 +94,16 @@ class Node {
     this.baseUrl = baseUrl.replace(/\/+$/, "");
   }
 
+  /** A body is sent as JSON, except a `Plain` one, sent as it is. */
   async request(method: Method, path: string, body?: Json): Promise<Response> {
+    const plain = body instanceof Plain;
     const res = await fetch(this.baseUrl + path, {
       method,
-      headers: body === undefined ? undefined : { "Content-Type": "application/json" },
-      body: body === undefined ? undefined : JSON.stringify(body),
+      headers:
+        body === undefined
+          ? undefined
+          : { "Content-Type": plain ? "text/plain" : "application/json" },
+      body: body === undefined ? undefined : plain ? body.text : JSON.stringify(body),
       signal: AbortSignal.timeout(60_000),
     });
     const text = await res.text();
@@ -126,6 +145,7 @@ class Recorder {
     const clean: ManifestEntry = { method: entry.method, path: entry.path, status: entry.status };
     if (entry.body !== undefined) clean.body = entry.body;
     if (entry.synthetic) clean.synthetic = true;
+    if (entry.handWritten) clean.handWritten = true;
     if (entry.notes) clean.notes = entry.notes;
     this.manifest[name] = clean;
     console.log(`  ${name}.json  [${entry.status}]`);
@@ -299,13 +319,129 @@ async function recordUsed(rec: Recorder, address: string) {
   );
 }
 
+/** Valid hex that the node can't parse as a tx: the relay forwards any hex it is given. */
+const UNPARSEABLE_TX = "deadbeef";
+
+/**
+ * The tx routes' fixtures. Nothing recorded here can enter the pool: garbage, and a tx
+ * spending an already spent box, go to both `transactions/bytes` (send) and
+ * `transactions/checkBytes`; the tx in tx_signed.hex, signed by hand and never sent, goes to
+ * `checkBytes` only, while its input is unspent (a spent input keeps the earlier recording).
+ * The node's other refusals can't be caused without sending a tx, so they are hand-written
+ * from the node's source (6.0.8, c1a69f65), in the `400` body every refusal has
+ * (`ErgoBaseApiRoute.sendLocalTransactionRoute`: `ApiError.BadRequest(ex.getMessage)`).
+ */
+async function recordTransactions(rec: Recorder, spentId: string, previous: Json) {
+  const signed = readFileSync(join(rec.outDir, "tx_signed.hex"), "utf8").trim();
+  // One input: a count of 1, then the input's box id.
+  if (!signed.startsWith("01")) fail("tx_signed.hex must have exactly one input");
+  const inputId = signed.slice(2, 66);
+  // The same tx spending a spent box instead: it still parses, and fails validation.
+  const spending = new Plain(`01${spentId}${signed.slice(66)}`);
+  const garbage = new Plain(UNPARSEABLE_TX);
+
+  for (const [route, prefix] of [
+    ["bytes", "tx_send"],
+    ["checkBytes", "tx_check"],
+  ]) {
+    await rec.record(`${prefix}_unparseable`, "POST", `/transactions/${route}`, garbage);
+    await rec.record(
+      `${prefix}_invalid`,
+      "POST",
+      `/transactions/${route}`,
+      spending,
+      `tx_signed.hex with its input replaced by ${spentId} (spent): missing from the UTXO set.`,
+    );
+  }
+
+  const input = await rec.node.request("GET", `/utxo/byId/${inputId}`);
+  if (input.status === 200) {
+    await rec.record(
+      "tx_check_signed",
+      "POST",
+      "/transactions/checkBytes",
+      new Plain(signed),
+      `tx_signed.hex, checked while its input ${inputId} was unspent. Never sent.`,
+    );
+    await rec.record(
+      "box_by_id_unspent",
+      "GET",
+      `/blockchain/box/byId/${inputId}`,
+      undefined,
+      "Unspent box (tx_signed.hex's input): spentTransactionId is null.",
+    );
+  } else {
+    for (const name of ["tx_check_signed", "box_by_id_unspent"]) {
+      if (!previous?.[name]) fail(`${inputId} is spent and there is no earlier ${name} to keep`);
+      rec.manifest[name] = previous[name];
+      console.log(`  ${name}.json  (kept: tx_signed.hex's input is spent)`);
+    }
+  }
+
+  const txId: string = JSON.parse(readFileSync(join(rec.outDir, "tx_check_signed.json"), "utf8"));
+  const send = (name: string, status: number, payload: Json, notes: string) =>
+    rec.save(
+      name,
+      { method: "POST", path: "/transactions/bytes", status, handWritten: true, notes },
+      payload,
+    );
+  const refused = (detail: string) => ({ error: 400, reason: "bad.request", detail });
+  send(
+    "tx_send_signed",
+    200,
+    txId,
+    "The id as a JSON string, as tx_check_signed (ErgoBaseApiRoute.sendLocalTransactionRoute).",
+  );
+  const refusals: [string, string, string][] = [
+    [
+      "tx_send_double_spend",
+      "Double spending attempt",
+      "ErgoBaseApiRoute.sendLocalTransactionRoute, on ErgoMemPool.acceptIfNoDoubleSpend's " +
+        "DoubleSpendingLoser",
+    ],
+    [
+      "tx_send_fee_too_low",
+      // Scala's Double.toString: 0.0001 is 1.0E-4.
+      "Min fee not met: 0.001 ergs required, 1.0E-4 ergs given",
+      "ErgoMemPool.process",
+    ],
+    [
+      "tx_send_already_in_pool",
+      `Pool can not accept transaction ${txId}, it is already in the mempool`,
+      "ErgoMemPool.process",
+    ],
+    [
+      "tx_send_pool_full",
+      `Pool can not accept transaction ${txId}, the mempool is full`,
+      "ErgoMemPool.process",
+    ],
+    [
+      "tx_send_pool_outbid",
+      "Transaction pays less than any other in the pool being full",
+      "ErgoMemPool.acceptIfNoDoubleSpend",
+    ],
+    [
+      "tx_send_policy_reemission",
+      "Mempool policy declines a transaction carrying the re-emission token in outputs",
+      "ErgoMemPool.process",
+    ],
+    [
+      "tx_send_policy_storage_rent",
+      "Mempool policy declines a storage rent collection transaction",
+      "ErgoMemPool.process",
+    ],
+    ["tx_send_policy_blacklisted", "blacklisted tx", "ErgoMemPool.process"],
+  ];
+  for (const [name, detail, source] of refusals) send(name, 400, refused(detail), `From ${source}.`);
+}
+
 /** Records some fixtures for the samples of the existing manifest.json and adds them to it,
  * leaving every other fixture as it is. */
 async function addTo(
   node: Node,
   outDir: string,
   what: string,
-  record: (rec: Recorder, manifest: Json, info: Json) => Promise<void>,
+  record: (rec: Recorder, manifest: Json, info: Json) => Promise<void> | void,
 ) {
   const manifestPath = join(outDir, "manifest.json");
   const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
@@ -321,6 +457,11 @@ async function addTo(
   console.log(`Added ${Object.keys(rec.manifest).length} fixtures to manifest.json`);
 }
 
+/** The box id at the end of a `box/byId` path. */
+function boxId(path: string): string {
+  return path.slice(path.lastIndexOf("/") + 1);
+}
+
 async function main() {
   const { values: args } = parseArgs({
     options: {
@@ -331,6 +472,7 @@ async function main() {
       "history-only": { type: "boolean", default: false },
       "headers-only": { type: "boolean", default: false },
       "used-only": { type: "boolean", default: false },
+      "tx-only": { type: "boolean", default: false },
     },
   });
   if (!args.node) fail("Pass --node or set ERGO_NODE_URL");
@@ -349,6 +491,18 @@ async function main() {
   if (args["used-only"]) {
     return addTo(node, outDir, "box count", (rec, m) => recordUsed(rec, m.samples.address));
   }
+  if (args["tx-only"]) {
+    return addTo(node, outDir, "transaction", (rec, m) =>
+      recordTransactions(rec, boxId(m.fixtures.box_by_id_spent.path), m.fixtures),
+    );
+  }
+  const previous = (() => {
+    try {
+      return JSON.parse(readFileSync(join(outDir, "manifest.json"), "utf8")).fixtures;
+    } catch {
+      return undefined;
+    }
+  })();
   const rec = new Recorder(node, outDir);
 
   const info = await node.ok("GET", "/info");
@@ -502,6 +656,8 @@ async function main() {
     [UNKNOWN_ID],
     "No id exists: 200 [] (the spec says 404).",
   );
+
+  await recordTransactions(rec, spentId, previous);
 
   const manifest = {
     recordedAt: new Date().toISOString().replace(/\.\d+Z$/, "Z"),

@@ -60,9 +60,10 @@ cargo run
 
 By default (`any`), the relay serves any address and any token within the supply limit. The
 allow and deny lists narrow that, for an instance run for one dapp or one wallet; a refused key
-is `403 key_not_allowed`, on every route. Keys in `HERGMES_TRACK_*` are always allowed. Denying
-one, or denying an address the allow list names, stops the relay at startup. The startup log
-shows the policy in force, so a misspelled variable shows up as `any`. For example:
+is `403 key_not_allowed`, on every route that takes a key (a box id and a tx are not keys).
+Keys in `HERGMES_TRACK_*` are always allowed. Denying one, or denying an address the allow list
+names, stops the relay at startup. The startup log shows the policy in force, so a misspelled
+variable shows up as `any`. For example:
 
 ```sh
 # a dapp: its own contracts and tokens, with a higher supply limit
@@ -84,7 +85,8 @@ a container. The relay does not compress responses: Cloudflare does it on its ow
 nginx or Caddy turn it on there (`gzip on; gzip_types application/json;`, or `encode gzip`); a
 500-box page shrinks about five times. Addresses travel in the URL path, and the longest P2S
 address is about 5,600 characters: that fits nginx's default 8 KB request line and Cloudflare's
-16 KB URL limit, so keep any lower proxy limit above it.
+16 KB URL limit, so keep any lower proxy limit above it. A tx body is at most 192 KiB of hex,
+under nginx's default `client_max_body_size` of 1 MB.
 
 Logging uses `tracing`; set `RUST_LOG` (e.g. `RUST_LOG=hergmes=debug`) to adjust verbosity.
 
@@ -104,12 +106,15 @@ resyncs by reason. They are counts only and name no address or token.
 | `GET /v1/addresses/{address}/balance`         | An address's balance, pending change and `used`   |
 | `GET /v1/addresses/{address}/transactions`    | An address's txs, newest first, pending on top    |
 | `GET /v1/headers`                             | The last block headers up to the tip, for signing |
+| `GET /v1/boxes/{boxId}`                       | One box, if a tx can spend it now                 |
+| `POST /v1/transactions`                       | Send a signed tx, or only check it                |
 | `GET /v1/status`                              | Version, network, tip and readiness               |
 
 Box pages take `limit` (default 500, at most 1000) and the `cursor` from the previous page's
 `nextCursor`; every page of a snapshot is pinned to the first page's block (`asOf`). Boxes are in
 Fleet SDK's `Box<string>` shape plus `inclusionHeight`, and every amount is a base-10 integer
-string. Errors are `{ "error": "<code>", "message": "..." }`, and a `503` carries `Retry-After`.
+string. Errors are `{ "error": "<code>", "message": "..." }` (a refused tx adds a `reason`), and
+a `503` carries `Retry-After`.
 
 `/boxes/with-pool` is for clients that fetch without keeping state: the key's confirmed boxes
 minus those pending txs spend, then the boxes pending txs create (these have no
@@ -139,6 +144,21 @@ newest first, for a transaction's signing context: `{ "asOf": { "height", "heade
 "items": [...] }`, the first item being the tip. Each item is the node's header JSON as it
 came, Fleet SDK's `BlockHeader`. The tip is the best full block the relay serves boxes at, not
 the node's best header, which `/blocks/lastHeaders` follows and which can run ahead of it.
+
+`/boxes/{boxId}` is one box, as one item of `/boxes/with-pool`: confirmed with its
+`inclusionHeight`, or created by a pending tx, without one. A box that is spent, by a block or
+by a pending tx, or unknown is `404 box_not_found`. A box id is not a key, so the key policy
+does not apply.
+
+`POST /v1/transactions` takes a signed tx serialized to hex (Fleet SDK's `serializeTransaction`) as
+a `text/plain` body (a JSON string is taken too, as by the node), at most 196,608 characters (the
+node's default 96 KiB limit), and forwards it to the node, which validates it and broadcasts it: `{
+"transactionId": "..." }`. With `?broadcast=false` the node only validates it. A refusal is `400 {
+"error": "transaction_rejected", "reason", "message" }`, `message` being the node's own: `reason` is
+one of `unparseable`, `too_large`, `invalid` (also any message the relay does not know),
+`double_spend`, `fee_too_low`, `already_in_pool`, `pool_full` and `policy`. A check covers less than
+a send: it never answers the last five, so a tx can pass it and still be refused when sent. The tx
+reaches the relay's mempool view at its next poll, like any other.
 
 ## WebSocket
 

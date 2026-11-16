@@ -9,8 +9,9 @@ use crate::{
     types::{
         address::{self, Network, UnknownNetwork},
         ergo::{
-            AddressTransactions, Balance, BalanceResponse, BlockHeader, BoxId, ErgoTree, HeaderId,
-            IndexedBlock, IndexedBox, TokenId, TokenInfo, TxId, UTxO, UnconfirmedTransaction,
+            AddressTransactions, Balance, BalanceResponse, BlockHeader, BoxById, BoxId, ErgoTree,
+            HeaderId, IndexedBlock, IndexedBox, TokenId, TokenInfo, TxId, UTxO,
+            UnconfirmedTransaction,
         },
     },
 };
@@ -310,7 +311,7 @@ impl NodeSource for NodeClient {
     }
 
     #[tracing::instrument(skip(self))]
-    async fn indexed_box(&self, id: &BoxId) -> Result<Option<IndexedBox>, NodeError> {
+    async fn indexed_box(&self, id: &BoxId) -> Result<Option<BoxById>, NodeError> {
         fetch_optional(self.get(&format!("blockchain/box/byId/{id}"))).await
     }
 
@@ -339,6 +340,19 @@ impl NodeSource for NodeClient {
         let response: BalanceResponse =
             fetch(self.post("blockchain/balance").json(&address)).await?;
         Ok(response.confirmed)
+    }
+
+    /// The hex goes as it is, as `text/plain`: both routes take plain hex or a JSON string
+    /// (node 6.0.8, `TransactionsApiRoute.sendTransactionAsBytesR` and
+    /// `checkTransactionAsBytesR`, through `ErgoBaseApiRoute.fromJsonOrPlain`).
+    #[tracing::instrument(skip(self, hex), fields(chars = hex.len()))]
+    async fn submit_transaction(&self, hex: &str, broadcast: bool) -> Result<TxId, NodeError> {
+        let route = if broadcast { "transactions/bytes" } else { "transactions/checkBytes" };
+        let request = self
+            .post(route)
+            .header(reqwest::header::CONTENT_TYPE, "text/plain")
+            .body(hex.to_owned());
+        fetch(request).await
     }
 
     /// The address goes in the body, as for `/blockchain/balance`.

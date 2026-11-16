@@ -1,0 +1,5 @@
+{
+  "error": 400,
+  "reason": "bad.request",
+  "detail": "Malformed transaction: Every input of the transaction should be in UTXO. db5f9b7fb0053c96f85f67909438c7c849210b5423153040c5f9ede522c086ee: 0 == 1. Missing inputs: 0"
+}

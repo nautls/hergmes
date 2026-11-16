@@ -76,7 +76,7 @@ impl<S: NodeSource> BoxFetcher<S> {
 
         for id in &missing {
             if let Some(b) = self.source.indexed_box(id).await? {
-                found.insert(*id, Arc::new(b.utxo));
+                found.insert(*id, Arc::new(b.indexed.utxo));
             }
         }
         let from_indexer = found.len() - from_ring - from_node;

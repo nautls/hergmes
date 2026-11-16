@@ -6,9 +6,10 @@
 //! applied); the balance service answers an address's balance, from the engine if it is
 //! tracked and from the indexer and the engine's mempool snapshot if not; the history service
 //! reads an address's txs from the indexer; the header service walks back from the engine's
-//! tip. The HTTP layer (`http`) parses, calls them and serializes through the wire types
-//! (`wire`). The WebSocket (`ws`) runs a task per connection (`connection`), speaking the
-//! messages in `protocol`.
+//! tip; the box service reads one box by id, from the engine's pool snapshot or the indexer;
+//! the transaction service hands a serialized tx to the node. The HTTP layer (`http`)
+//! parses, calls them and serializes through the wire types (`wire`). The WebSocket (`ws`)
+//! runs a task per connection (`connection`), speaking the messages in `protocol`.
 
 use std::time::Duration;
 
@@ -19,6 +20,7 @@ use crate::{
 };
 
 pub mod balances;
+pub mod boxes;
 pub mod connection;
 pub mod cursor;
 pub mod headers;
@@ -29,16 +31,19 @@ pub mod metrics;
 pub mod pages;
 pub mod policy;
 pub mod protocol;
+pub mod transactions;
 pub mod wire;
 pub mod ws;
 
 pub use balances::{AddressBalance, Balances};
+pub use boxes::{Boxes, FoundBox};
 pub use cursor::Cursor;
 pub use headers::{Headers, HeadersPage};
 pub use history::{History, HistoryPage};
 pub use metrics::Metrics;
 pub use pages::{BoxPage, Pages, WithPoolBoxes};
 pub use policy::KeyPolicy;
+pub use transactions::{Refusal, Transactions};
 
 /// Why a request failed, one variant per error code. The code is for programs, the message
 /// for people.
@@ -52,6 +57,11 @@ pub enum ApiError {
     InvalidAddress(String),
     #[error("a token id is 64 hex characters")]
     InvalidTokenId,
+    #[error("a box id is 64 hex characters")]
+    InvalidBoxId,
+    /// `broadcast` is neither `true` nor `false`.
+    #[error("broadcast is true or false")]
+    InvalidBroadcast,
     #[error("invalid cursor: {0}")]
     InvalidCursor(cursor::CursorError),
     /// Not a number, or outside 1 to the route's `max`.
@@ -62,6 +72,13 @@ pub enum ApiError {
     KeyNotAllowed,
     #[error("the indexer does not know this token")]
     UnknownToken,
+    /// Spent, by a block or a pool tx, or unknown: no tx can spend it now.
+    #[error("no unspent box has this id")]
+    BoxNotFound,
+    /// The node refused the client's tx; `message` is the node's, or the relay's when it
+    /// refused the body itself.
+    #[error("{message}")]
+    TransactionRejected { reason: Refusal, message: String },
     #[error("the cursor's block is no longer served; start the snapshot again")]
     CursorExpired,
     #[error("token supply {emission} is above the limit {limit}")]
@@ -93,10 +110,14 @@ impl ApiError {
         match self {
             Self::InvalidAddress(_) => "invalid_address",
             Self::InvalidTokenId => "invalid_token_id",
+            Self::InvalidBoxId => "invalid_box_id",
+            Self::InvalidBroadcast => "invalid_broadcast",
             Self::InvalidCursor(_) => "invalid_cursor",
             Self::InvalidLimit { .. } => "invalid_limit",
             Self::KeyNotAllowed => "key_not_allowed",
             Self::UnknownToken => "unknown_token",
+            Self::BoxNotFound => "box_not_found",
+            Self::TransactionRejected { .. } => "transaction_rejected",
             Self::CursorExpired => "cursor_expired",
             Self::SupplyTooLarge { .. } => "supply_too_large",
             Self::TooManyBoxes { .. } => "too_many_boxes",

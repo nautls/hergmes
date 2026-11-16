@@ -23,6 +23,15 @@ pub fn load<T: DeserializeOwned>(name: &str) -> T {
     serde_json::from_str(&text(name)).unwrap_or_else(|e| panic!("parsing {name}.json: {e}"))
 }
 
+/// The tx in `tx_signed.hex`, serialized and signed by hand and never sent: its check is
+/// recorded in `tx_check_signed.json`.
+pub fn signed_tx() -> String {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/tx_signed.hex");
+    let hex = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("reading {}: {e}", path.display()));
+    hex.trim().to_owned()
+}
+
 pub fn manifest() -> Value {
     load("manifest")
 }

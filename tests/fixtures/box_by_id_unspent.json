@@ -1,0 +1,24 @@
+{
+  "globalIndex": 58604011,
+  "inclusionHeight": 1915317,
+  "address": "9gN8gmyaDBuWPZLn8zj9uZxnLUj4TE9rtedtLGNjf6cUhTmoTwc",
+  "spentTransactionId": null,
+  "spendingProof": null,
+  "boxId": "6f008c450ca7c6d56a917e23755ee1bc4010f06bfcd086a4b1396afa785b2938",
+  "value": 999944748,
+  "ergoTree": "0008cd02f31eb1d87a89b28cee6a4a458380c4651965bfe9096ef5c31e4452400a846189",
+  "assets": [
+    {
+      "tokenId": "af3ef8430e3e318e924433422593dcb1bdd9b6b74f2bc5b81b0f07d2dca01346",
+      "amount": 10
+    },
+    {
+      "tokenId": "e023c5f382b6e96fbd878f6811aac73345489032157ad5affb84aefd4956c297",
+      "amount": 10000
+    }
+  ],
+  "creationHeight": 1915315,
+  "additionalRegisters": {},
+  "transactionId": "976d773d056b762463169f9d8a4377330afa1c0de8cd1798ec6255025eeedfad",
+  "index": 3
+}

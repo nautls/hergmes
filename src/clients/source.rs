@@ -3,8 +3,8 @@ use std::future::Future;
 use crate::{
     clients::node::{IndexedHeightResponse, InfoResponse, NodeError},
     types::ergo::{
-        AddressTransactions, Balance, BlockHeader, BoxId, ErgoTree, HeaderId, IndexedBlock,
-        IndexedBox, TokenId, TokenInfo, UTxO, UnconfirmedTransaction,
+        AddressTransactions, Balance, BlockHeader, BoxById, BoxId, ErgoTree, HeaderId,
+        IndexedBlock, IndexedBox, TokenId, TokenInfo, TxId, UTxO, UnconfirmedTransaction,
     },
 };
 
@@ -76,11 +76,22 @@ pub trait NodeSource: Send + Sync {
         ids: &[BoxId],
     ) -> impl Future<Output = Result<Vec<UTxO>, NodeError>> + Send;
 
-    /// Any box the indexer knows, spent or not. `None` if unknown.
+    /// Any box the indexer knows, spent or not, and which. `None` if unknown.
     fn indexed_box(
         &self,
         id: &BoxId,
-    ) -> impl Future<Output = Result<Option<IndexedBox>, NodeError>> + Send;
+    ) -> impl Future<Output = Result<Option<BoxById>, NodeError>> + Send;
+
+    /// Hands a serialized tx, in hex, to the node: validated and broadcast, or with
+    /// `broadcast` false only validated. Its id if the node took it. Every refusal is a `400`
+    /// whose `detail` is the node's message (node 6.0.8,
+    /// `ErgoBaseApiRoute.sendLocalTransactionRoute`, `TransactionsApiRoute`); the node has no
+    /// codes.
+    fn submit_transaction(
+        &self,
+        hex: &str,
+        broadcast: bool,
+    ) -> impl Future<Output = Result<TxId, NodeError>> + Send;
 
     /// Up to `limit` txs of the address guarded by `ergo_tree`, newest first, skipping the
     /// `offset` newest, and how many it has in all. The node counts `offset` from the newest

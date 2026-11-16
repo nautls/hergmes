@@ -144,6 +144,23 @@ pub struct IndexedBox {
     pub inclusion_height: u32,
 }
 
+/// A box as `/blockchain/box/byId` returns it: any box the indexer knows, and whether a tx
+/// spent it. Its own type, so the boxes of indexed blocks don't carry the flag.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct BoxById {
+    #[serde(flatten)]
+    pub indexed: IndexedBox,
+
+    /// Whether `spentTransactionId` is set: `null` while unspent (node 6.0.8,
+    /// `ApiExtraCodecs.indexedBoxEncoder`, from `spendingTxIdOpt`). The id itself is not read.
+    #[serde(rename = "spentTransactionId", deserialize_with = "is_set")]
+    pub spent: bool,
+}
+
+fn is_set<'de, D: Deserializer<'de>>(deserializer: D) -> Result<bool, D::Error> {
+    Ok(Option::<serde::de::IgnoredAny>::deserialize(deserializer)?.is_some())
+}
+
 /// A transaction inside an [`IndexedBlock`]. Inputs are full boxes.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct IndexedTransaction {

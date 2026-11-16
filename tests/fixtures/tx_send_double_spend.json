@@ -1,0 +1,5 @@
+{
+  "error": 400,
+  "reason": "bad.request",
+  "detail": "Double spending attempt"
+}
