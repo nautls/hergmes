@@ -1,5 +1,5 @@
 //! What the relay sends, as JSON (DESIGN.md, "REST: confirmed snapshot", "Boxes with the
-//! pool", "Balances" and "Transaction history").
+//! pool", "Balances", "Transaction history" and "Headers").
 //!
 //! These types borrow what the services return and serialize it in the client's shape. They
 //! are separate from the node-facing types, whose derived `Serialize` writes amounts as
@@ -12,12 +12,13 @@ use std::{collections::BTreeMap, fmt::Display};
 
 use serde::{
     Serialize, Serializer,
-    ser::{SerializeMap, SerializeStruct},
+    ser::{Error, SerializeMap, SerializeStruct},
 };
+use serde_json::value::RawValue;
 
 use crate::{
     api::{
-        AddressBalance, BoxPage, WithPoolBoxes,
+        AddressBalance, BoxPage, HeadersPage, WithPoolBoxes,
         history::{HistoryItem, HistoryPage},
     },
     engine::{BlockRef, StoredBox, Totals, overlay::PendingDelta},
@@ -253,6 +254,26 @@ impl Serialize for HistoryEntry<'_> {
             s.serialize_field("timestamp", &included.timestamp)?;
         }
         s.serialize_field("delta", &Pending(&item.delta))?;
+        s.end()
+    }
+}
+
+/// `GET /v1/headers`: the last headers up to the tip, newest first, each the node's JSON as
+/// it came, and the tip as `asOf`, as on the other routes (it repeats the first item).
+pub struct HeadersBody<'a>(pub &'a HeadersPage);
+
+impl Serialize for HeadersBody<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let page = self.0;
+        let items = page
+            .items
+            .iter()
+            .map(|h| serde_json::from_str::<&RawValue>(&h.json))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(S::Error::custom)?;
+        let mut s = serializer.serialize_struct("Headers", 2)?;
+        s.serialize_field("asOf", &AsOf::from(&page.as_of))?;
+        s.serialize_field("items", &items)?;
         s.end()
     }
 }

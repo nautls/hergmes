@@ -8,6 +8,7 @@ use wiremock::{
 
 use super::*;
 use crate::{
+    engine::BlockRef,
     fixtures::{self, load, manifest, sample, status},
     types::{HashDigest, HexBytes, address::Address, ergo::BoxAssets},
 };
@@ -102,6 +103,20 @@ mod shapes {
     #[test]
     fn indexed_block_unknown() {
         assert_not_found("indexed_block_unknown");
+    }
+
+    #[test]
+    fn header_by_id() {
+        let header: BlockHeader = load("header_by_id");
+        assert_eq!(header.id, digest(&sample("headerId")));
+        let block: IndexedBlock = load("indexed_block");
+        assert_eq!(BlockRef::from(&header), BlockRef::from(&block.header));
+        assert_eq!(header.parent_id, block.header.parent_id);
+    }
+
+    #[test]
+    fn header_by_id_unknown() {
+        assert_not_found("header_by_id_unknown");
     }
 
     #[test]
@@ -378,6 +393,30 @@ mod source {
 
         assert_eq!(node.indexed_block(&id).await.unwrap().unwrap().header.id, id);
         assert_eq!(node.indexed_block(&unknown).await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn header_or_none() {
+        let (server, node) = node().await;
+        let id = digest(&sample("headerId"));
+        let unknown = digest(&"ab".repeat(32));
+        Mock::given(method("GET"))
+            .and(path(format!("/blocks/modifier/{id}")))
+            .respond_with(recorded("header_by_id"))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(format!("/blocks/modifier/{unknown}")))
+            .respond_with(recorded("header_by_id_unknown"))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let header = node.header(&id).await.unwrap().unwrap();
+        assert_eq!(header.id, id);
+        assert_eq!(header.json, load::<BlockHeader>("header_by_id").json);
+        assert_eq!(node.header(&unknown).await.unwrap(), None);
     }
 
     #[tokio::test]

@@ -4,7 +4,8 @@
 //! key's box ids from the engine, loading the key first if it is not tracked, and fills in
 //! full boxes, for pages pinned to a block and for the view with the pool (the overlay
 //! applied); the balance service answers an address's balance, from the engine if it is
-//! tracked and from the indexer and the engine's mempool snapshot if not. The HTTP layer
+//! tracked and from the indexer and the engine's mempool snapshot if not; the header service
+//! walks back from the engine's tip. The HTTP layer
 //! (`http`) parses, calls them and serializes through the wire types (`wire`). The WebSocket
 //! (`ws`) runs a task per connection (`connection`), speaking the messages in `protocol`.
 
@@ -19,6 +20,7 @@ use crate::{
 pub mod balances;
 pub mod connection;
 pub mod cursor;
+pub mod headers;
 pub mod history;
 pub mod http;
 pub mod keys;
@@ -30,6 +32,7 @@ pub mod ws;
 
 pub use balances::{AddressBalance, Balances};
 pub use cursor::Cursor;
+pub use headers::{Headers, HeadersPage};
 pub use history::{History, HistoryPage};
 pub use pages::{BoxPage, Pages, WithPoolBoxes};
 pub use policy::KeyPolicy;

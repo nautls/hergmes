@@ -2,9 +2,9 @@ use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use dotenvy::dotenv;
 use hergmes::{
-    adapters::{BoxCache, BoxFetcher, Follower, TokenChecker, loader::Loader},
+    adapters::{BoxCache, BoxFetcher, Follower, HeaderReader, TokenChecker, loader::Loader},
     api::{
-        Balances, History, Pages,
+        Balances, Headers, History, Pages,
         http::{self, Api},
         ws,
     },
@@ -67,6 +67,8 @@ async fn run() -> Result<(), AppError> {
 
     let follower = Follower::new(node.clone(), config.follower);
     let synced = follower.synced();
+    // Filled by the follower with the headers of the blocks it applies.
+    let headers = HeaderReader::new(node.clone(), follower.headers());
     let mut follower = tokio::spawn({
         let engine = engine.clone();
         async move { follower.run(&engine).await }
@@ -84,6 +86,7 @@ async fn run() -> Result<(), AppError> {
             .waiting_for(settled),
         balances: Balances::new(node.clone(), Default::default()),
         history: History::new(node.clone(), Default::default()),
+        headers: Headers::new(headers),
         network: node.network(),
         policy,
         synced,

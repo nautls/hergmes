@@ -31,15 +31,12 @@ use crate::{
         Digest, HashDigest, HexBytes,
         ergo::{
             AddressTransaction, AddressTransactions, Balance, BlockHeader, BoxAssets, BoxId,
-            ErgoTree, HeaderId, IndexedBlock, IndexedBox, IndexedTransaction,
+            ErgoTree, GENESIS_PARENT_ID, HeaderId, IndexedBlock, IndexedBox, IndexedTransaction,
             NonMandatoryRegisters, Token, TokenBalance, TokenId, TokenInfo, TxId, UTxO,
             UnconfirmedTransaction,
         },
     },
 };
-
-/// The parent id of the genesis block.
-pub const GENESIS_PARENT: HeaderId = Digest([0; 32]);
 
 /// A block's timestamp in milliseconds: two minutes a block, so a history's items carry one.
 pub fn timestamp(height: u32) -> u64 {
@@ -365,7 +362,7 @@ impl Chain {
     pub fn branch(&self, id: &HeaderId) -> Vec<Arc<SimBlock>> {
         let mut blocks = Vec::new();
         let mut cursor = *id;
-        while cursor != GENESIS_PARENT {
+        while cursor != GENESIS_PARENT_ID {
             let block = self.blocks[&cursor].clone();
             cursor = block.header.parent_id;
             blocks.push(block);
@@ -622,7 +619,7 @@ impl Chain {
         self.nonce += 1;
         let parent_id = self.node.tip;
         let id = hash(&[b"block", &parent_id.0, &self.nonce.to_be_bytes()]);
-        let header = BlockHeader { id, parent_id, height: self.node.height + 1 };
+        let header = BlockHeader::new(id, parent_id, self.node.height + 1);
         let block = Arc::new(SimBlock { header, txs });
 
         // The node's cleanup re-validates the pool some time after a block, so the txs the
@@ -961,7 +958,7 @@ impl Chain {
     /// Whether the indexer has applied `block`.
     fn indexed(&self, block: &SimBlock) -> bool {
         let mut cursor = self.indexer.tip;
-        while cursor != GENESIS_PARENT {
+        while cursor != GENESIS_PARENT_ID {
             let header = &self.blocks[&cursor].header;
             if header.height < block.header.height {
                 return false;

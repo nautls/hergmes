@@ -1,4 +1,4 @@
-//! The REST routes: parse, call the page, balance and history services, serialize.
+//! The REST routes: parse, call the page, balance, history and header services, serialize.
 //!
 //! Errors are `{ "error": "<code>", "message": "..." }`, and every 503 carries `Retry-After`.
 //! Any origin may read the responses. They are not compressed: that is the reverse proxy's
@@ -20,10 +20,12 @@ use tracing::{debug, warn};
 use crate::{
     adapters::{EngineHandle, engine_tip},
     api::{
-        ApiError, Balances, History, KeyPolicy, Pages, history,
+        ApiError, Balances, Headers, History, KeyPolicy, Pages, headers, history,
         keys::{address_key, token_key},
         pages,
-        wire::{BalanceBody, ErrorBody, HistoryBody, PageBody, StatusBody, WithPoolBody},
+        wire::{
+            BalanceBody, ErrorBody, HeadersBody, HistoryBody, PageBody, StatusBody, WithPoolBody,
+        },
     },
     clients::NodeSource,
     engine::TrackingKey,
@@ -43,6 +45,7 @@ pub struct Api<S, E> {
     pub pages: Pages<S>,
     pub balances: Balances<S>,
     pub history: History<S>,
+    pub headers: Headers<S>,
     /// The node's network: addresses of another one are refused.
     pub network: Network,
     /// The keys clients may name.
@@ -71,6 +74,7 @@ where
         .route("/v1/tokens/{token_id}/boxes/with-pool", get(token_with_pool::<S, E>))
         .route("/v1/addresses/{address}/balance", get(address_balance::<S, E>))
         .route("/v1/addresses/{address}/transactions", get(address_history::<S, E>))
+        .route("/v1/headers", get(last_headers::<S, E>))
         .route("/v1/status", get(status::<S, E>))
         .with_state(api)
         .layer(cors)
@@ -182,6 +186,15 @@ async fn address_history<S: NodeSource, E: EngineHandle>(
         .page(&api.engine, &tree, param(&params, "cursor"), limit)
         .await?;
     Ok(Json(HistoryBody(&page)).into_response())
+}
+
+async fn last_headers<S: NodeSource, E: EngineHandle>(
+    State(api): State<Arc<Api<S, E>>>,
+    params: Params,
+) -> Result<Response, ApiError> {
+    let limit = limit(&params, headers::MAX_LIMIT)?;
+    let page = api.headers.last(&api.engine, limit).await?;
+    Ok(Json(HeadersBody(&page)).into_response())
 }
 
 /// Cheap enough for health checks: one engine query and no node call. `ready` is the

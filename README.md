@@ -97,6 +97,7 @@ Logging uses `tracing`; set `RUST_LOG` (e.g. `RUST_LOG=hergmes=debug`) to adjust
 | `GET /v1/tokens/{tokenId}/boxes/with-pool`    | A token's boxes with the mempool applied          |
 | `GET /v1/addresses/{address}/balance`         | An address's confirmed balance and pending change |
 | `GET /v1/addresses/{address}/transactions`    | An address's txs, newest first, pending on top    |
+| `GET /v1/headers`                             | The last block headers up to the tip, for signing |
 | `GET /v1/status`                              | Version, network, tip and readiness               |
 
 Box pages take `limit` (default 500, at most 1000) and the `cursor` from the previous page's
@@ -119,9 +120,18 @@ takes `limit` (default 25, at most 100) and the previous page's `nextCursor`; a 
 short and still have one, and `null` means the end. History is not streamed: when a
 subscription says the address changed, read the first page again.
 
+`/headers` is the last `limit` block headers (default 10, at most 10) up to the relay's tip,
+newest first, for a transaction's signing context: `{ "asOf": { "height", "headerId" },
+"items": [...] }`, the first item being the tip. Each item is the node's header JSON as it
+came, Fleet SDK's `BlockHeader`. The tip is the best full block the relay serves boxes at, not
+the node's best header, which `/blocks/lastHeaders` follows and which can run ahead of it.
+
 ## WebSocket
 
-`GET /v1/ws` streams what happens to a key after its snapshot. Clients send JSON text:
+`GET /v1/ws` streams the relay's tip, and what happens to a key after its snapshot. Every
+connection gets `{ "type": "tip", "height": ..., "headerId": ... }` when it opens and whenever
+the tip changes, before the messages of the block that changed it; a burst of blocks may bring
+only the last tip. Clients send JSON text:
 
 ```jsonc
 { "op": "subscribe", "key": { "address": "9f..." }, "from": { "height": 1234567, "headerId": "..." } }

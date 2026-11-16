@@ -22,6 +22,7 @@ use crate::{
     adapters::{
         AdapterError, EngineGone, EngineHandle, backoff, best_full_block,
         blocks::{BlockConsumer, Sync},
+        headers::HeaderCache,
         mempool::{self, MempoolPoller, Poll},
     },
     clients::{NodeError, NodeSource},
@@ -75,6 +76,11 @@ impl<S: NodeSource + Clone> Follower<S> {
     /// a block sync failed). Read by the status route, which makes no node call of its own.
     pub fn synced(&self) -> watch::Receiver<bool> {
         self.synced.subscribe()
+    }
+
+    /// The headers of the blocks the follower applies, for the header reader.
+    pub fn headers(&self) -> HeaderCache {
+        self.blocks.headers()
     }
 
     /// One tick at `now`: read `/info`, bring the engine to its tip, then, if it got there,

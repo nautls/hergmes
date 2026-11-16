@@ -640,7 +640,7 @@ fn a_box_no_source_has_fails_the_page() {
     let ghost = UTxO { ergo_tree: sim.lock().trees()[0].clone(), ..utxo(251, 252, 0, &[]) };
     let ghost_id = ghost.id;
     let block = |id: u8, parent, height, outputs| IndexedBlock {
-        header: BlockHeader { id: crate::sim::testing::digest(id), parent_id: parent, height },
+        header: BlockHeader::new(crate::sim::testing::digest(id), parent, height),
         transactions: vec![IndexedTransaction {
             id: crate::sim::testing::digest(id),
             inputs: Vec::new(),

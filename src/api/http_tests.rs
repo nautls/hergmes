@@ -21,7 +21,7 @@ use tower::ServiceExt;
 
 use super::*;
 use crate::{
-    adapters::{BoxCache, BoxFetcher, EngineGone, Follower, Loader, TokenChecker},
+    adapters::{BoxCache, BoxFetcher, EngineGone, Follower, HeaderReader, Loader, TokenChecker},
     api::cursor::{CursorError, TxCursor},
     engine::{Config, Engine},
     runtime::{Settled, settling},
@@ -149,6 +149,7 @@ impl Fixture {
             .waiting_for(settled),
             balances: Balances::new(sim.clone(), Default::default()),
             history: History::new(sim.clone(), Default::default()),
+            headers: Headers::new(HeaderReader::new(sim.clone(), follower.headers())),
             network: Network::Mainnet,
             policy,
             synced: follower.synced(),
@@ -537,6 +538,43 @@ async fn an_address_history_pages_newest_first_with_pending_on_top() {
     let all = f.ok(&history).await;
     assert_eq!(all["items"].as_array().unwrap().len(), total as usize + 1);
     assert_eq!(all["nextCursor"], Value::Null);
+}
+
+#[tokio::test]
+async fn headers_are_the_last_ones_up_to_the_tip_newest_first() {
+    let mut chain = Chain::new(SimConfig::default());
+    for seed in 1..=14 {
+        chain.mine(0, 1, seed);
+    }
+    let mut f = Fixture::with_chain(chain);
+    assert_eq!(
+        f.error("/v1/headers", StatusCode::SERVICE_UNAVAILABLE)
+            .await,
+        "not_ready"
+    );
+    f.tick();
+    let tip = f.sim.lock().tip();
+
+    let body = f.ok("/v1/headers").await;
+    assert_eq!(body["asOf"]["height"], tip.height);
+    assert_eq!(body["asOf"]["headerId"], tip.header_id.to_string());
+    let items = body["items"].as_array().unwrap();
+    assert_eq!(items.len(), 10, "ten by default");
+    assert_eq!(items[0]["id"], body["asOf"]["headerId"], "the first is the tip");
+    for (i, pair) in items.windows(2).enumerate() {
+        assert_eq!(pair[1]["id"], pair[0]["parentId"], "item {i}'s parent follows it");
+        assert_eq!(pair[1]["height"].as_u64().unwrap() + 1, pair[0]["height"].as_u64().unwrap());
+    }
+    // Each item is the header's JSON as the node (here the simulator) gave it.
+    let block = f.sim.lock().block(&tip.header_id).unwrap();
+    assert_eq!(items[0], serde_json::from_str::<Value>(&block.header.json).unwrap());
+
+    let three = f.ok("/v1/headers?limit=3").await;
+    assert_eq!(three["items"].as_array().unwrap()[..], items[..3]);
+    for bad in ["0", "11", "ten", "-1"] {
+        let uri = format!("/v1/headers?limit={bad}");
+        assert_eq!(f.error(&uri, StatusCode::BAD_REQUEST).await, "invalid_limit", "{bad}");
+    }
 }
 
 #[tokio::test]

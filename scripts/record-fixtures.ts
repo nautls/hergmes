@@ -5,9 +5,11 @@
  *   node scripts/record-fixtures.ts [--node URL] [--out DIR]
  *       [--address ADDR] [--small-token TOKEN_ID]
  *   node scripts/record-fixtures.ts --history-only [--node URL] [--out DIR]
+ *   node scripts/record-fixtures.ts --headers-only [--node URL] [--out DIR]
  *
  * --history-only records only the address tx history fixtures, for the sample address of
  * the existing manifest.json, and adds them to it, leaving every other fixture as it is.
+ * --headers-only does the same for the header fixtures, for the manifest's sample header.
  *
  * Runs on Node 23.6+ (native type stripping) with no dependencies.
  * The node URL defaults to $ERGO_NODE_URL. The node must run the extra indexer.
@@ -258,6 +260,36 @@ async function recordHistory(rec: Recorder, address: string, height: number) {
   fail("The sample address's history kept moving; try again.");
 }
 
+/** A header by id, for the manifest's sample block, so it can be checked against the
+ * indexed block's header; and an unknown id. */
+async function recordHeaders(rec: Recorder, headerId: string) {
+  await rec.record(
+    "header_by_id",
+    "GET",
+    `/blocks/modifier/${headerId}`,
+    undefined,
+    "The header of indexed_block.json, by id. Reads only the header section. Its size is " +
+      "one more than the indexed block's: read from the database, HeaderSerializer.parse " +
+      "counts the type byte HistoryModifierSerializer read before it (sizeOpt = r.consumed).",
+  );
+  await rec.record("header_by_id_unknown", "GET", `/blocks/modifier/${UNKNOWN_ID}`);
+}
+
+async function headersOnly(node: Node, outDir: string) {
+  const manifestPath = join(outDir, "manifest.json");
+  const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+  const info = await node.ok("GET", "/info");
+  if (info.appVersion !== manifest.nodeVersion) {
+    fail(`The node runs ${info.appVersion}, the fixtures were recorded from ${manifest.nodeVersion}`);
+  }
+  const rec = new Recorder(node, outDir);
+  console.log(`Recording header fixtures for ${manifest.samples.headerId} into ${outDir}`);
+  await recordHeaders(rec, manifest.samples.headerId);
+  manifest.fixtures = { ...manifest.fixtures, ...rec.manifest };
+  writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + "\n");
+  console.log(`Added ${Object.keys(rec.manifest).length} fixtures to manifest.json`);
+}
+
 async function historyOnly(node: Node, outDir: string) {
   const manifestPath = join(outDir, "manifest.json");
   const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
@@ -281,6 +313,7 @@ async function main() {
       address: { type: "string" },
       "small-token": { type: "string" },
       "history-only": { type: "boolean", default: false },
+      "headers-only": { type: "boolean", default: false },
     },
   });
   if (!args.node) fail("Pass --node or set ERGO_NODE_URL");
@@ -289,6 +322,7 @@ async function main() {
   const outDir = resolve(args.out!);
   mkdirSync(outDir, { recursive: true });
   if (args["history-only"]) return historyOnly(node, outDir);
+  if (args["headers-only"]) return headersOnly(node, outDir);
   const rec = new Recorder(node, outDir);
 
   const info = await node.ok("GET", "/info");
@@ -350,6 +384,7 @@ async function main() {
       "(top-level header/transactions/height/size).",
   );
   await rec.record("indexed_block_unknown", "GET", `/blockchain/block/byHeaderId/${UNKNOWN_ID}`);
+  await recordHeaders(rec, headerId);
 
   // Mempool
   const mempool = await rec.record("mempool", "GET", `/transactions/unconfirmed?limit=${MEMPOOL_LIMIT}`);

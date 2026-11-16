@@ -12,8 +12,8 @@ use tokio::{task::JoinHandle, time::sleep};
 
 use super::*;
 use crate::{
-    adapters::{BoxCache, BoxFetcher, EngineHandle, Follower, Loader, TokenChecker},
-    api::{Balances, History, KeyPolicy, Pages, ws::Closed},
+    adapters::{BoxCache, BoxFetcher, EngineHandle, Follower, HeaderReader, Loader, TokenChecker},
+    api::{Balances, Headers, History, KeyPolicy, Pages, ws::Closed},
     engine::{self, Engine, Event, Query, Reply},
     runtime::{Settled, settling, spawn},
     sim::{Chain, Endpoint, SimChain, SimConfig, token_id},
@@ -62,6 +62,7 @@ impl Fixture {
             .waiting_for(settled),
             balances: Balances::new(sim.clone(), Default::default()),
             history: History::new(sim.clone(), Default::default()),
+            headers: Headers::new(HeaderReader::new(sim.clone(), follower.headers())),
             network: Network::Mainnet,
             policy: KeyPolicy::default(),
             synced: follower.synced(),
@@ -102,6 +103,8 @@ impl Fixture {
             answers_pings: true,
             pings: 0,
             closed: None,
+            tips: Vec::new(),
+            keep_tips: false,
         }
     }
 
@@ -189,6 +192,10 @@ struct Client {
     /// The close frame's code and reason, or `None` in the code when the connection ended
     /// without one.
     closed: Option<(Option<u16>, String)>,
+    /// Every `tip` received, in order.
+    tips: Vec<BlockRef>,
+    /// Whether [`Client::texts`] returns `tip` messages too; it always records them.
+    keep_tips: bool,
 }
 
 impl Client {
@@ -216,7 +223,9 @@ impl Client {
         self.send(json!({ "op": "unsubscribe", "key": key })).await;
     }
 
-    /// Every text message until the connection is quiet or closed, answering pings.
+    /// Every text message until the connection is quiet or closed, answering pings. A `tip`
+    /// is recorded in `tips`, and left out unless `keep_tips`; every other message must come
+    /// after one, since the engine has a tip before any client connects.
     async fn texts(&mut self) -> Vec<Value> {
         let mut texts = Vec::new();
         while self.closed.is_none() {
@@ -225,7 +234,20 @@ impl Client {
             };
             match message {
                 None => self.closed = Some((None, String::new())),
-                Some(Message::Text(text)) => texts.push(serde_json::from_str(&text).unwrap()),
+                Some(Message::Text(text)) => {
+                    let message: Value = serde_json::from_str(&text).unwrap();
+                    if message["type"] == "tip" {
+                        assert_eq!(message.as_object().unwrap().len(), 3, "{message}");
+                        self.tips
+                            .push(block_ref(&message["height"], &message["headerId"]));
+                        if !self.keep_tips {
+                            continue;
+                        }
+                    } else {
+                        assert!(!self.tips.is_empty(), "{message} came before the first tip");
+                    }
+                    texts.push(message);
+                }
                 Some(Message::Ping(payload)) => {
                     self.pings += 1;
                     if self.answers_pings
@@ -526,6 +548,73 @@ async fn a_subscription_with_from_to_an_untracked_key_is_not_tracked() {
     assert!(!f.tracked(&f.tree_key(1)).await, "not loaded");
 }
 
+// --- The tip ---
+
+/// A connection's first message is the tip, subscribed or not, and each block brings the new
+/// one; a burst of blocks may bring only the last.
+#[tokio::test(start_paused = true)]
+async fn every_connection_gets_the_tip_first_and_each_new_one() {
+    let mut f = Fixture::new().await;
+    let mut client = f.connect();
+    client.keep_tips = true;
+    let opening = client.texts().await;
+    assert_eq!(types(&opening), ["tip"], "nothing subscribed, the tip all the same");
+    assert_eq!(client.tips, [f.sim.lock().tip()]);
+    for seed in 0..3 {
+        f.mine(seed).await;
+        assert_eq!(types(&client.texts().await), ["tip"]);
+        assert_eq!(client.tips.last(), Some(&f.sim.lock().tip()));
+    }
+    // An overlay alone moves no tip.
+    f.sim.lock().mempool_add(7);
+    f.tick().await;
+    assert_eq!(client.texts().await, Vec::<Value>::new());
+    f.sim.lock().reorg(2, 1, 9);
+    f.tick().await;
+    client.texts().await;
+    assert!(client.tips.len() > 4, "the reorg sent a tip");
+    assert_eq!(client.tips.last(), Some(&f.sim.lock().tip()), "after a reorg");
+}
+
+/// The tip goes out ahead of the outputs of the block that moved it, so a client's height is
+/// never older than the boxes it just got.
+#[tokio::test(start_paused = true)]
+async fn the_new_tip_comes_before_the_blocks_outputs() {
+    let mut f = Fixture::new().await;
+    let key = f.tree_key(0);
+    let mut view = f.snapshot(&key).await;
+    let mut client = f.connect();
+    client.keep_tips = true;
+    client
+        .subscribe(json!({ "address": f.address(0) }), view.tip)
+        .await;
+    let opening = client.texts().await;
+    assert_eq!(types(&opening), ["tip", "subscribed", "mempool", "balance"]);
+
+    for seed in 0..3 {
+        f.mine(seed).await;
+        let live = client.texts().await;
+        assert_eq!(types(&live)[..2], ["tip", "block"]);
+        assert_eq!(live[0]["headerId"], live[1]["headerId"]);
+        for m in &live[1..] {
+            view.apply(m);
+        }
+        f.check(&key, &view);
+    }
+
+    // Through a reorg, every rollback and block comes after a tip, and the last tip is the
+    // block the client ends at.
+    f.sim.lock().reorg(2, 1, 9);
+    f.tick().await;
+    let live = client.texts().await;
+    assert_eq!(live[0]["type"], "tip", "{:?}", types(&live));
+    for m in live.iter().filter(|m| m["type"] != "tip") {
+        view.apply(m);
+    }
+    f.check(&key, &view);
+    assert_eq!(client.tips.last().copied(), view.tip);
+}
+
 // --- Reconnecting (the Done-when sim cases) ---
 
 /// Leaves after following a key, then comes back `blocks` blocks later and subscribes from
@@ -785,10 +874,14 @@ async fn a_refused_replace_ends_the_old_subscription() {
     assert!(client.closed.is_none());
 }
 
-/// A connection built by hand, for the cases the simulator can't time.
+/// A connection built by hand, for the cases the simulator can't time, with the tip as it is
+/// taken as sent; `tip.mark_changed()` makes it unsent.
 fn connection<K: Socket>(f: &Fixture, socket: K) -> Connection<SimChain, K> {
+    let mut tip = f.engine.tip();
+    tip.borrow_and_update();
     Connection {
         api: f.api.clone(),
+        tip,
         config: Config::default(),
         socket,
         keys: HashMap::new(),
@@ -873,12 +966,14 @@ impl Socket for RecordingSocket {
 }
 
 /// A client that keeps its socket readable does not hold up the connection's other work: a
-/// finished subscribe and a live output are written before the reads queued with them.
+/// finished subscribe and a live output are written before the reads queued with them, and
+/// the tip before them all.
 #[tokio::test(start_paused = true)]
 async fn reads_do_not_starve_outputs_or_finished_subscribes() {
     let f = Fixture::new().await;
     let log = Arc::new(std::sync::Mutex::new(Vec::new()));
     let mut connection = connection(&f, RecordingSocket { reads: 8, log: log.clone() });
+    connection.tip.mark_changed();
 
     // A live subscription with an output waiting.
     let live = f.tree_key(1);
@@ -916,9 +1011,59 @@ async fn reads_do_not_starve_outputs_or_finished_subscribes() {
 
     let _ = timeout(Duration::from_secs(1), connection.run()).await;
     let log = log.lock().unwrap().clone();
-    assert_eq!(log[..2], ["resync_required", "resync_required"], "{log:?}");
-    assert_eq!(log[2..], ["read"; 8]);
+    assert_eq!(log[..3], ["tip", "resync_required", "resync_required"], "{log:?}");
+    assert_eq!(log[3..], ["read"; 8]);
     drop(sink);
+}
+
+/// On the multi-threaded runtime the engine task can publish a tip and route its outputs
+/// after the loop found the tip unchanged and before it took an output or a finished
+/// subscribe. The handlers are called here as the loop would call them then, with the tip
+/// changed and not yet sent: each sends the tip first.
+#[tokio::test(start_paused = true)]
+async fn an_output_or_an_answer_taken_before_a_changed_tip_sends_the_tip_first() {
+    let mut f = Fixture::new().await;
+    let log = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let mut connection = connection(&f, RecordingSocket { reads: 0, log: log.clone() });
+    connection.tip.mark_changed();
+
+    // An output, with the tip changed.
+    let key = f.tree_key(0);
+    let echo = protocol::ClientKey::Address(f.address(0)).echo();
+    connection.keys.insert(
+        key.clone(),
+        Entry { echo: echo.clone(), state: State::Pending { seq: 0, id: None, replaced: None } },
+    );
+    let output = Output::ResyncRequired { key: key.clone(), reason: ResyncReason::OutsideWindow };
+    connection
+        .on_output(key.clone(), Some(Arc::new(Routed::new(output))))
+        .await
+        .unwrap();
+    assert_eq!(*log.lock().unwrap(), ["tip", "resync_required"]);
+
+    // A finished subscribe, after a block moved the tip.
+    f.mine(1).await;
+    connection.keys.insert(
+        key.clone(),
+        Entry { echo, state: State::Pending { seq: 1, id: None, replaced: None } },
+    );
+    let joined = Ok((key, 1, Opened::Resync(ResyncReason::NotTracked)));
+    connection.on_opened(joined).await.unwrap();
+    assert_eq!(log.lock().unwrap()[2..], ["tip", "resync_required"]);
+
+    // With the tip sent, nothing more goes ahead of an output.
+    let key = f.tree_key(1);
+    let echo = protocol::ClientKey::Address(f.address(1)).echo();
+    connection.keys.insert(
+        key.clone(),
+        Entry { echo, state: State::Pending { seq: 2, id: None, replaced: None } },
+    );
+    let output = Output::ResyncRequired { key: key.clone(), reason: ResyncReason::OutsideWindow };
+    connection
+        .on_output(key, Some(Arc::new(Routed::new(output))))
+        .await
+        .unwrap();
+    assert_eq!(log.lock().unwrap()[4..], ["resync_required"]);
 }
 
 /// Every answer to a subscribe carries its id, refusals on the spot included, and a
@@ -1221,11 +1366,11 @@ async fn a_slow_reader_is_not_dropped_during_a_long_catch_up() {
 
     let mut client = f.connect_with(Config::default(), 1);
     client.subscribe(echo, view.tip).await;
-    // One message every 15 s: the catch-up's 9 messages (`subscribed`, 6 blocks, the overlay
-    // and the balance) take over two minutes, more than the idle limit's 90 s.
+    // One message every 15 s: the tip and the catch-up's 9 messages (`subscribed`, 6 blocks,
+    // the overlay and the balance) take over two minutes, more than the idle limit's 90 s.
     let mut types = Vec::new();
     for _ in 0..20 {
-        if types.len() == 9 {
+        if types.len() == 10 {
             break;
         }
         sleep(Duration::from_secs(15)).await;
@@ -1242,7 +1387,8 @@ async fn a_slow_reader_is_not_dropped_during_a_long_catch_up() {
             Err(_) => {}
         }
     }
-    assert_eq!(types[7..], ["mempool", "balance"]);
+    assert_eq!(types[..2], ["tip", "subscribed"]);
+    assert_eq!(types[8..], ["mempool", "balance"]);
     assert!(!client.server.is_finished());
 }
 

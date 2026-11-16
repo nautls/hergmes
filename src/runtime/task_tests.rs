@@ -3,6 +3,8 @@
 //! reference's (an event's answer is what the reference routed to no one), and every sink
 //! must hold exactly what the reference routed to it, in order.
 //!
+//! After every event, the tip the task publishes must be the reference engine's.
+//!
 //! Replies cover the subscriber counts too: a count that drifted from the registry changes
 //! which keys go idle, and with them the outputs of later blocks.
 
@@ -239,6 +241,8 @@ impl EngineHandle for Mirror<'_> {
             .apply(event)
             .map(|outputs| reference.route(&outputs));
         assert_eq!(got, want, "the task's answer differs from the reference's");
+        let published = *self.task.tip().borrow();
+        assert_eq!(published, reference.engine.tip(), "the published tip is the engine's");
         Ok(got)
     }
 

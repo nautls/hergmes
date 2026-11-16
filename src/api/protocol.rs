@@ -111,13 +111,16 @@ impl Reject {
     }
 }
 
-/// What the relay sends: the start of a subscription, a key's output, a `resync_required` of
-/// the relay's own, or a refusal.
+/// What the relay sends: the relay's tip, the start of a subscription, a key's output, a
+/// `resync_required` of the relay's own, or a refusal.
 ///
 /// `subscribed`, and `resync_required` and `rejected` when they answer a subscribe, carry the
 /// subscribe's `id` if it had one. A subscribe's answer may come after the client sent a
 /// newer message for the key, and the id tells it apart from the newer subscribe's.
 pub enum ServerMessage<'a> {
+    /// The relay's tip, the best full block: to every connection, when it opens and whenever
+    /// the tip changes. The only message with no key.
+    Tip(BlockRef),
     /// A subscribe took effect: what follows for the key belongs to it. It marks where the
     /// new subscription starts, since after a replace or an unsubscribe the old one's
     /// messages may still be on their way, and every message names only the key.
@@ -183,6 +186,12 @@ impl Serialize for ServerMessage<'_> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         match self {
             Self::Output { key, output } => serialize_output(serializer, Some(key), output),
+            Self::Tip(tip) => {
+                let mut s = start(serializer, "Tip", "tip", None, None, 2)?;
+                s.serialize_field("height", &tip.height)?;
+                s.serialize_field("headerId", &tip.header_id)?;
+                s.end()
+            }
             Self::Subscribed { key, id } => {
                 let s = start(serializer, "Subscribed", "subscribed", *id, Some(key), 0)?;
                 s.end()

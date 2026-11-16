@@ -8,6 +8,12 @@
 //! park on a one-shot reply instead of blocking a worker thread on a lock (DESIGN.md,
 //! "Decided", Runtime).
 //!
+//! The task publishes the engine's tip in a `watch`, for every connection, after each event
+//! and before routing the event's outputs, so a connection that sends a changed tip ahead of
+//! anything else never sends a key's output before the tip it came with (DESIGN.md, "Tip
+//! stream"). It is not a key's output: every connection gets it, subscribed or not, and only
+//! the latest matters.
+//!
 //! The task also keeps the engine's subscriber counts. It sends `Subscribed` and
 //! `Unsubscribed` itself, once per subscription it registers and ends, so the counts can't
 //! drift from the registry: a subscription the engine ended with `resync_required` was
@@ -20,7 +26,7 @@ use std::{
 };
 
 use tokio::{
-    sync::{mpsc, oneshot},
+    sync::{mpsc, oneshot, watch},
     task::JoinHandle,
 };
 use tracing::{debug, info, warn};
@@ -88,6 +94,7 @@ enum Message {
 #[derive(Debug, Clone)]
 pub struct Handle {
     inbox: mpsc::Sender<Message>,
+    tip: watch::Receiver<Option<BlockRef>>,
 }
 
 /// Starts the engine task on the current runtime.
@@ -96,11 +103,18 @@ pub struct Handle {
 /// panic can leave the engine half-changed, so it is never restarted in place.
 pub fn spawn(engine: Engine) -> (Handle, JoinHandle<()>) {
     let (inbox, messages) = mpsc::channel(INBOX);
-    let task = EngineTask { engine, router: Router::default() };
-    (Handle { inbox }, tokio::spawn(task.run(messages)))
+    let (tip_sender, tip) = watch::channel(engine.tip());
+    let task = EngineTask { engine, router: Router::default(), tip: tip_sender };
+    (Handle { inbox, tip }, tokio::spawn(task.run(messages)))
 }
 
 impl Handle {
+    /// The engine's tip, updated after each event that moves it and before that event's
+    /// outputs are routed. `None` until the first block.
+    pub fn tip(&self) -> watch::Receiver<Option<BlockRef>> {
+        self.tip.clone()
+    }
+
     /// Subscribes `sink` to `key`'s outputs, atomically with the catch-up from `from`: no
     /// event is applied between the two, so the live outputs start right after the
     /// catch-up. Without `from` the subscription is balance-only: its sink gets only
@@ -155,6 +169,7 @@ impl EngineHandle for Handle {
 struct EngineTask {
     engine: Engine,
     router: Router,
+    tip: watch::Sender<Option<BlockRef>>,
 }
 
 impl EngineTask {
@@ -174,13 +189,17 @@ impl EngineTask {
                     // off first.
                     self.router.sweep(&mut self.engine);
                 }
-                let result = self.engine.apply(event).map(|outputs| {
-                    log(&outputs);
-                    self.router.route(&mut self.engine, outputs)
-                });
-                if let Err(error) = &result {
-                    warn!(%error, "Engine refused an event");
-                }
+                let result = match self.engine.apply(event) {
+                    Ok(outputs) => {
+                        log(&outputs);
+                        self.publish_tip();
+                        Ok(self.router.route(&mut self.engine, outputs))
+                    }
+                    Err(error) => {
+                        warn!(%error, "Engine refused an event");
+                        Err(error)
+                    }
+                };
                 let _ = reply.send(result);
             }
             Message::Query(query, reply) => {
@@ -209,6 +228,16 @@ impl EngineTask {
                 let _ = reply.send(());
             }
         }
+    }
+
+    /// Sets the watched tip if the event moved it, waking the connections.
+    fn publish_tip(&self) {
+        let tip = self.engine.tip();
+        self.tip.send_if_modified(|current| {
+            let moved = *current != tip;
+            *current = tip;
+            moved
+        });
     }
 }
 

@@ -3,8 +3,8 @@ use std::future::Future;
 use crate::{
     clients::node::{IndexedHeightResponse, InfoResponse, NodeError},
     types::ergo::{
-        AddressTransactions, Balance, BoxId, ErgoTree, HeaderId, IndexedBlock, IndexedBox, TokenId,
-        TokenInfo, UTxO, UnconfirmedTransaction,
+        AddressTransactions, Balance, BlockHeader, BoxId, ErgoTree, HeaderId, IndexedBlock,
+        IndexedBox, TokenId, TokenInfo, UTxO, UnconfirmedTransaction,
     },
 };
 
@@ -34,6 +34,14 @@ pub trait NodeSource: Send + Sync {
         &self,
         header_id: &HeaderId,
     ) -> impl Future<Output = Result<Option<IndexedBlock>, NodeError>> + Send;
+
+    /// A header by id, from any block the node stored, orphans included (node 6.0.8,
+    /// `/blocks/modifier/{id}`: `ErgoHistoryReader.modifierById` reads only the header
+    /// section). `None` if the node has none under this id.
+    fn header(
+        &self,
+        header_id: &HeaderId,
+    ) -> impl Future<Output = Result<Option<BlockHeader>, NodeError>> + Send;
 
     /// The mempool, without transactions whose inputs the node could not resolve, nor any of
     /// their descendants. So every input of a listed tx is either created by another listed tx

@@ -7,8 +7,8 @@ use std::{
 };
 
 use crate::{
-    sim::chain::{GENESIS_PARENT, SimBlock},
-    types::ergo::{BoxId, HeaderId, IndexedBox, TokenId, UTxO},
+    sim::chain::SimBlock,
+    types::ergo::{BoxId, GENESIS_PARENT_ID, HeaderId, IndexedBox, TokenId, UTxO},
 };
 
 /// A box as the ledger knows it.
@@ -42,7 +42,7 @@ impl Ledger {
     /// The state before the genesis block at `start_height`.
     pub fn new(start_height: u32) -> Self {
         Self {
-            tip: GENESIS_PARENT,
+            tip: GENESIS_PARENT_ID,
             height: start_height - 1,
             unspent: BTreeMap::new(),
             all: HashMap::new(),

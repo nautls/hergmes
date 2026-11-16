@@ -7,7 +7,9 @@
 use tracing::{debug, info, warn};
 
 use crate::{
-    adapters::{AdapterError, EngineGone, EngineHandle, engine_chain, engine_tip},
+    adapters::{
+        AdapterError, EngineGone, EngineHandle, engine_chain, engine_tip, headers::HeaderCache,
+    },
     clients::{NodeError, NodeSource},
     engine::{BlockRef, ChainLink, EngineError, Event},
     types::ergo::IndexedBlock,
@@ -47,11 +49,18 @@ enum ForkPoint {
 /// Follows the node's best full block.
 pub struct BlockConsumer<S> {
     source: S,
+    headers: HeaderCache,
 }
 
 impl<S: NodeSource> BlockConsumer<S> {
     pub fn new(source: S) -> Self {
-        Self { source }
+        Self { source, headers: HeaderCache::new() }
+    }
+
+    /// The headers of the blocks this consumer applies, each cached before its block is
+    /// sent, so a walk from the engine's tip finds it.
+    pub fn headers(&self) -> HeaderCache {
+        self.headers.clone()
     }
 
     /// Brings the engine to `tip`, the best full block from an `/info` read.
@@ -113,6 +122,9 @@ impl<S: NodeSource> BlockConsumer<S> {
             }
         };
         walked.reverse();
+        for block in &walked {
+            self.headers.insert(&block.header);
+        }
         Ok(send(engine, reverts, walked, reset).await?)
     }
 

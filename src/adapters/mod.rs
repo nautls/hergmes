@@ -1,9 +1,10 @@
 //! Adapters: all I/O against the node.
 //!
-//! Block consumer, mempool poller, first-load loader, token checker, box fetcher and balance
-//! reader. They fetch, stamp with the observed tip and send events to the engine. Each one
-//! has a core that never sleeps (one sync, one poll, one load attempt), so tests drive it
-//! against `SimChain` step by step; waiting and back-off live in thin loops around it.
+//! Block consumer, mempool poller, first-load loader, token checker, box fetcher, balance and
+//! history readers, and the header reader. They fetch, stamp with the observed tip and send
+//! events to the engine. Each one has a core that never sleeps (one sync, one poll, one load
+//! attempt), so tests drive it against `SimChain` step by step; waiting and back-off live in
+//! thin loops around it.
 
 use std::{future::Future, time::Duration};
 
@@ -19,6 +20,7 @@ pub mod blocks;
 pub mod boxes;
 pub mod cache;
 pub mod follower;
+pub mod headers;
 pub mod history;
 pub mod loader;
 pub mod mempool;
@@ -29,6 +31,7 @@ pub use blocks::BlockConsumer;
 pub use boxes::BoxFetcher;
 pub use cache::BoxCache;
 pub use follower::Follower;
+pub use headers::{HeaderCache, HeaderReader};
 pub use history::HistoryReader;
 pub use loader::Loader;
 pub use mempool::MempoolPoller;

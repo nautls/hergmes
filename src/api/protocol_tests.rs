@@ -336,6 +336,13 @@ fn rejections_carry_retry_after_only_when_it_is_worth_waiting() {
 }
 
 #[test]
+fn the_tip_has_no_key() {
+    let tip = BlockRef { height: 9, header_id: hex(3).parse().unwrap() };
+    let text = ServerMessage::Tip(tip).to_text();
+    assert_eq!(text, format!(r#"{{"type":"tip","height":9,"headerId":"{}"}}"#, hex(3)));
+}
+
+#[test]
 fn subscribed_names_the_key_as_sent() {
     let text = ServerMessage::Subscribed { key: &echo(), id: None }.to_text();
     assert_eq!(text, format!(r#"{{"type":"subscribed","key":{{"address":"{ADDRESS}"}}}}"#));

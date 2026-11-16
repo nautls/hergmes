@@ -1,6 +1,9 @@
-use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 
-use crate::types::{HashDigest, HexBytes};
+use serde::{Deserialize, Deserializer, Serialize, de::Error};
+use serde_json::value::RawValue;
+
+use crate::types::{Digest, HashDigest, HexBytes};
 
 pub type BoxId = HashDigest;
 pub type TxId = HashDigest;
@@ -8,12 +11,71 @@ pub type TokenId = HashDigest;
 pub type HeaderId = HashDigest;
 pub type ErgoTree = HexBytes;
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+/// The genesis block's `parentId` (node 6.0.8, `Header.GenesisParentId`, all zeros): no
+/// header has this id, so a walk back through parents ends at the block naming it.
+pub const GENESIS_PARENT_ID: HeaderId = Digest([0; 32]);
+
+/// A block header: what the relay reads of it, and the node's JSON for it, served to
+/// clients as it came (DESIGN.md, "Headers"), so each is Fleet's `BlockHeader`.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BlockHeader {
     pub id: HeaderId,
-    #[serde(rename = "parentId")]
     pub parent_id: HeaderId,
     pub height: u32,
+    /// The node's JSON, compacted: the node pretty-prints (`ApiRoute.printer` is
+    /// `Printer.spaces2`). Compacted as text, so numbers stay exact (a v1 header's `d` is
+    /// past `u64`) and fields keep the node's order. Shared, since a header lives in the
+    /// header cache and in the indexed block it came with.
+    pub json: Arc<str>,
+}
+
+impl BlockHeader {
+    /// A header whose JSON holds only the fields the relay reads, for the simulator, which
+    /// has no node to take the rest from.
+    #[cfg(any(test, feature = "sim"))]
+    pub fn new(id: HeaderId, parent_id: HeaderId, height: u32) -> Self {
+        let json = format!(r#"{{"id":"{id}","parentId":"{parent_id}","height":{height}}}"#);
+        Self { id, parent_id, height, json: json.into() }
+    }
+}
+
+impl<'de> Deserialize<'de> for BlockHeader {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        struct Read {
+            id: HeaderId,
+            #[serde(rename = "parentId")]
+            parent_id: HeaderId,
+            height: u32,
+        }
+        let raw = <Box<RawValue>>::deserialize(deserializer)?;
+        let json = compact(raw.get());
+        let read: Read = serde_json::from_str(&json).map_err(D::Error::custom)?;
+        Ok(Self { id: read.id, parent_id: read.parent_id, height: read.height, json: json.into() })
+    }
+}
+
+/// Valid JSON without the whitespace between tokens. Whitespace inside a string is kept.
+fn compact(json: &str) -> String {
+    let mut out = String::with_capacity(json.len());
+    let (mut in_string, mut escaped) = (false, false);
+    for c in json.chars() {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if c == '\\' {
+                escaped = true;
+            } else if c == '"' {
+                in_string = false;
+            }
+        } else if c == '"' {
+            in_string = true;
+        } else if c.is_ascii_whitespace() {
+            continue;
+        }
+        out.push(c);
+    }
+    out
 }
 
 /// A mempool transaction with its input boxes resolved.
@@ -154,3 +216,7 @@ pub struct TokenBalance {
     pub token_id: TokenId,
     pub amount: u64,
 }
+
+#[cfg(test)]
+#[path = "ergo_tests.rs"]
+mod tests;

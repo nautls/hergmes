@@ -60,6 +60,9 @@ NodeSource (trait)  ──►  Engine (pure state machine)  ──►  Transport
   caller resynchronizes.
 - Within one event, outputs go `block` / `rollback` / `resync_required`, then `mempool`, then
   `balance`, each in key order. Keep that order.
+- The engine task publishes the tip before routing an event's outputs, and a connection sends a
+  changed tip before anything else, so a client's tip is never older than its boxes. The tip is
+  not an engine output.
 
 ## Be frugal with resources
 

@@ -9,8 +9,8 @@ use crate::{
     types::{
         address::{self, Network, UnknownNetwork},
         ergo::{
-            AddressTransactions, Balance, BalanceResponse, BoxId, ErgoTree, HeaderId, IndexedBlock,
-            IndexedBox, TokenId, TokenInfo, TxId, UTxO, UnconfirmedTransaction,
+            AddressTransactions, Balance, BalanceResponse, BlockHeader, BoxId, ErgoTree, HeaderId,
+            IndexedBlock, IndexedBox, TokenId, TokenInfo, TxId, UTxO, UnconfirmedTransaction,
         },
     },
 };
@@ -239,6 +239,13 @@ impl NodeSource for NodeClient {
     #[tracing::instrument(skip(self))]
     async fn indexed_block(&self, header_id: &HeaderId) -> Result<Option<IndexedBlock>, NodeError> {
         fetch_optional(self.get(&format!("blockchain/block/byHeaderId/{header_id}"))).await
+    }
+
+    /// Not `/blocks/{id}/header`, which reads the block's transactions, extension and AD
+    /// proofs to return its header (`BlocksApiRoute.getFullBlockByHeaderId`).
+    #[tracing::instrument(skip(self))]
+    async fn header(&self, header_id: &HeaderId) -> Result<Option<BlockHeader>, NodeError> {
+        fetch_optional(self.get(&format!("blocks/modifier/{header_id}"))).await
     }
 
     #[tracing::instrument(skip(self))]

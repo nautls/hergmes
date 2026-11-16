@@ -25,8 +25,8 @@ use tower::ServiceExt;
 
 use super::*;
 use crate::{
-    adapters::{BoxCache, BoxFetcher, Follower, Loader, TokenChecker},
-    api::{Balances, History, KeyPolicy, Pages},
+    adapters::{BoxCache, BoxFetcher, Follower, HeaderReader, Loader, TokenChecker},
+    api::{Balances, Headers, History, KeyPolicy, Pages},
     engine::{Config as EngineConfig, Engine},
     runtime::spawn,
     sim::{Chain, SimChain, SimConfig},
@@ -58,6 +58,7 @@ async fn server() -> Server {
         ),
         balances: Balances::new(sim.clone(), Default::default()),
         history: History::new(sim.clone(), Default::default()),
+        headers: Headers::new(HeaderReader::new(sim.clone(), follower.headers())),
         network: Network::Mainnet,
         policy: KeyPolicy::default(),
         synced: follower.synced(),
@@ -72,9 +73,16 @@ async fn listen(server: &Server) -> SocketAddr {
     addr
 }
 
+/// A connection, past its first message: the relay's tip.
 async fn connect(server: &Server) -> Stream {
     let addr = listen(server).await;
-    let (stream, _) = connect_async(format!("ws://{addr}/v1/ws")).await.unwrap();
+    let (mut stream, _) = connect_async(format!("ws://{addr}/v1/ws")).await.unwrap();
+    let Some(tungstenite::Message::Text(text)) = next(&mut stream).await else {
+        panic!("a text message");
+    };
+    let tip = server.sim.lock().tip();
+    let expected = json!({ "type": "tip", "height": tip.height, "headerId": tip.header_id });
+    assert_eq!(serde_json::from_str::<Value>(&text).unwrap(), expected);
     stream
 }
 

@@ -157,6 +157,17 @@
       "status": 200,
       "body": "9iKCdiitfAVb1Wux5nFXiMcdYXGkhdNksAxJHQ28qiAMkxXupbt",
       "notes": "An address with no txs is an empty page with total 0, not a 404."
+    },
+    "header_by_id": {
+      "method": "GET",
+      "path": "/blocks/modifier/41f89ff983dc639d0950522e819012854bbcbecdc41c0739c685b7e53fb27a02",
+      "status": 200,
+      "notes": "The header of indexed_block.json, by id. Reads only the header section. Its size is one more than the indexed block's: read from the database, HeaderSerializer.parse counts the type byte HistoryModifierSerializer read before it (sizeOpt = r.consumed)."
+    },
+    "header_by_id_unknown": {
+      "method": "GET",
+      "path": "/blocks/modifier/abababababababababababababababababababababababababababababababab",
+      "status": 404
     }
   }
 }

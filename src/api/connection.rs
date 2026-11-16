@@ -9,13 +9,16 @@
 //! drops the key's load midway, and the next caller starts it over, so a client subscribing
 //! again faster than a key loads would keep it from ever finishing. Order is kept per key, the
 //! only order the protocol promises.
+//!
+//! Every connection also follows the engine's tip, subscribed or not, and sends `tip` when it
+//! opens and whenever the tip changes (DESIGN.md, "Tip stream").
 
 use std::{collections::HashMap, sync::Arc};
 
 use axum::extract::ws::{CloseFrame, Message, close_code};
 use serde_json::value::RawValue;
 use tokio::{
-    sync::mpsc,
+    sync::{mpsc, watch},
     task::{JoinError, JoinSet},
     time::{Instant, MissedTickBehavior, interval_at, sleep, timeout},
 };
@@ -48,8 +51,12 @@ where
     S: NodeSource + 'static,
     K: Socket,
 {
+    let mut tip = api.engine.tip();
+    // Sent first, as soon as the engine has a tip.
+    tip.mark_changed();
     let mut connection = Connection {
         api,
+        tip,
         config,
         socket,
         keys: HashMap::new(),
@@ -130,6 +137,8 @@ enum Opened {
 
 struct Connection<S, K> {
     api: Arc<Api<S, Handle>>,
+    /// The engine's tip, published before the outputs of the event that moved it.
+    tip: watch::Receiver<Option<BlockRef>>,
     config: Config,
     socket: K,
     keys: HashMap<TrackingKey, Entry>,
@@ -148,14 +157,18 @@ impl<S: NodeSource + 'static, K: Socket> Connection<S, K> {
         ping.set_missed_tick_behavior(MissedTickBehavior::Delay);
         loop {
             // Each branch only picks the next step; writes happen in the handlers, so a
-            // half-finished write is never dropped for another branch. The order is what no
-            // branch can starve: finished subscribes come first, as each comes from a read;
-            // then outputs, which come at the engine's pace and end in `slow_consumer` if
-            // they outrun the socket; then reads, which a client can keep ready for as long
-            // as it likes; and the ping last. Reads before the ping, so a pong that arrived
-            // during a long write is counted before the next tick.
+            // half-finished write is never dropped for another branch. The tip comes first:
+            // the engine task publishes it before routing the outputs of the event that moved
+            // it, so taken first it always goes out ahead of them, and ahead of a catch-up
+            // computed at it. It changes once a block, so it starves nothing. The rest is in
+            // the order no branch can starve: finished subscribes come first, as each comes
+            // from a read; then outputs, which come at the engine's pace and end in
+            // `slow_consumer` if they outrun the socket; then reads, which a client can keep
+            // ready for as long as it likes; and the ping last. Reads before the ping, so a
+            // pong that arrived during a long write is counted before the next tick.
             let step = tokio::select! {
                 biased;
+                Ok(()) = self.tip.changed() => self.on_tip().await,
                 Some(joined) = self.pending.join_next(), if !self.pending.is_empty() => {
                     self.on_opened(joined).await
                 }
@@ -296,6 +309,8 @@ impl<S: NodeSource + 'static, K: Socket> Connection<S, K> {
     }
 
     async fn on_opened(&mut self, joined: Result<(TrackingKey, u64, Opened), JoinError>) -> Step {
+        // An answer computed at a tip the loop has not seen yet (see `send_changed_tip`).
+        self.send_changed_tip().await?;
         let (key, seq, opened) = match joined {
             Ok(joined) => joined,
             // Subscribes are aborted only when the connection drops, which never joins them;
@@ -361,6 +376,7 @@ impl<S: NodeSource + 'static, K: Socket> Connection<S, K> {
     }
 
     async fn on_output(&mut self, key: TrackingKey, item: Option<Arc<Routed>>) -> Step {
+        self.send_changed_tip().await?;
         let Some(routed) = item else {
             // The engine task ended the subscription with no `resync_required`: its sink was
             // full. The socket is shared, so the connection's other keys are behind too.
@@ -383,6 +399,27 @@ impl<S: NodeSource + 'static, K: Socket> Connection<S, K> {
             self.feeds.remove(&key);
         }
         Ok(())
+    }
+
+    /// Sends the tip if it changed since the last one sent. The loop takes the tip first, but
+    /// on the multi-threaded runtime the engine task can publish a tip and route the event's
+    /// outputs after the loop found the tip unchanged and before it polled the outputs. It
+    /// publishes before routing, so an output or an answer taken from a later event finds the
+    /// tip changed here, and the tip still goes out first.
+    async fn send_changed_tip(&mut self) -> Step {
+        if self.tip.has_changed().unwrap_or(false) {
+            self.on_tip().await?;
+        }
+        Ok(())
+    }
+
+    /// Sends the tip, the latest only: a burst of blocks sends one.
+    async fn on_tip(&mut self) -> Step {
+        let tip = *self.tip.borrow_and_update();
+        match tip {
+            Some(tip) => self.write(&ServerMessage::Tip(tip)).await,
+            None => Ok(()),
+        }
     }
 
     async fn on_ping(&mut self) -> Step {

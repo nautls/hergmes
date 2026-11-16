@@ -14,8 +14,8 @@ use crate::{
     },
     sim::Chain,
     types::ergo::{
-        AddressTransactions, Balance, BoxId, ErgoTree, HeaderId, IndexedBlock, IndexedBox, TokenId,
-        TokenInfo, UTxO, UnconfirmedTransaction,
+        AddressTransactions, Balance, BlockHeader, BoxId, ErgoTree, HeaderId, IndexedBlock,
+        IndexedBox, TokenId, TokenInfo, UTxO, UnconfirmedTransaction,
     },
 };
 
@@ -25,6 +25,7 @@ pub enum Endpoint {
     Info,
     IndexedHeight,
     IndexedBlock,
+    Header,
     Mempool,
     UnspentByErgoTree,
     UnspentByToken,
@@ -39,7 +40,10 @@ impl Endpoint {
     /// Answers `503` while the indexer recovers: every `/blockchain` endpoint except
     /// `indexedHeight`, which the node serves before its recovery check.
     pub fn gated_by_recovery(self) -> bool {
-        !matches!(self, Self::Info | Self::Mempool | Self::BoxesWithPool | Self::IndexedHeight)
+        !matches!(
+            self,
+            Self::Info | Self::Header | Self::Mempool | Self::BoxesWithPool | Self::IndexedHeight
+        )
     }
 }
 
@@ -120,6 +124,11 @@ impl NodeSource for SimChain {
 
     async fn indexed_block(&self, header_id: &HeaderId) -> Result<Option<IndexedBlock>, NodeError> {
         self.serve(Endpoint::IndexedBlock, |c| Ok(c.indexed_block(header_id)))
+            .await
+    }
+
+    async fn header(&self, header_id: &HeaderId) -> Result<Option<BlockHeader>, NodeError> {
+        self.serve(Endpoint::Header, |c| Ok(c.block(header_id).map(|b| b.header.clone())))
             .await
     }
 
