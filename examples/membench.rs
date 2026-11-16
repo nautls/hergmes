@@ -8,7 +8,7 @@
 //!
 //! `engine` loads synthetic address keys straight into an [`Engine`], with no adapters and
 //! no cache, and reports the growth per tracked box: the id state DESIGN.md puts at about
-//! 110 bytes. `cache` fills a [`BoxCache`] with small boxes and reports the growth against
+//! 135 bytes, and 600 a key. `cache` fills a [`BoxCache`] with small boxes and reports the growth against
 //! the cache's own weighted size, which is what the budget bounds.
 //!
 //! One run is one process, so nothing but the structure under test grows. A run's figure

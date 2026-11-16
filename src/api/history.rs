@@ -11,7 +11,10 @@ use tokio::time::sleep;
 use tracing::debug;
 
 use crate::{
-    adapters::{EngineHandle, HistoryReader, history::HistoryError},
+    adapters::{
+        EngineHandle, HistoryReader,
+        history::{HistoryError, Turn},
+    },
     api::{ApiError, cursor::TxCursor},
     clients::NodeSource,
     engine::{
@@ -27,6 +30,10 @@ pub const DEFAULT_LIMIT: u32 = 25;
 /// output box (`IndexedErgoTransaction.retrieveBody`), so this, not the node's 16384, is the
 /// budget.
 pub const MAX_LIMIT: u32 = 100;
+/// `Retry-After` for a page that gave up waiting behind slow reads. It waited 55 s for reads
+/// that take as long, so a client told to come back in a second would queue again at once,
+/// and each wave of retries would lengthen the queue.
+pub const BUSY_RETRY: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Config {
@@ -122,8 +129,11 @@ impl<S: NodeSource> History<S> {
         limit: u32,
     ) -> Result<HistoryPage, ApiError> {
         for attempt in 1..=self.config.attempts {
+            // The turn first: a wait for it between the two reads would leave the pending
+            // txs as old as the wait, up to several blocks.
+            let turn = self.turn().await?;
             let pending = pending_txs(engine, tree).await?;
-            let page = self.read(tree, 0, limit).await?;
+            let page = self.read(&turn, tree, 0, limit).await?;
             let total = page.total;
             // No tip yet: no snapshot, so nothing pending to overlap.
             let Some(PendingTxsAt { as_of, txs }) = pending else {
@@ -145,6 +155,7 @@ impl<S: NodeSource> History<S> {
                 attempt,
                 "History page entirely above the engine's tip, trying again"
             );
+            drop(turn);
             if attempt < self.config.attempts {
                 sleep(self.config.retry).await;
             }
@@ -172,7 +183,8 @@ impl<S: NodeSource> History<S> {
             let Some(offset) = basis.checked_sub(cursor.pos + 1) else {
                 return Err(ApiError::CursorExpired);
             };
-            let page = self.read(tree, offset, limit + 1).await?;
+            let turn = self.turn().await?;
+            let page = self.read(&turn, tree, offset, limit + 1).await?;
             let last = read == self.config.attempts;
             match anchor(&page, offset, &cursor) {
                 Anchor::Found(at) if at + 1 < page.items.len() || last => {
@@ -197,20 +209,31 @@ impl<S: NodeSource> History<S> {
         Err(ApiError::NotReady { retry_after: self.config.retry })
     }
 
+    /// A turn at the node, held for a read and what the read is cut down from.
+    async fn turn(&self) -> Result<Turn<'_>, ApiError> {
+        self.reader.turn().await.map_err(api_error)
+    }
+
     async fn read(
         &self,
+        turn: &Turn<'_>,
         tree: &ErgoTree,
         offset: u32,
         limit: u32,
     ) -> Result<AddressTransactions, ApiError> {
         self.reader
-            .read(tree, offset, limit)
+            .read(turn, tree, offset, limit)
             .await
-            .map_err(|error| match error {
-                HistoryError::Node(error) => ApiError::from(&error),
-                // The reads ahead are slow, not failing: the same request works once they end.
-                HistoryError::Busy => ApiError::NotReady { retry_after: self.config.retry },
-            })
+            .map_err(api_error)
+    }
+}
+
+fn api_error(error: HistoryError) -> ApiError {
+    match error {
+        HistoryError::Node(error) => ApiError::from(&error),
+        // The reads ahead are slow, not failing, so the same request works once they end:
+        // but it has just waited as long as a read may take, so not at once.
+        HistoryError::Busy => ApiError::NotReady { retry_after: BUSY_RETRY },
     }
 }
 

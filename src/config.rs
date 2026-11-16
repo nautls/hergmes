@@ -169,9 +169,7 @@ impl Config {
             allow_tokens: allowlist(vars::ALLOW_TOKENS, get(vars::ALLOW_TOKENS), token_id)?,
             box_cache_bytes,
             listen_addr: number(vars::LISTEN_ADDR, get(vars::LISTEN_ADDR), LISTEN_ADDR)?,
-            metrics_addr: get(vars::METRICS_ADDR)
-                .map(|v| number(vars::METRICS_ADDR, Some(v), LISTEN_ADDR))
-                .transpose()?,
+            metrics_addr: optional(vars::METRICS_ADDR, get(vars::METRICS_ADDR))?,
             ws: ws::Config {
                 max_subscriptions: at_least_one(
                     vars::MAX_SUBSCRIPTIONS_PER_CONNECTION,
@@ -259,6 +257,22 @@ fn token_id(entry: &str) -> Result<TokenId, String> {
 
 fn invalid(var: &'static str, reason: &str) -> ConfigError {
     ConfigError::Invalid { var, reason: reason.to_owned() }
+}
+
+/// A value with no default: `None` when unset.
+fn optional<T: std::str::FromStr>(
+    var: &'static str,
+    value: Option<String>,
+) -> Result<Option<T>, ConfigError>
+where
+    T::Err: std::fmt::Display,
+{
+    value
+        .map(|v| {
+            v.parse()
+                .map_err(|e: T::Err| invalid(var, &format!("{v:?}: {e}")))
+        })
+        .transpose()
 }
 
 fn number<T: std::str::FromStr>(

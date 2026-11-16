@@ -14,6 +14,15 @@ fn reads(sim: &SimChain) -> usize {
         .count()
 }
 
+/// A read in a turn of its own, as the history service makes one.
+async fn read(
+    reader: &HistoryReader<SimChain>,
+    tree: &ErgoTree,
+) -> Result<AddressTransactions, HistoryError> {
+    let turn = reader.turn().await?;
+    reader.read(&turn, tree, 0, 10).await
+}
+
 /// `count` reads started together against a node that takes `latency` for each.
 fn start(
     latency: Duration,
@@ -26,7 +35,7 @@ fn start(
     let mut tasks = JoinSet::new();
     for _ in 0..count {
         let (reader, tree) = (reader.clone(), tree.clone());
-        tasks.spawn(async move { reader.read(&tree, 0, 10).await });
+        tasks.spawn(async move { read(&reader, &tree).await });
     }
     (sim, tasks)
 }
@@ -73,8 +82,8 @@ async fn a_failed_read_frees_its_permit() {
     // The indexer answers `503` while it recovers from the reorg.
     sim.lock().reorg(1, 1, 5);
     for _ in 0..failures {
-        let failed = reader.read(&tree, 0, 10).await;
+        let failed = read(&reader, &tree).await;
         assert!(matches!(failed, Err(HistoryError::Node(_))), "{failed:?}");
     }
-    assert!(reader.read(&tree, 0, 10).await.is_ok());
+    assert!(read(&reader, &tree).await.is_ok());
 }

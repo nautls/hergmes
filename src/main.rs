@@ -46,11 +46,12 @@ async fn run() -> Result<(), AppError> {
         .await
         .map_err(|source| AppError::Listen { addr, source })?;
     let metrics_listener = match config.metrics_addr {
-        Some(addr) => Some(
-            TcpListener::bind(addr)
+        Some(addr) => {
+            let listener = TcpListener::bind(addr)
                 .await
-                .map_err(|source| AppError::Listen { addr, source })?,
-        ),
+                .map_err(|source| AppError::Listen { addr, source })?;
+            Some((addr, listener))
+        }
         None => None,
     };
     let http_client = reqwest::Client::builder()
@@ -105,8 +106,8 @@ async fn run() -> Result<(), AppError> {
     let mut server = tokio::spawn(axum::serve(listener, routes).into_future());
     info!(%addr, max_subscriptions = config.ws.max_subscriptions, "Serving the REST API and the WebSocket");
     // On its own address, off unless set: operators read it, the public does not.
-    let mut metrics_server = metrics_listener.map(|listener| {
-        info!(addr = ?config.metrics_addr, "Serving the metrics");
+    let mut metrics_server = metrics_listener.map(|(addr, listener)| {
+        info!(%addr, "Serving the metrics");
         let routes = metrics::router(engine.clone(), counters);
         tokio::spawn(axum::serve(listener, routes).into_future())
     });

@@ -88,7 +88,7 @@ impl Metrics {
         // The encoder adds a counter's `_total`.
         registry.register(
             "hergmes_rejections",
-            "Requests and subscribes refused, by transport and error code",
+            "Error responses and rejected subscribes, by transport and error code",
             rejections.clone(),
         );
         registry.register(

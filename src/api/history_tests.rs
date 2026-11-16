@@ -1051,6 +1051,57 @@ async fn a_page_behind_a_full_set_of_slow_reads_is_not_ready() {
         answers.push(answer);
         pages = rest;
     }
-    assert_eq!(answers[0], Err(ApiError::NotReady { retry_after: CONFIG.retry }), "{answers:?}");
+    assert_eq!(answers[0], Err(ApiError::NotReady { retry_after: BUSY_RETRY }), "{answers:?}");
     assert!(answers[1..].iter().all(Result::is_ok), "{answers:?}");
+}
+
+/// An engine handle that counts the pending-txs queries it answers.
+struct Counting {
+    engine: Mutex<Engine>,
+    pending: std::sync::atomic::AtomicUsize,
+}
+
+impl EngineHandle for Counting {
+    async fn apply(
+        &self,
+        event: Event,
+    ) -> Result<
+        Result<Vec<crate::engine::Output>, crate::engine::EngineError>,
+        crate::adapters::EngineGone,
+    > {
+        self.engine.apply(event).await
+    }
+
+    async fn query(&self, query: Query) -> Result<Reply, crate::adapters::EngineGone> {
+        if matches!(query, Query::PendingTxs(_)) {
+            self.pending
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+        self.engine.query(query).await
+    }
+}
+
+/// A first page waiting its turn has not read the pending txs yet: read before the wait, they
+/// would be as old as the wait by the time the page arrives.
+#[tokio::test(start_paused = true)]
+async fn a_first_page_reads_the_pending_txs_only_in_its_turn() {
+    use crate::{adapters::history::MAX_READS, sim::testing::poll_once};
+
+    let sim = SimChain::new(Chain::new(SimConfig::default()));
+    let tree = sim.lock().trees()[0].clone();
+    let history = History::new(sim.clone(), CONFIG);
+    let engine = Counting { engine: Mutex::new(Engine::new(ENGINE)), pending: Default::default() };
+    let asked = || engine.pending.load(std::sync::atomic::Ordering::Relaxed);
+    sim.set_latency(Endpoint::AddressTransactions, Duration::from_secs(10));
+
+    let pages = (0..=MAX_READS).map(|_| history.page(&engine, &tree, None, Some(1)));
+    let mut pages: Vec<_> = pages.map(Box::pin).collect();
+    for page in &mut pages {
+        assert!(poll_once(page.as_mut()).is_pending());
+    }
+    assert_eq!(asked(), MAX_READS, "the page waiting its turn has asked nothing");
+    for page in pages {
+        assert!(page.await.is_ok());
+    }
+    assert_eq!(asked(), MAX_READS + 1);
 }

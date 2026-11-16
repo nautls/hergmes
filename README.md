@@ -53,9 +53,10 @@ cargo run
 | `HERGMES_ALLOW_TOKENS`                     | any            | Token ids clients may name, or `none`                                             |
 | `HERGMES_BOX_CACHE_MB`                     | 128            | Memory for full boxes kept to serve pages, in MiB; 0 disables it                  |
 | `HERGMES_MAX_BOXES_PER_KEY`                | 50000          | Most boxes an address or token can have to be tracked                             |
-| `HERGMES_MAX_TRACKED_BOXES`                | 2000000        | Most boxes tracked over all keys (about 110 bytes each)                           |
+| `HERGMES_MAX_TRACKED_BOXES`                | 2000000        | Most boxes tracked over all keys (about 145 bytes each)                           |
 | `HERGMES_LISTEN_ADDR`                      | 127.0.0.1:8080 | IP and port of the REST API and the WebSocket                                     |
 | `HERGMES_MAX_SUBSCRIPTIONS_PER_CONNECTION` | 100            | Most subscriptions one WebSocket connection holds                                 |
+| `HERGMES_METRICS_ADDR`                     |                | IP and port of `/metrics`; unset, no metrics are served                           |
 
 By default (`any`), the relay serves any address and any token within the supply limit. The allow and deny
 lists narrow that, for an instance run for one dapp or one wallet; a refused key is
@@ -86,6 +87,11 @@ characters: that fits nginx's default 8 KB request line and Cloudflare's 16 KB U
 any lower proxy limit above it.
 
 Logging uses `tracing`; set `RUST_LOG` (e.g. `RUST_LOG=hergmes=debug`) to adjust verbosity.
+
+Set `HERGMES_METRICS_ADDR` (e.g. `127.0.0.1:9100`) to serve Prometheus metrics on `GET /metrics`,
+on an address of its own and never on the public one: tracked keys by kind, tracked boxes, the
+ring buffer's and the box cache's sizes, cache hits and misses, resident memory, and refusals and
+resyncs by reason. They are counts only and name no address or token.
 
 ## REST API
 
