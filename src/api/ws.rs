@@ -1,8 +1,8 @@
 //! The WebSocket at `GET /v1/ws`: the upgrade, its limits, and the socket a connection
-//! talks through (DESIGN.md, "Connections").
+//! talks through.
 //!
-//! A connection's work is in [`connection`](super::connection), written against [`Socket`]
-//! rather than axum's WebSocket, so tests drive it over in-memory channels on a paused clock.
+//! A connection's work is in [`connection`], written against [`Socket`] rather than axum's
+//! WebSocket, so tests drive it over in-memory channels on a paused clock.
 
 use std::{future::Future, sync::Arc, time::Duration};
 

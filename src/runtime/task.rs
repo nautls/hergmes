@@ -5,14 +5,12 @@
 //! gets its reply, so every subscriber sees outputs in the order the engine produced them,
 //! and a caller whose `apply` returned knows its outputs were delivered. The caller gets back
 //! only the outputs addressed to it (`LoadRejected`, `CapacityExceeded`). Waiting callers
-//! park on a one-shot reply instead of blocking a worker thread on a lock (DESIGN.md,
-//! "Decided", Runtime).
+//! park on a one-shot reply instead of blocking a worker thread on a lock.
 //!
 //! The task publishes the engine's tip in a `watch`, for every connection, after each event
 //! and before routing the event's outputs, so a connection that sends a changed tip ahead of
-//! anything else never sends a key's output before the tip it came with (DESIGN.md, "Tip
-//! stream"). It is not a key's output: every connection gets it, subscribed or not, and only
-//! the latest matters.
+//! anything else never sends a key's output before the tip it came with. It is not a key's
+//! output: every connection gets it, subscribed or not, and only the latest matters.
 //!
 //! The task also keeps the engine's subscriber counts. It sends `Subscribed` and
 //! `Unsubscribed` itself, once per subscription it registers and ends, so the counts can't

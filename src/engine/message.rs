@@ -118,7 +118,7 @@ pub enum Reply {
     Stats(Stats),
 }
 
-/// The engine's sizes, for the metrics (DESIGN.md, "Metrics").
+/// The engine's sizes, for the metrics.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Stats {
     pub tip: Option<BlockRef>,

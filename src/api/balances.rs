@@ -1,6 +1,5 @@
 //! The balance service: an address's confirmed balance and signed pending delta, and whether
-//! it was ever used (DESIGN.md, "Balances"). Token keys have no balance, so the service takes
-//! an ErgoTree.
+//! it was ever used. Token keys have no balance, so the service takes an ErgoTree.
 //!
 //! A tracked address's balance comes from the engine alone: its running totals and its
 //! overlay's delta, at one tip. An untracked one pairs the indexer's confirmed balance with

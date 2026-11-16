@@ -1,4 +1,4 @@
-//! Layer 3: the page service against `SimChain`. Random histories page through keys while
+//! The page service against `SimChain`. Random histories page through keys while
 //! blocks, reorgs and follower ticks happen between pages, and blocks land between reading a
 //! page's ids and fetching its boxes. Every snapshot is exactly the oracle's boxes at its
 //! `asOf`, with no duplicates or gaps; when it is not served, the reason holds.

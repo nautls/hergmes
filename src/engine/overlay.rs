@@ -199,9 +199,9 @@ impl Assets for BoxAssets {
 }
 
 /// One tx's net change for the address guarded by `tree`, per asset: what its outputs pay to
-/// the tree minus what its inputs take from it, as a history lists it (DESIGN.md,
-/// "Transaction history"). Change returned to the address nets off. `None` if the tx neither
-/// spends from nor pays to the tree; a tx that does both evenly is an empty delta.
+/// the tree minus what its inputs take from it, as a history lists it. Change returned to the
+/// address nets off. `None` if the tx neither spends from nor pays to the tree; a tx that does
+/// both evenly is an empty delta.
 pub fn tx_delta<B: Assets>(tree: &ErgoTree, inputs: &[B], outputs: &[B]) -> Option<PendingDelta> {
     let mut delta = PendingDelta::default();
     let mut touched = false;

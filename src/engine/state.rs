@@ -23,10 +23,10 @@ use crate::{
 /// tracks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Config {
-    /// N: how many blocks of deltas the ring buffer keeps. It bounds replay on reconnect,
+    /// How many blocks of deltas the ring buffer keeps. It bounds replay on reconnect,
     /// rollbacks, and pages pinned to an earlier block.
     pub window: u32,
-    /// G: how many blocks a key with no subscribers is kept after its last activity.
+    /// How many blocks a key with no subscribers is kept after its last activity.
     pub grace: u32,
     /// The most boxes tracked over all keys, a box held by two keys counted twice (each is
     /// an entry of the reverse index). Checked when a key is loaded, never afterwards: a
@@ -52,7 +52,7 @@ struct KeyState {
     /// The key's unspent boxes at the tip.
     boxes: BTreeSet<BoxKey>,
     /// An address's running totals. A token key has none: summed over its holders' boxes, a
-    /// balance means nothing (DESIGN.md, "Balances"), so no block pays for keeping it.
+    /// balance means nothing, so no block pays for keeping it.
     totals: Option<Totals>,
     /// The block the key was loaded at. Ring entries up to it have no share for the key.
     since: BlockRef,
@@ -502,7 +502,7 @@ impl Engine {
         // Only the keys whose overlay the re-decision changed can have a new balance: a
         // pending delta moves only with its overlay, and the loaded key's was just set. A
         // walk of every key here made each load cost as much as there are keys, and a
-        // restart's reload of all of them quadratic (PLAN.md, step 10).
+        // restart's reload of all of them quadratic.
         let changed: Vec<TrackingKey> = outputs.iter().map(|o| o.key().clone()).collect();
         for key in &changed {
             self.push_balance(key, None, &mut outputs);

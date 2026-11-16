@@ -1,5 +1,5 @@
-//! The WebSocket's messages (DESIGN.md, "WebSocket: deltas"): what a client sends, parsed
-//! strictly, and what the relay sends, in the shapes of the REST wire types.
+//! The WebSocket's messages: what a client sends, parsed strictly, and what the relay sends,
+//! in the shapes of the REST wire types.
 //!
 //! Every message the relay sends names its key as the client spelled it, so a client that
 //! subscribed with a P2S encoding of a P2PK tree gets that encoding back.

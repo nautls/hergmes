@@ -2,8 +2,7 @@
 //! sent to the engine as `KeyLoaded`.
 //!
 //! The indexer can't pin a read to a block, so the loader pins it from outside: the node's
-//! tip is read before and after the pages, and the indexer must be at that tip
-//! (DESIGN.md, "How the hybrid works", First load).
+//! tip is read before and after the pages, and the indexer must be at that tip.
 //!
 //! The boxes of a load the engine takes seed the box cache, so the pages that follow (a
 //! snapshot right after a subscribe, the common case) make no node call.

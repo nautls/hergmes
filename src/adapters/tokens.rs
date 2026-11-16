@@ -1,7 +1,7 @@
 //! The token checker: only small-supply tokens can be tracked.
 //!
 //! Each box holding a token holds at least one unit, so a token with `emissionAmount <= 100`
-//! has at most 100 boxes (DESIGN.md, "Tracking keys").
+//! has at most 100 boxes.
 
 use std::{
     collections::HashMap,

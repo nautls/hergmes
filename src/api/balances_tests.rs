@@ -1,4 +1,4 @@
-//! Layer 3b: the balance service against `SimChain`. Random histories read addresses'
+//! The balance service against `SimChain`. Random histories read addresses'
 //! balances, tracked and not, while blocks, reorgs, indexer lag and follower ticks happen
 //! between and during reads. Every balance served is the oracle's at the engine's tip with
 //! the overlay applied; when none is served, the reason holds.
@@ -320,8 +320,8 @@ impl Harness {
         let indexed = self.sim.lock().indexed_tip();
         assert_eq!(indexed.height, balance.height, "paired at another height than the indexer's");
         if indexed != tip {
-            // Accepted (DESIGN.md, "Balances"): the indexer is on another block at the same
-            // height, for up to a poll after a one-block reorg.
+            // Accepted: the indexer is on another block at the same height, for up to a poll
+            // after a one-block reorg.
             self.seen.same_height_fork = true;
             return;
         }

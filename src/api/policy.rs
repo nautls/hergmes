@@ -1,4 +1,4 @@
-//! The operator's key policy: which keys clients may name (DESIGN.md, "Key policy").
+//! The operator's key policy: which keys clients may name.
 //!
 //! It is an admission check at the edge, so the engine never sees a refused key. Addresses
 //! are judged by their ErgoTree, never by the type in the address's header: a P2S address

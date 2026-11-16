@@ -1,4 +1,4 @@
-//! Layer 1: the engine against the oracle over random histories, driven the way the adapters
+//! The engine against the oracle over random histories, driven the way the adapters
 //! and the transport drive it, with simulated clients that apply what they are sent.
 
 use std::collections::{BTreeSet, HashSet};

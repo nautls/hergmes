@@ -16,7 +16,7 @@ pub type ErgoTree = HexBytes;
 pub const GENESIS_PARENT_ID: HeaderId = Digest([0; 32]);
 
 /// A block header: what the relay reads of it, and the node's JSON for it, served to
-/// clients as it came (DESIGN.md, "Headers"), so each is Fleet's `BlockHeader`.
+/// clients as it came, so each is Fleet's `BlockHeader`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BlockHeader {
     pub id: HeaderId,

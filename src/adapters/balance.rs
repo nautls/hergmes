@@ -3,8 +3,8 @@
 //!
 //! The indexer is not pinned to a block, so the height comes from `indexedHeight` read before
 //! and after the balance call. The caller combines the balance with the engine's pending
-//! delta only when that height is the engine's tip height (DESIGN.md, "Balances"). The node's
-//! `unconfirmed` field is never read.
+//! delta only when that height is the engine's tip height. The node's `unconfirmed` field is
+//! never read.
 
 use crate::{
     clients::{NodeError, NodeSource},

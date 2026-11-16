@@ -1,5 +1,4 @@
-//! The history service: an address's txs, newest first, its pending txs on top (DESIGN.md,
-//! "Transaction history").
+//! The history service: an address's txs, newest first, its pending txs on top.
 //!
 //! A thin read over the indexer, which keeps every address's tx list: the engine keeps no
 //! history, a read starts no tracking, and nothing is kept between reads. The engine gives

@@ -1,8 +1,8 @@
 //! The mempool poller: whole-pool snapshots, stamped with the tip they were read at.
 //!
-//! The pool is fetched whole and nothing is kept between reads (DESIGN.md, "How the hybrid
-//! works"): how the node resolves a tx's inputs is its verdict at one moment, so a tx cached
-//! from an earlier read could carry inputs a block has since spent.
+//! The pool is fetched whole and nothing is kept between reads: how the node resolves a tx's
+//! inputs is its verdict at one moment, so a tx cached from an earlier read could carry inputs
+//! a block has since spent.
 
 use std::{sync::Arc, time::Duration};
 

@@ -2,7 +2,7 @@
 //!
 //! Errors are `{ "error": "<code>", "message": "..." }`, and every 503 carries `Retry-After`.
 //! Any origin may read the responses. They are not compressed: that is the reverse proxy's
-//! job, like TLS (DESIGN.md, "Serving").
+//! job, like TLS.
 
 use std::{sync::Arc, time::Duration};
 
@@ -227,7 +227,7 @@ async fn status<S: NodeSource, E: EngineHandle>(
 }
 
 impl ApiError {
-    /// The HTTP status of the code (DESIGN.md, "Errors").
+    /// The HTTP status of the code.
     pub fn status(&self) -> StatusCode {
         match self {
             Self::InvalidAddress(_)

@@ -5,10 +5,10 @@
 //! (height and header id), the last box returned (inclusion height and box id), and an 8-byte
 //! fingerprint of the key. Integers are big-endian.
 //!
-//! A history page's cursor ([`TxCursor`]) is anchored on a tx instead (DESIGN.md, "Paging by
-//! anchor"): 49 bytes, so 66 characters. A version byte, the fingerprint, the anchor's tx id,
-//! its position from the oldest end and the list's length when it was read. Its length differs
-//! from a box cursor's, so a cursor sent to the other route is `invalid_cursor`.
+//! A history page's cursor ([`TxCursor`]) is anchored on a tx instead: 49 bytes, so 66
+//! characters. A version byte, the fingerprint, the anchor's tx id, its position from the
+//! oldest end and the list's length when it was read. Its length differs from a box cursor's,
+//! so a cursor sent to the other route is `invalid_cursor`.
 //!
 //! The fingerprint turns a cursor sent to another key into `invalid_cursor`. Without it the
 //! pin would be valid and paging would resume after the other key's last box, so the client

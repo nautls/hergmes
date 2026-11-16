@@ -21,8 +21,8 @@ use crate::types::ergo::{BoxId, Token, UTxO};
 /// the weight's other terms can't see, which is moka's bookkeeping for the entry (hash table
 /// slot, entry info, access-order node) and the allocator's rounding of the box's
 /// allocations. That last part is measured, not derived: with 128 here, a cache of the
-/// smallest boxes took 205 bytes per entry more than its weight (PLAN.md, step 10;
-/// `examples/membench.rs`), so it is 128 + 205. Run the benchmark again after a moka upgrade.
+/// smallest boxes took 205 bytes per entry more than its weight (`examples/membench.rs`), so
+/// it is 128 + 205. Run the benchmark again after a moka upgrade.
 const ENTRY: usize = 2 * size_of::<usize>() + size_of::<BoxId>() + 333;
 
 /// Full boxes by id, shared by the loader and the box fetcher. Cloning shares the cache.
@@ -149,7 +149,7 @@ impl BoxCache {
 }
 
 /// A box's estimated size in memory, in bytes: the `UTxO` itself, the bytes of its tree,
-/// registers and tokens, and [`ENTRY`]. Lengths, not capacities, so the weight depends only
+/// registers and tokens, and `ENTRY`. Lengths, not capacities, so the weight depends only
 /// on what the box holds. A box shared with the ring buffer is counted in full: the budget
 /// bounds the cache's own share.
 pub fn weight(b: &UTxO) -> u32 {

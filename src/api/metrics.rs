@@ -1,5 +1,4 @@
-//! The metrics an operator reads, as OpenMetrics text on `GET /metrics` (DESIGN.md,
-//! "Metrics").
+//! The metrics an operator reads, as OpenMetrics text on `GET /metrics`.
 //!
 //! Aggregates only. No series names a key: which addresses are watched is private to the
 //! clients watching them, so every label value comes from a fixed set (an error code, a
@@ -38,7 +37,7 @@ const OPENMETRICS: &str = "application/openmetrics-text; version=1.0.0; charset=
 
 /// Which side refused a request. A WebSocket subscribe loads a key only when it is
 /// balance-only, so `too_many_boxes` under `ws` counts the balance subscriptions to
-/// addresses over the per-key cap, apart from REST's (PLAN.md, step 10).
+/// addresses over the per-key cap, apart from REST's.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Transport {
     Rest,

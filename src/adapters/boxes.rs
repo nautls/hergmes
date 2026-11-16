@@ -1,5 +1,5 @@
 //! The box fetcher: full boxes for the ids the engine keeps, from the cheapest source that
-//! has them (DESIGN.md, "Fetching full boxes").
+//! has them.
 
 use std::{collections::HashMap, sync::Arc};
 

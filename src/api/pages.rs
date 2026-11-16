@@ -1,6 +1,5 @@
-//! The page service: a page of a key's unspent boxes, pinned to the first page's block
-//! (DESIGN.md, "REST: confirmed snapshot"), and a key's boxes with its overlay applied at
-//! the tip, in one response (DESIGN.md, "Boxes with the pool").
+//! The page service: a page of a key's unspent boxes, pinned to the first page's block, and
+//! a key's boxes with its overlay applied at the tip, in one response.
 //!
 //! The ids come from the engine, so every page of a snapshot is as of one block whatever
 //! happens between requests; the boxes come from the box fetcher. A key that is not tracked

@@ -1,5 +1,5 @@
 //! One WebSocket connection: it reads the client's messages, runs its subscribes, and
-//! forwards its subscriptions' outputs (DESIGN.md, "Connections").
+//! forwards its subscriptions' outputs.
 //!
 //! Forwarding never waits on a subscribe: a connection that stopped forwarding during a load
 //! would let its other sinks fill, and the engine task would end them as slow consumers. So
@@ -11,7 +11,7 @@
 //! only order the protocol promises.
 //!
 //! Every connection also follows the engine's tip, subscribed or not, and sends `tip` when it
-//! opens and whenever the tip changes (DESIGN.md, "Tip stream").
+//! opens and whenever the tip changes.
 
 use std::{collections::HashMap, sync::Arc};
 

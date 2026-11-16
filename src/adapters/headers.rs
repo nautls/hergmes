@@ -1,4 +1,4 @@
-//! The last headers up to a tip, for clients' signing context (DESIGN.md, "Headers").
+//! The last headers up to a tip, for clients' signing context.
 //!
 //! Headers are cached by id. A header never changes under its id, so the cache is never
 //! stale, and an orphan left in it is never reached: a walk starts at the relay's own tip and

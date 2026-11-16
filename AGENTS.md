@@ -4,17 +4,6 @@ hergmes is a realtime, mempool-aware relay for the Ergo blockchain. It sits in f
 Ergo node and streams box, balance and mempool changes for tracked addresses and small-supply
 tokens. See `README.md` for the overview.
 
-## Documents
-
-- `DESIGN.md` is the spec: protocol, engine semantics, edge cases and the testing layers.
-- `PLAN.md` is the build order: numbered steps, each with a **Done when** and notes on what was
-  actually done.
-- Both are gitignored local files. Read the sections that cover the code you are touching before
-  changing it.
-- When a decision changes or a finding contradicts the docs, update `DESIGN.md`, and record what
-  was done and why in that step's notes in `PLAN.md`. Write in the same style: short declarative
-  sentences that give the reason.
-
 ## Commands
 
 ```sh
@@ -30,8 +19,9 @@ CI runs the first three. All of them must pass before a change is done.
 ## Workflow
 
 - Never commit, and never offer to. Leave changes in the working tree; the user commits.
-- Every plan step leaves `main` runnable.
-- A step is done when its **Done when** holds, not when the code compiles.
+- Every change leaves `master` runnable.
+- A change is done when it does what it was for and the commands above pass, not when the code
+  compiles.
 
 ## Node behaviour
 
@@ -39,8 +29,8 @@ CI runs the first three. All of them must pass before a change is done.
   Check behaviour in `ergoplatform/ergo` at the commit of the node the fixtures were recorded
   from (`appVersion` in `tests/fixtures/info.json`; 6.0.8 is `c1a69f65`). Clone it into a
   scratch directory, since there is no local checkout.
-- Cite the file and function you relied on in `DESIGN.md` and in code comments, so the check can
-  be repeated after a node upgrade.
+- Cite the file and function you relied on in code comments, so the check can be repeated after
+  a node upgrade.
 - Build serde types from the recorded fixtures, not from the spec.
 
 ## Architecture
@@ -93,9 +83,8 @@ Memory, CPU and node calls are budgets, not afterthoughts.
   with the `sim` feature for integration tests). The oracle recomputes state from scratch and is
   meant to be slow and obviously correct.
 - Write the properties first, then the code.
-- Check that a property can fail: plant bugs one at a time and confirm a test catches each, then
-  record the list in the step's notes in `PLAN.md`. Cases the simulator can't reach get a
-  hand-driven test.
+- Check that a property can fail: plant bugs one at a time and confirm a test catches each.
+  Cases the simulator can't reach get a hand-driven test.
 - Node client tests run against `tests/fixtures/` served with `wiremock`. A new endpoint needs a
   recorded fixture.
 - Keep the `proptest-regressions/` files: they are tracked, and replay past failures.

@@ -33,7 +33,7 @@ use crate::{
     },
 };
 
-/// Every error, with its status and the `Retry-After` it must carry (DESIGN.md, "Errors").
+/// Every error, with its status and the `Retry-After` it must carry.
 fn every_error() -> Vec<(ApiError, StatusCode, Option<&'static str>)> {
     use StatusCode as S;
     vec![
@@ -583,7 +583,7 @@ async fn unknown_routes_and_methods_are_plain_http_errors() {
     let f = Fixture::new();
     assert_eq!(f.get("/v1/nothing").await.status(), StatusCode::NOT_FOUND);
     assert_eq!(f.get("/v1/status/").await.status(), StatusCode::NOT_FOUND, "no trailing slash");
-    assert_eq!(f.get("/v1/ws").await.status(), StatusCode::NOT_FOUND, "step 9");
+    assert_eq!(f.get("/v1/ws").await.status(), StatusCode::NOT_FOUND, "its own router");
     assert_eq!(f.get("/metrics").await.status(), StatusCode::NOT_FOUND, "never on the public port");
     let post = Request::post("/v1/status").body(Body::empty()).unwrap();
     assert_eq!(f.send(post).await.status(), StatusCode::METHOD_NOT_ALLOWED);

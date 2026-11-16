@@ -1,5 +1,5 @@
-//! The memory benchmark (DESIGN.md, "Memory benchmark"): two runs, each checking one
-//! estimate against the process's resident memory.
+//! The memory benchmark: two runs, each checking one estimate against the process's resident
+//! memory.
 //!
 //! ```sh
 //! cargo run --release --example membench -- engine <keys> <boxes-per-key>
@@ -7,9 +7,9 @@
 //! ```
 //!
 //! `engine` loads synthetic address keys straight into an [`Engine`], with no adapters and
-//! no cache, and reports the growth per tracked box: the id state DESIGN.md puts at about
-//! 135 bytes, and 600 a key. `cache` fills a [`BoxCache`] with small boxes and reports the growth against
-//! the cache's own weighted size, which is what the budget bounds.
+//! no cache, and reports the growth per tracked box: the id state, last measured at about 135
+//! bytes, and 600 a key. `cache` fills a [`BoxCache`] with small boxes and reports the growth
+//! against the cache's own weighted size, which is what the budget bounds.
 //!
 //! `engine` also prints what a load and a scrape's `Query::Stats` take on average, in
 //! microseconds: both must stay flat, or nearly, as the keys grow.

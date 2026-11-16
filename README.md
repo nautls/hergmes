@@ -5,12 +5,12 @@ A realtime, mempool-aware relay for the [Ergo](https://ergoplatform.org) blockch
 hergmes sits in front of an indexed Ergo node and lets clients track the boxes of **addresses**
 and **small-supply tokens** (NFTs and tokens with an emission of at most 100). A client gets a
 key's confirmed boxes and an address's balance, then receives live updates: new boxes, spent
-boxes, pending mempool activity, balance changes and reorgs. Pending activity shows in the balance as a signed
-change on top of the confirmed amount ("10 ERG incoming", "10 ERG leaving").
+boxes, pending mempool activity, balance changes and reorgs. Pending activity shows in the
+balance as a signed change on top of the confirmed amount ("10 ERG incoming", "10 ERG leaving").
 
-> **Status:** early development. The relay follows the node, tracks the keys named in its
-> configuration, and serves the REST API and the WebSocket stream. The client SDK is not
-> built yet.
+> **Status:** early development. The relay follows the node, tracks the keys clients ask for
+> and the ones named in its configuration, and serves the REST API and the WebSocket stream.
+> The client SDK is not built yet.
 
 ## How it works
 
@@ -27,8 +27,8 @@ reorg is either rolled back to the fork point or told to resync, never left sile
 
 - An Ergo node with the **extra indexer** enabled (`extraIndex = true`, for the `/blockchain/*`
   endpoints) and a UTXO state (`stateType = "utxo"`, the default): in digest mode the node
-  resolves no mempool inputs and serves no `/utxo/withPool` boxes
-- **Optional:** Node.js 23.6+, if you want to re-record test fixtures
+  resolves no mempool inputs and serves no `/utxo/withPool` boxes.
+- **Optional:** Node.js 23.6+, to re-record the test fixtures.
 
 ## Getting started
 
@@ -58,11 +58,11 @@ cargo run
 | `HERGMES_MAX_SUBSCRIPTIONS_PER_CONNECTION` | 100            | Most subscriptions one WebSocket connection holds                                 |
 | `HERGMES_METRICS_ADDR`                     |                | IP and port of `/metrics`; unset, no metrics are served                           |
 
-By default (`any`), the relay serves any address and any token within the supply limit. The allow and deny
-lists narrow that, for an instance run for one dapp or one wallet; a refused key is
-`403 key_not_allowed`, on every route. Keys in `HERGMES_TRACK_*` are always allowed. Denying one,
-or denying an address the allow list names, stops the relay at startup. The startup log shows the
-policy in force, so a misspelled variable shows up as `any`. For example:
+By default (`any`), the relay serves any address and any token within the supply limit. The
+allow and deny lists narrow that, for an instance run for one dapp or one wallet; a refused key
+is `403 key_not_allowed`, on every route. Keys in `HERGMES_TRACK_*` are always allowed. Denying
+one, or denying an address the allow list names, stops the relay at startup. The startup log
+shows the policy in force, so a misspelled variable shows up as `any`. For example:
 
 ```sh
 # a dapp: its own contracts and tokens, with a higher supply limit
@@ -82,9 +82,9 @@ The API listens on loopback by default, so a fresh install is not exposed until 
 it behind a reverse proxy for TLS and rate limiting, or set `HERGMES_LISTEN_ADDR=0.0.0.0:8080` in
 a container. The relay does not compress responses: Cloudflare does it on its own, and behind
 nginx or Caddy turn it on there (`gzip on; gzip_types application/json;`, or `encode gzip`); a
-500-box page shrinks about five times. Addresses travel in the URL path, and the longest P2S address is about 5,600
-characters: that fits nginx's default 8 KB request line and Cloudflare's 16 KB URL limit, so keep
-any lower proxy limit above it.
+500-box page shrinks about five times. Addresses travel in the URL path, and the longest P2S
+address is about 5,600 characters: that fits nginx's default 8 KB request line and Cloudflare's
+16 KB URL limit, so keep any lower proxy limit above it.
 
 Logging uses `tracing`; set `RUST_LOG` (e.g. `RUST_LOG=hergmes=debug`) to adjust verbosity.
 
@@ -163,17 +163,20 @@ refused; after a replace or an unsubscribe, a key's messages before the next `su
 the old subscription. A subscribe's answer (`subscribed`, `rejected` or `resync_required`) carries
 its `id`, an integer the client picks: an older subscribe's answer can arrive after the client sent
 a newer message for the key, so a client drops the key's messages until the answer with its latest
-`id` (or, sending no ids, waits for a key's answer before its next message). A refused subscribe gets `rejected`, with REST's error codes, `retryAfter` (seconds)
-where REST would send `Retry-After`, and two codes of its own: `too_many_subscriptions` and
-`from_required` (a token has no balance). `resync_required` means: take a new snapshot, or for a
-balance-only subscription, subscribe again.
+`id` (or, sending no ids, waits for a key's answer before its next message).
+
+A refused subscribe gets `rejected`, with REST's error codes, `retryAfter` (seconds) where REST
+would send `Retry-After`, and two codes of its own: `too_many_subscriptions` and `from_required`
+(a token has no balance). `resync_required` means: take a new snapshot, or for a balance-only
+subscription, subscribe again.
 
 The server pings every 30 s, so proxies' idle timeouts never close a quiet subscription, and
-closes a connection that leaves two pings unanswered (close code 1008, `pings unanswered`). A client that falls behind gets `resync_required`
-(`slow_consumer`) and is disconnected; one that sends malformed JSON is disconnected with close
-code 1008 and the reason. Messages from clients are limited to 16 KiB; a larger one closes the
-connection with 1009. The subscription cap counts a subscribe the client replaced or unsubscribed
-until it finishes, since it may still be loading the key.
+closes a connection that leaves two pings unanswered (close code 1008, `pings unanswered`). A
+client that falls behind gets `resync_required` (`slow_consumer`) and is disconnected; one that
+sends malformed JSON is disconnected with close code 1008 and the reason. Messages from clients
+are limited to 16 KiB; a larger one closes the connection with 1009. The subscription cap counts
+a subscribe the client replaced or unsubscribed until it finishes, since it may still be loading
+the key.
 
 ## Development
 
@@ -193,16 +196,28 @@ cargo test
 
     See the header of `scripts/record-fixtures.ts` for all options.
 
+- The smoke tests check the relay against a real indexed node. They are ignored by default:
+
+    ```sh
+    ERGO_NODE_URL=http://127.0.0.1:9053 cargo test --test smoke -- --ignored
+    ```
+
+- `examples/membench.rs` measures the memory a tracked box and a cached box take; its header
+  has the commands.
+
 ## Project layout
 
 | Path              | Contents                                                  |
 | ----------------- | --------------------------------------------------------- |
 | `src/clients/`    | Ergo node HTTP client and the `NodeSource` trait          |
-| `src/types/`      | Wire types and the address codec                          |
+| `src/types/`      | Node types and the address codec                          |
 | `src/engine/`     | The engine: a pure state machine with no I/O and no clock |
 | `src/adapters/`   | Node I/O feeding the engine                               |
 | `src/runtime/`    | The engine task, output routing, configured keys          |
 | `src/config.rs`   | Configuration from environment variables                  |
-| `src/api/`        | REST routes and their services, and the WebSocket         |
-| `src/sim/`        | Simulated chain for tests (`sim` feature)                 |
+| `src/api/`        | REST routes and their services, the WebSocket, metrics    |
+| `src/sim/`        | Simulated chain and oracle for tests (`sim` feature)      |
+| `tests/smoke.rs`  | Smoke tests against a real node                           |
 | `tests/fixtures/` | Recorded node responses                                   |
+| `scripts/`        | The fixture recorder                                      |
+| `examples/`       | The memory benchmark                                      |

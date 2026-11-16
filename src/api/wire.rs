@@ -1,5 +1,4 @@
-//! What the relay sends, as JSON (DESIGN.md, "REST: confirmed snapshot", "Boxes with the
-//! pool", "Balances", "Transaction history" and "Headers").
+//! What the relay sends, as JSON.
 //!
 //! These types borrow what the services return and serialize it in the client's shape. They
 //! are separate from the node-facing types, whose derived `Serialize` writes amounts as

@@ -18,9 +18,9 @@ use crate::{
 /// The wait for one page of an address's history, above the client's 30 s. The node sends
 /// every box of every tx in full, and one airdrop tx to thousands of addresses is in each
 /// recipient's history: 25 txs of a P2PK wallet were 22,574 boxes and 23 MB, which the node
-/// took 10 to 16 s to send (DESIGN.md, "Open decisions"). Under nginx's default
-/// `proxy_read_timeout` (60 s) and Cloudflare's 100 s, so a slow page still reaches the client
-/// as the relay's own error rather than the proxy's.
+/// took 10 to 16 s to send. Under nginx's default `proxy_read_timeout` (60 s) and Cloudflare's
+/// 100 s, so a slow page still reaches the client as the relay's own error rather than the
+/// proxy's.
 pub const HISTORY_TIMEOUT: Duration = Duration::from_secs(55);
 
 #[derive(Debug, thiserror::Error)]

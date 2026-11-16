@@ -1,7 +1,7 @@
-//! Layer 2: the mempool overlay properties, over random `SimChain`
-//! histories with the oracle as reference, plus the engine's emission rules.
+//! The mempool overlay properties, over random `SimChain` histories with the oracle as
+//! reference, plus the engine's emission rules.
 //!
-//! Partial confirmation and reorg returns need block handling, so they come with step 5.
+//! Partial confirmation and reorg returns need block handling, so they are in `state_tests`.
 
 use std::collections::{HashMap, HashSet};
 
@@ -46,7 +46,7 @@ fn ids(txs: &[UnconfirmedTransaction], order: &[usize]) -> Vec<TxId> {
 }
 
 /// Every pending spend refers to a confirmed box or to one created by an earlier tx of the
-/// same overlay (handshake step 4).
+/// same overlay.
 fn assert_spends_known_boxes(overlay: &[PendingTx], confirmed: &HashSet<BoxId>) {
     let mut created: HashSet<BoxId> = HashSet::new();
     for tx in overlay {

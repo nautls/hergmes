@@ -1,4 +1,4 @@
-//! Layer 3d: the history service against `SimChain`. Random histories scroll addresses'
+//! The history service against `SimChain`. Random histories scroll addresses'
 //! histories while blocks, reorgs, indexer lag and follower ticks happen between page reads,
 //! and bursts of new txs land during them. Each page continues the indexer's list exactly
 //! below the last tx served, a first page lists no tx twice, and every refusal has its cause.

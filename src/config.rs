@@ -25,9 +25,9 @@ use crate::{
 pub mod vars {
     /// URL of an indexed Ergo node. Required.
     pub const NODE_URL: &str = "ERGO_NODE_URL";
-    /// N, in blocks.
+    /// Blocks of deltas kept for replays, rollbacks and pinned pages.
     pub const WINDOW_BLOCKS: &str = "HERGMES_WINDOW_BLOCKS";
-    /// G, in blocks.
+    /// Blocks a key with no subscribers stays tracked.
     pub const GRACE_BLOCKS: &str = "HERGMES_GRACE_BLOCKS";
     /// How often `/info` is read, in milliseconds.
     pub const POLL_INTERVAL_MS: &str = "HERGMES_POLL_INTERVAL_MS";
@@ -67,7 +67,7 @@ pub mod vars {
 pub const LISTEN_ADDR: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 8080);
 
 /// The box cache's default budget: about 28k of the largest boxes (4 KB) to 195k of the
-/// smallest, and about 185k of mainnet's usual ones (PLAN.md, step 10).
+/// smallest, and about 185k of mainnet's usual ones.
 pub const BOX_CACHE_MB: u64 = 128;
 
 #[derive(Debug, Clone, PartialEq, Eq)]

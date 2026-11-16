@@ -2,7 +2,7 @@
 //! list's length.
 //!
 //! Only the read. Where to read, and what a read that moved means, is the history service's
-//! (DESIGN.md, "Paging by anchor"), as pairing a balance's halves is the balance service's.
+//! ([`crate::api::history`]), as pairing a balance's halves is the balance service's.
 
 use std::time::Duration;
 
@@ -18,10 +18,9 @@ use crate::{
 };
 
 /// History reads in flight at once. Each takes the node's whole answer, every box of every
-/// tx in full and up to 23 MB (DESIGN.md, "Open decisions"), before it is cut down to the
+/// tx in full and up to 23 MB (see [`HISTORY_TIMEOUT`]), before it is cut down to the
 /// address's own amounts, so reads without a limit are memory without one, here and in the
-/// node. A constant until node 6.0.9, whose answers hold only the address's boxes (PLAN.md,
-/// "Later").
+/// node. A constant until node 6.0.9, whose answers hold only the address's boxes.
 pub const MAX_READS: usize = 4;
 
 #[derive(Debug, thiserror::Error)]

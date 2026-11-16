@@ -1,5 +1,4 @@
-//! Layer 7: smoke tests against a real indexed node (DESIGN.md, "Layer 7"). Ignored by
-//! default; run them with
+//! Smoke tests against a real indexed node. Ignored by default; run them with
 //!
 //! ```sh
 //! ERGO_NODE_URL=http://127.0.0.1:9053 cargo test --test smoke -- --ignored

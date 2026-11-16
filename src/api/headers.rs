@@ -1,5 +1,5 @@
 //! The header service: the last headers up to the engine's tip, newest first, for a
-//! wallet's signing context (DESIGN.md, "Headers").
+//! wallet's signing context.
 
 use crate::{
     adapters::{

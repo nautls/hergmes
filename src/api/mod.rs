@@ -4,10 +4,11 @@
 //! key's box ids from the engine, loading the key first if it is not tracked, and fills in
 //! full boxes, for pages pinned to a block and for the view with the pool (the overlay
 //! applied); the balance service answers an address's balance, from the engine if it is
-//! tracked and from the indexer and the engine's mempool snapshot if not; the header service
-//! walks back from the engine's tip. The HTTP layer
-//! (`http`) parses, calls them and serializes through the wire types (`wire`). The WebSocket
-//! (`ws`) runs a task per connection (`connection`), speaking the messages in `protocol`.
+//! tracked and from the indexer and the engine's mempool snapshot if not; the history service
+//! reads an address's txs from the indexer; the header service walks back from the engine's
+//! tip. The HTTP layer (`http`) parses, calls them and serializes through the wire types
+//! (`wire`). The WebSocket (`ws`) runs a task per connection (`connection`), speaking the
+//! messages in `protocol`.
 
 use std::time::Duration;
 
@@ -39,8 +40,8 @@ pub use metrics::Metrics;
 pub use pages::{BoxPage, Pages, WithPoolBoxes};
 pub use policy::KeyPolicy;
 
-/// Why a request failed, one variant per error code (DESIGN.md, "Errors"). The code is for
-/// programs, the message for people.
+/// Why a request failed, one variant per error code. The code is for programs, the message
+/// for people.
 ///
 /// Node and load failures are flattened to what a client needs, the code and a wait: a
 /// coalesced load hands its error to every waiting request as a shared `Arc<LoadError>`,
