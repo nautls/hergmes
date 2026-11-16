@@ -21,7 +21,10 @@ use crate::{
         loader::{self, Loader},
     },
     engine::{Balance, BlockRef, Config as EngineConfig, Engine, EngineError, Event, Output},
-    sim::{self, Chain, Endpoint, SimChain, SimConfig, SimOp, strategy, testing::reference_delta},
+    sim::{
+        self, Chain, Endpoint, SimChain, SimConfig, SimOp, strategy,
+        testing::{reference_delta, unused_tree},
+    },
     types::ergo::{BoxId, TokenBalance, UTxO},
 };
 
@@ -127,6 +130,9 @@ struct Seen {
     not_ready_indexer_ahead: bool,
     same_height_fork: bool,
     both_paths: bool,
+    used_by_count: bool,
+    unused: bool,
+    used_without_count: bool,
 }
 
 /// What the node and the engine looked like just before a read.
@@ -134,6 +140,7 @@ struct Before {
     engine_tip: Option<BlockRef>,
     indexed_height: u32,
     recovering: bool,
+    box_counts: usize,
 }
 
 struct Harness {
@@ -182,8 +189,11 @@ impl Harness {
         }
     }
 
+    /// One of the sim's trees, or one no box was ever sent to.
     fn key(&self, index: &Index) -> ErgoTree {
-        index.get(self.sim.lock().trees()).clone()
+        let mut trees = self.sim.lock().trees().to_vec();
+        trees.push(unused_tree());
+        index.get(&trees).clone()
     }
 
     async fn tick(&mut self) {
@@ -204,12 +214,22 @@ impl Harness {
         true
     }
 
+    fn box_counts(&self) -> usize {
+        self.sim
+            .calls()
+            .iter()
+            .filter(|e| **e == Endpoint::BoxCount)
+            .count()
+    }
+
     fn before(&self) -> Before {
+        let box_counts = self.box_counts();
         let chain = self.sim.lock();
         Before {
             engine_tip: self.engine.tip(),
             indexed_height: chain.indexed_height().indexed_height,
             recovering: chain.is_recovering(),
+            box_counts,
         }
     }
 
@@ -266,7 +286,9 @@ impl Harness {
     }
 
     /// A balance served is the oracle's at the engine's tip, with the overlay of the
-    /// snapshot the engine holds; a tracked one is also the last one streamed.
+    /// snapshot the engine holds; a tracked one is also the last one streamed. It is used
+    /// when it is not zero, a pending tx touches it, or a box was sent to it on the
+    /// indexer's branch, and only a zero balance asks the indexer.
     fn check(
         &mut self,
         key: &TrackingKey,
@@ -276,8 +298,9 @@ impl Harness {
     ) {
         let tip = self.engine.tip().expect("a balance needs a tip");
         assert_eq!(balance.height, tip.height, "a balance as of another height than the tip");
-        let (confirmed, pending) = self.expected(key, tip);
+        let (confirmed, pending, in_pool) = self.expected(key, tip);
         assert_eq!(balance.pending, pending, "{key:?}'s pending at {tip:?}");
+        self.check_used(key, before, balance, in_pool);
         if tracked {
             assert_eq!(balance.confirmed, confirmed, "{key:?}'s running totals at {tip:?}");
             self.seen.tracked = true;
@@ -308,9 +331,41 @@ impl Harness {
         self.seen.waited_for_engine |= before.engine_tip.is_some_and(|t| t.height < tip.height);
     }
 
-    /// The key's totals at `tip` and its pending delta over the engine's snapshot, from the
-    /// oracle.
-    fn expected(&self, key: &TrackingKey, tip: BlockRef) -> (Totals, PendingDelta) {
+    /// `used`, against the indexer's branch as it is now: nothing ran since the read's last
+    /// node call.
+    fn check_used(
+        &mut self,
+        key: &TrackingKey,
+        before: &Before,
+        balance: &AddressBalance,
+        in_pool: bool,
+    ) {
+        let received = {
+            let chain = self.sim.lock();
+            chain
+                .branch(&chain.indexed_tip().header_id)
+                .iter()
+                .flat_map(|block| &block.txs)
+                .flat_map(|tx| &tx.outputs)
+                .any(|b| key.matches(b))
+        };
+        let box_counts = self.box_counts() - before.box_counts;
+        let zero =
+            balance.confirmed == Totals::default() && balance.pending == PendingDelta::default();
+        assert_eq!(balance.used, !zero || in_pool || received, "{key:?}'s used");
+        if zero {
+            assert_eq!(box_counts, usize::from(!in_pool), "a count only if no pending tx");
+            self.seen.used_by_count |= balance.used && !in_pool;
+            self.seen.unused |= !balance.used;
+        } else {
+            assert_eq!(box_counts, 0, "a balance not zero is used with no count");
+            self.seen.used_without_count = true;
+        }
+    }
+
+    /// The key's totals at `tip`, its pending delta over the engine's snapshot, and whether
+    /// a tx of that snapshot touches it, from the oracle.
+    fn expected(&self, key: &TrackingKey, tip: BlockRef) -> (Totals, PendingDelta, bool) {
         let utxo = self.sim.lock().oracle_at(&tip.header_id).utxo(tip.height);
         let ids: HashSet<BoxId> = utxo.values().map(|b| b.id).collect();
         let held: Vec<&UTxO> = utxo
@@ -329,7 +384,8 @@ impl Harness {
             Some((txs, _)) => sim::overlay(&ids, &txs, key),
             None => Vec::new(),
         };
-        (sim::totals(held.iter().copied()), reference_delta(&held, &overlay))
+        let in_pool = !overlay.is_empty();
+        (sim::totals(held.iter().copied()), reference_delta(&held, &overlay), in_pool)
     }
 
     async fn both_paths(&mut self, tree: &ErgoTree) {
@@ -400,6 +456,9 @@ fn random_histories_reach_the_hard_balance_cases() {
         all.not_ready_indexer_ahead |= seen.not_ready_indexer_ahead;
         all.same_height_fork |= seen.same_height_fork;
         all.both_paths |= seen.both_paths;
+        all.used_by_count |= seen.used_by_count;
+        all.unused |= seen.unused;
+        all.used_without_count |= seen.used_without_count;
     }
     let Seen {
         tracked,
@@ -411,6 +470,9 @@ fn random_histories_reach_the_hard_balance_cases() {
         not_ready_indexer_ahead,
         same_height_fork,
         both_paths,
+        used_by_count,
+        unused,
+        used_without_count,
     } = all;
     for (name, reached) in [
         ("a tracked read", tracked),
@@ -422,6 +484,9 @@ fn random_histories_reach_the_hard_balance_cases() {
         ("not ready while the indexer is ahead", not_ready_indexer_ahead),
         ("the indexer on another block at the same height", same_height_fork),
         ("both paths at one height", both_paths),
+        ("a zero balance used by the indexer's count", used_by_count),
+        ("an unused address", unused),
+        ("a used balance with no count", used_without_count),
     ] {
         assert!(reached, "random histories never reached {name}");
     }
@@ -452,12 +517,52 @@ impl Fixture {
         };
         let f = Self { balances: Balances::new(sim.clone(), CONFIG), sim, engine, tx };
         f.apply_tip();
+        f.apply_mempool();
+        f
+    }
+
+    /// Gives the engine the node's mempool.
+    fn apply_mempool(&self) {
         let (txs, observed_tip) = {
-            let chain = f.sim.lock();
+            let chain = self.sim.lock();
             (chain.mempool().into(), chain.tip())
         };
-        f.apply(Event::MempoolSnapshot { txs, observed_tip });
-        f
+        self.apply(Event::MempoolSnapshot { txs, observed_tip });
+    }
+
+    /// Submits a tx sending `inputs` to `to`, and gives the engine the new mempool.
+    fn submit(&self, inputs: &[BoxId], to: &ErgoTree) -> Arc<sim::SimTx> {
+        let tx = {
+            let mut chain = self.sim.lock();
+            let tx = chain.transfer(inputs, to);
+            chain.submit(tx.clone());
+            tx
+        };
+        self.apply_mempool();
+        tx
+    }
+
+    /// Mines a block sending all of tree `index`'s boxes to tree 0, and applies it to the
+    /// engine: the tree is used and holds nothing.
+    fn empty_tree(&self, index: usize) {
+        let tree = self.tree(index);
+        {
+            let mut chain = self.sim.lock();
+            let ids: Vec<BoxId> = chain
+                .utxo()
+                .values()
+                .filter(|b| b.ergo_tree == tree)
+                .map(|b| b.id)
+                .collect();
+            let to = chain.trees()[0].clone();
+            let tx = chain.transfer(&ids, &to);
+            chain.mine_txs(vec![tx]);
+        }
+        self.apply_tip();
+    }
+
+    fn count_calls(&self, endpoint: Endpoint) -> usize {
+        self.sim.calls().iter().filter(|e| **e == endpoint).count()
     }
 
     fn tree(&self, index: usize) -> ErgoTree {
@@ -489,14 +594,11 @@ impl Fixture {
     }
 
     fn balance_calls(&self) -> usize {
-        self.sim
-            .calls()
-            .iter()
-            .filter(|e| **e == Endpoint::ConfirmedBalance)
-            .count()
+        self.count_calls(Endpoint::ConfirmedBalance)
     }
 
     /// Tree `index`'s expected balance at the node's tip, with the tx pending until mined.
+    /// Every sim tree was paid at genesis, so it is used.
     fn expected(&self, index: usize) -> AddressBalance {
         let key = TrackingKey::Tree(self.tree(index));
         let chain = self.sim.lock();
@@ -514,6 +616,7 @@ impl Fixture {
             height,
             confirmed: sim::totals(held.iter().copied()),
             pending: reference_delta(&held, &overlay),
+            used: true,
         }
     }
 }
@@ -534,7 +637,7 @@ async fn an_untracked_address_pairs_the_indexer_with_the_engine_and_stays_untrac
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_tracked_address_is_answered_by_the_engine_alone() {
+async fn a_tracked_address_not_zero_is_answered_by_the_engine_alone() {
     let f = Fixture::new();
     let key = TrackingKey::Tree(f.tree(1));
     let (as_of, boxes) = {
@@ -549,6 +652,65 @@ async fn a_tracked_address_is_answered_by_the_engine_alone() {
     assert_eq!(balance, f.expected(1));
     assert!(balance.pending.nano_ergs > 0, "the pending tx sends a box in");
     assert_eq!(f.sim.calls().len(), calls, "no node call");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_fresh_address_is_unused() {
+    let f = Fixture::new();
+    let balance = f.balances.balance(&f.engine, &unused_tree()).await.unwrap();
+    assert_eq!(balance.confirmed, Totals::default());
+    assert_eq!(balance.pending, PendingDelta::default());
+    assert!(!balance.used);
+    assert_eq!(f.count_calls(Endpoint::BoxCount), 1);
+}
+
+/// Its boxes are all spent: the balance can't tell it from a fresh one, the indexer can.
+/// Tracked or not.
+#[tokio::test(start_paused = true)]
+async fn an_emptied_address_is_used_by_the_indexers_count() {
+    let f = Fixture::new();
+    f.empty_tree(3);
+    let tree = f.tree(3);
+    let untracked = f.balances.balance(&f.engine, &tree).await.unwrap();
+    assert_eq!(untracked.confirmed, Totals::default());
+    assert!(untracked.used);
+    assert_eq!(f.count_calls(Endpoint::BoxCount), 1);
+
+    let as_of = f.sim.lock().tip();
+    let key = TrackingKey::Tree(tree.clone());
+    f.apply(Event::KeyLoaded { key, as_of, boxes: Vec::new() });
+    let calls = f.sim.calls().len();
+    let tracked = f.balances.balance(&f.engine, &tree).await.unwrap();
+    assert_eq!(tracked, untracked);
+    assert_eq!(f.sim.calls()[calls..], [Endpoint::BoxCount], "one node call, for the count");
+}
+
+/// A payment still in the pool makes a fresh address used, with no count asked: the
+/// pending delta is non-zero.
+#[tokio::test(start_paused = true)]
+async fn a_pending_payment_makes_a_fresh_address_used() {
+    let f = Fixture::new();
+    let input = sim::testing::box_of(&f.sim.lock(), 2);
+    f.submit(&[input], &unused_tree());
+    let balance = f.balances.balance(&f.engine, &unused_tree()).await.unwrap();
+    assert!(balance.pending.nano_ergs > 0);
+    assert!(balance.used);
+    assert_eq!(f.count_calls(Endpoint::BoxCount), 0);
+}
+
+/// A pending output to a fresh address, spent by another pending tx: the delta is zero, but
+/// the address received a box.
+#[tokio::test(start_paused = true)]
+async fn a_pending_output_spent_in_the_pool_makes_an_address_used() {
+    let f = Fixture::new();
+    let input = sim::testing::box_of(&f.sim.lock(), 2);
+    let paid = f.submit(&[input], &unused_tree());
+    let to = f.tree(0);
+    f.submit(&[paid.outputs[0].id], &to);
+    let balance = f.balances.balance(&f.engine, &unused_tree()).await.unwrap();
+    assert_eq!(balance.pending, PendingDelta::default());
+    assert!(balance.used);
+    assert_eq!(f.count_calls(Endpoint::BoxCount), 0, "the pending txs answer it");
 }
 
 /// The indexer has the block that mines the tx and the engine does not: paired as they are,

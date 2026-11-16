@@ -20,7 +20,7 @@ use crate::{
     sim::{self, Chain, SimConfig, SimOp, strategy},
     types::{
         Digest, HashDigest, HexBytes,
-        ergo::{BoxId, NonMandatoryRegisters, Token, UTxO, UnconfirmedTransaction},
+        ergo::{BoxId, ErgoTree, NonMandatoryRegisters, Token, UTxO, UnconfirmedTransaction},
     },
 };
 
@@ -40,6 +40,12 @@ pub fn box_of(chain: &Chain, index: usize) -> BoxId {
         .find(|b| b.ergo_tree == *tree)
         .expect("the tree owns a box")
         .id
+}
+
+/// A tree no sim box is ever sent to: genesis pays only the chain's own trees, and random txs
+/// pay only them too.
+pub fn unused_tree() -> ErgoTree {
+    HexBytes(vec![0x10, 0x01, 0x01])
 }
 
 /// `len` ops from the real strategy, the same on every run.

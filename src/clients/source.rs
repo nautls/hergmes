@@ -98,4 +98,13 @@ pub trait NodeSource: Send + Sync {
         &self,
         ergo_tree: &ErgoTree,
     ) -> impl Future<Output = Result<Balance, NodeError>> + Send;
+
+    /// How many boxes the address guarded by `ergo_tree` ever received on the indexer's
+    /// branch, spent or not (`Segment.boxCount`); 0 if the indexer never saw it. The node is
+    /// asked for no box (`BlockchainApiRoute.validateAndGetBoxesByAddress` accepts
+    /// `limit=0`, and `Segment.getFromSegments` then collects nothing), so it reads none.
+    fn box_count(
+        &self,
+        ergo_tree: &ErgoTree,
+    ) -> impl Future<Output = Result<u64, NodeError>> + Send;
 }

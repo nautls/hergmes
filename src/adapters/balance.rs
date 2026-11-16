@@ -1,5 +1,5 @@
 //! The balance reader: an untracked address's confirmed balance from the indexer, with the
-//! height it was read at.
+//! height it was read at, and how many boxes an address ever received.
 //!
 //! The indexer is not pinned to a block, so the height comes from `indexedHeight` read before
 //! and after the balance call. The caller combines the balance with the engine's pending
@@ -42,6 +42,12 @@ impl<S: NodeSource> BalanceReader<S> {
             }
         }
         Ok(None)
+    }
+
+    /// How many boxes `tree` ever received on the indexer's branch, spent or not. Not pinned
+    /// to a height: it only grows, unless a reorg orphans the blocks that paid it.
+    pub async fn box_count(&self, tree: &ErgoTree) -> Result<u64, NodeError> {
+        self.source.box_count(tree).await
     }
 }
 

@@ -178,16 +178,18 @@ impl Serialize for WithPoolBody<'_> {
 }
 
 /// `GET /v1/addresses/{address}/balance`. The confirmed half is unsigned; the pending half
-/// is a signed delta per asset, negative for what is leaving.
+/// is a signed delta per asset, negative for what is leaving. `used` is REST only: the
+/// streamed `balance` shows it turning true as its first non-zero value.
 pub struct BalanceBody<'a>(pub &'a AddressBalance);
 
 impl Serialize for BalanceBody<'_> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let b = self.0;
-        let mut s = serializer.serialize_struct("Balance", 3)?;
+        let mut s = serializer.serialize_struct("Balance", 4)?;
         s.serialize_field("asOf", &AsOfHeight { height: b.height })?;
         s.serialize_field("confirmed", &Confirmed(&b.confirmed))?;
         s.serialize_field("pending", &Pending(&b.pending))?;
+        s.serialize_field("used", &b.used)?;
         s.end()
     }
 }

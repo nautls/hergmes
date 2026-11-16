@@ -74,6 +74,13 @@ pub struct InfoResponse {
     pub full_height: Option<u32>,
 }
 
+/// A page of `/blockchain/box/byAddress`, read for its `total` alone: the relay asks for no
+/// box.
+#[derive(Debug, Deserialize)]
+pub(crate) struct BoxCountResponse {
+    pub total: u64,
+}
+
 #[derive(Debug, Clone)]
 pub struct NodeClient {
     http_client: reqwest::Client,
@@ -332,6 +339,18 @@ impl NodeSource for NodeClient {
         let response: BalanceResponse =
             fetch(self.post("blockchain/balance").json(&address)).await?;
         Ok(response.confirmed)
+    }
+
+    /// The address goes in the body, as for `/blockchain/balance`.
+    #[tracing::instrument(skip(self))]
+    async fn box_count(&self, ergo_tree: &ErgoTree) -> Result<u64, NodeError> {
+        let address = address::encode(&ergo_tree.0, self.network);
+        let request = self
+            .post("blockchain/box/byAddress")
+            .query(&[("limit", 0)])
+            .json(&address);
+        let response: BoxCountResponse = fetch(request).await?;
+        Ok(response.total)
     }
 }
 

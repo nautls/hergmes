@@ -1117,6 +1117,18 @@ impl Chain {
         Balance { nano_ergs, tokens }
     }
 
+    /// How many boxes guarded by `ergo_tree` the indexer saw created on its branch, spent or
+    /// not. A rollback takes the orphaned blocks' boxes off, as the node's does.
+    pub fn box_count(&self, ergo_tree: &ErgoTree) -> u64 {
+        let count = self
+            .indexer
+            .all
+            .values()
+            .filter(|e| e.utxo.ergo_tree == *ergo_tree)
+            .count();
+        u64::try_from(count).expect("a count fits in u64")
+    }
+
     /// `POST /utxo/withPool/byIds`: boxes in the UTXO set, or created by any pool tx. Like the
     /// node (`withUnconfirmedTransactions`), a box a pool tx spends is still returned. Missing
     /// ids are left out; order follows `ids`.

@@ -5,3 +5,5 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc 0f21304dcacd13093186db375ca7fef7690bc5cbda15ca57c85d7d837d3e7ef8 # shrinks to ops = [Read { key: Index(0), tick: true }, Chain(MempoolAdd { seed: 138386787524144439 }), Read { key: Index(0), tick: true }]
+cc fbe46d8b0443d233fcbea96b81c95993ee8f655c9d4f4b29647b83676fe6e558 # shrinks to ops = [Chain(MempoolAdd { seed: 67854865168513598 }), Chain(MempoolAdd { seed: 9646814868327549095 }), Chain(Mine { from_pool: 2, fresh: 0, seed: 5669080913324217024 }), Tick, Read { key: Index(0), tick: false }]
+cc 5de2525ea377f8147d000605ae273ea4ce84705bf7f60fc865aaf605af7a41f6 # shrinks to ops = [Chain(MempoolAdd { seed: 5887450049318886523 }), Chain(MempoolConflict { pick: 0, seed: 7511471168156360828 }), Chain(MempoolAdd { seed: 1361285529169955348 }), Chain(Mine { from_pool: 2, fresh: 1, seed: 15059568513629082341 }), Chain(MempoolAdd { seed: 8868006549713352127 }), Chain(MempoolAdd { seed: 15727300643212956230 }), Tick, Read { key: Index(12297829382473034411), tick: false }]

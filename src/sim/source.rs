@@ -34,6 +34,7 @@ pub enum Endpoint {
     IndexedBox,
     ConfirmedBalance,
     AddressTransactions,
+    BoxCount,
 }
 
 impl Endpoint {
@@ -187,6 +188,11 @@ impl NodeSource for SimChain {
 
     async fn confirmed_balance(&self, ergo_tree: &ErgoTree) -> Result<Balance, NodeError> {
         self.serve(Endpoint::ConfirmedBalance, |c| Ok(c.confirmed_balance(ergo_tree)))
+            .await
+    }
+
+    async fn box_count(&self, ergo_tree: &ErgoTree) -> Result<u64, NodeError> {
+        self.serve(Endpoint::BoxCount, |c| Ok(c.box_count(ergo_tree)))
             .await
     }
 }

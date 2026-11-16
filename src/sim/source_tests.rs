@@ -11,7 +11,7 @@ use crate::{
     engine::TrackingKey,
     sim::{
         GENESIS_TOKENS, OutputSpec, SimConfig,
-        testing::{ALL, box_of, new_chain, ready},
+        testing::{ALL, box_of, new_chain, ready, unused_tree},
         timestamp, token_id,
     },
     types::{Digest, ergo::TxId},
@@ -379,4 +379,31 @@ fn history_follows_a_lagging_indexer_and_answers_503_while_it_recovers() {
 
     let over = ready(sim.address_transactions(&trees[0], 0, MAX_PAGE_LIMIT + 1));
     assert!(matches!(over, Err(NodeError::Api { status: StatusCode::BAD_REQUEST, .. })));
+}
+
+#[test]
+fn box_count_counts_spent_boxes_on_the_indexers_branch() {
+    let mut chain = Chain::new(SimConfig { recovery_reads: 1, ..SimConfig::default() });
+    let trees = chain.trees().to_vec();
+    let unused = unused_tree();
+    let count = |sim: &SimChain, tree: &ErgoTree| ready(sim.box_count(tree)).unwrap();
+    // Genesis gives each tree a plain box and a token holding.
+    let start = 2;
+
+    // Tree 1's plain box goes to tree 0: spent, it still counts for tree 1.
+    let tx = chain.transfer(&[box_of(&chain, 1)], &trees[0]);
+    chain.set_indexer_lag(1);
+    chain.mine_txs(vec![tx]);
+    let sim = SimChain::new(chain);
+    assert_eq!(count(&sim, &trees[0]), start, "not indexed yet");
+
+    sim.lock().settle_indexer();
+    assert_eq!(count(&sim, &trees[0]), start + 1);
+    assert_eq!(count(&sim, &trees[1]), start, "a spent box still counts");
+    assert_eq!(count(&sim, &unused), 0);
+
+    // Orphaning the indexed tip: one `503`, then the count without the orphan's box.
+    sim.lock().orphan(1);
+    assert!(is_unavailable(ready(sim.box_count(&trees[0]))));
+    assert_eq!(count(&sim, &trees[0]), start);
 }

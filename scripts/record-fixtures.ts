@@ -6,10 +6,12 @@
  *       [--address ADDR] [--small-token TOKEN_ID]
  *   node scripts/record-fixtures.ts --history-only [--node URL] [--out DIR]
  *   node scripts/record-fixtures.ts --headers-only [--node URL] [--out DIR]
+ *   node scripts/record-fixtures.ts --used-only [--node URL] [--out DIR]
  *
  * --history-only records only the address tx history fixtures, for the sample address of
  * the existing manifest.json, and adds them to it, leaving every other fixture as it is.
  * --headers-only does the same for the header fixtures, for the manifest's sample header.
+ * --used-only does the same for the box count fixtures, which say whether an address is used.
  *
  * Runs on Node 23.6+ (native type stripping) with no dependencies.
  * The node URL defaults to $ERGO_NODE_URL. The node must run the extra indexer.
@@ -275,22 +277,36 @@ async function recordHeaders(rec: Recorder, headerId: string) {
   await rec.record("header_by_id_unknown", "GET", `/blocks/modifier/${UNKNOWN_ID}`);
 }
 
-async function headersOnly(node: Node, outDir: string) {
-  const manifestPath = join(outDir, "manifest.json");
-  const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
-  const info = await node.ok("GET", "/info");
-  if (info.appVersion !== manifest.nodeVersion) {
-    fail(`The node runs ${info.appVersion}, the fixtures were recorded from ${manifest.nodeVersion}`);
-  }
-  const rec = new Recorder(node, outDir);
-  console.log(`Recording header fixtures for ${manifest.samples.headerId} into ${outDir}`);
-  await recordHeaders(rec, manifest.samples.headerId);
-  manifest.fixtures = { ...manifest.fixtures, ...rec.manifest };
-  writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + "\n");
-  console.log(`Added ${Object.keys(rec.manifest).length} fixtures to manifest.json`);
+/** The box counts that tell whether an address was ever used: `limit=0` returns no box and
+ * reads none (Segment.getFromSegments), and `total` counts every box the address received,
+ * spent or not (Segment.boxCount). */
+async function recordUsed(rec: Recorder, address: string) {
+  const path = "/blockchain/box/byAddress?limit=0";
+  await rec.record("box_count_by_address", "POST", path, address);
+  await rec.record(
+    "box_count_by_address_empty",
+    "POST",
+    path,
+    EMPTY_ADDRESS,
+    "Holds no boxes now, but received some: total counts spent boxes too.",
+  );
+  await rec.record(
+    "box_count_by_address_unused",
+    "POST",
+    path,
+    UNUSED_ADDRESS,
+    "An address the indexer never saw is total 0, not a 404.",
+  );
 }
 
-async function historyOnly(node: Node, outDir: string) {
+/** Records some fixtures for the samples of the existing manifest.json and adds them to it,
+ * leaving every other fixture as it is. */
+async function addTo(
+  node: Node,
+  outDir: string,
+  what: string,
+  record: (rec: Recorder, manifest: Json, info: Json) => Promise<void>,
+) {
   const manifestPath = join(outDir, "manifest.json");
   const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
   const info = await node.ok("GET", "/info");
@@ -298,8 +314,8 @@ async function historyOnly(node: Node, outDir: string) {
     fail(`The node runs ${info.appVersion}, the fixtures were recorded from ${manifest.nodeVersion}`);
   }
   const rec = new Recorder(node, outDir);
-  console.log(`Recording history fixtures for ${manifest.samples.address} into ${outDir}`);
-  await recordHistory(rec, manifest.samples.address, info.fullHeight);
+  console.log(`Recording ${what} fixtures into ${outDir}`);
+  await record(rec, manifest, info);
   manifest.fixtures = { ...manifest.fixtures, ...rec.manifest };
   writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + "\n");
   console.log(`Added ${Object.keys(rec.manifest).length} fixtures to manifest.json`);
@@ -314,6 +330,7 @@ async function main() {
       "small-token": { type: "string" },
       "history-only": { type: "boolean", default: false },
       "headers-only": { type: "boolean", default: false },
+      "used-only": { type: "boolean", default: false },
     },
   });
   if (!args.node) fail("Pass --node or set ERGO_NODE_URL");
@@ -321,8 +338,17 @@ async function main() {
   const node = new Node(args.node);
   const outDir = resolve(args.out!);
   mkdirSync(outDir, { recursive: true });
-  if (args["history-only"]) return historyOnly(node, outDir);
-  if (args["headers-only"]) return headersOnly(node, outDir);
+  if (args["history-only"]) {
+    return addTo(node, outDir, "history", (rec, m, info) =>
+      recordHistory(rec, m.samples.address, info.fullHeight),
+    );
+  }
+  if (args["headers-only"]) {
+    return addTo(node, outDir, "header", (rec, m) => recordHeaders(rec, m.samples.headerId));
+  }
+  if (args["used-only"]) {
+    return addTo(node, outDir, "box count", (rec, m) => recordUsed(rec, m.samples.address));
+  }
   const rec = new Recorder(node, outDir);
 
   const info = await node.ok("GET", "/info");
@@ -432,6 +458,7 @@ async function main() {
   await rec.record("balance", "POST", "/blockchain/balance", address);
   await recordHistory(rec, address, info.fullHeight);
   await rec.record("balance_empty", "POST", "/blockchain/balance", EMPTY_ADDRESS);
+  await recordUsed(rec, address);
 
   // Tokens
   const unspentByToken = (id: string) =>

@@ -107,6 +107,7 @@ fn a_balance_has_string_amounts_signed_pending_and_tokens_in_id_order() {
             nano_ergs: -10_001_000_000,
             tokens: BTreeMap::from([(digest(2), -(i64::MAX as i128) * 2)]),
         },
+        used: true,
     };
     let expected = format!(
         concat!(
@@ -115,7 +116,7 @@ fn a_balance_has_string_amounts_signed_pending_and_tokens_in_id_order() {
             r#"{{"tokenId":"{}","amount":"9223372036854775807"}},"#,
             r#"{{"tokenId":"{}","amount":"1"}}]}},"#,
             r#""pending":{{"nanoErgs":"-10001000000","tokens":["#,
-            r#"{{"tokenId":"{}","amount":"-18446744073709551614"}}]}}}}"#
+            r#"{{"tokenId":"{}","amount":"-18446744073709551614"}}]}},"used":true}}"#
         ),
         hex(2),
         hex(3),
@@ -130,12 +131,13 @@ fn an_empty_balance_has_zero_and_no_tokens() {
         height: 1,
         confirmed: Totals::default(),
         pending: PendingDelta::default(),
+        used: false,
     };
     assert_eq!(
         json(BalanceBody(&balance)),
         concat!(
             r#"{"asOf":{"height":1},"confirmed":{"nanoErgs":"0","tokens":[]},"#,
-            r#""pending":{"nanoErgs":"0","tokens":[]}}"#
+            r#""pending":{"nanoErgs":"0","tokens":[]},"used":false}"#
         )
     );
 }

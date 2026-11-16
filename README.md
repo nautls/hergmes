@@ -95,7 +95,7 @@ Logging uses `tracing`; set `RUST_LOG` (e.g. `RUST_LOG=hergmes=debug`) to adjust
 | `GET /v1/tokens/{tokenId}/boxes`              | A page of a small-supply token's unspent boxes    |
 | `GET /v1/addresses/{address}/boxes/with-pool` | An address's boxes with the mempool applied       |
 | `GET /v1/tokens/{tokenId}/boxes/with-pool`    | A token's boxes with the mempool applied          |
-| `GET /v1/addresses/{address}/balance`         | An address's confirmed balance and pending change |
+| `GET /v1/addresses/{address}/balance`         | An address's balance, pending change and `used`   |
 | `GET /v1/addresses/{address}/transactions`    | An address's txs, newest first, pending on top    |
 | `GET /v1/headers`                             | The last block headers up to the tip, for signing |
 | `GET /v1/status`                              | Version, network, tip and readiness               |
@@ -112,6 +112,14 @@ confirmed boxes and every pending one; `truncated` says whether confirmed boxes 
 and `total` is the whole view's size. Its `asOf` is the height only: the view can't be
 followed, so to stream a key, take the snapshot from `/boxes`. "Pending" means this relay's
 node's mempool.
+
+`/balance` is `{ "asOf": { "height" }, "confirmed", "pending", "used" }`. `pending` is the
+signed net change the mempool's txs would make, per asset. `used` says whether the address ever
+received a box, confirmed or pending, so a wallet can find its used addresses (a used address
+can hold nothing). A pending payment counts, so `used` can go back to false if that tx leaves
+the pool unconfirmed. It is not streamed: on a subscription, the first non-zero `balance` means
+used, but a box received and spent within one block, or a pending output spent by another
+pending tx, never shows as one; read `/balance` again to settle it.
 
 `/transactions` is an address's history, read from the node's indexer: each tx's `txId`,
 `height`, `timestamp` (milliseconds) and `delta`, its signed net change per asset for the

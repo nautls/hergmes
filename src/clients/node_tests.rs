@@ -201,6 +201,22 @@ mod shapes {
     }
 
     #[test]
+    fn box_count_counts_spent_boxes_and_is_0_for_an_unknown_address() {
+        let count = |name| load::<BoxCountResponse>(name).total;
+        assert!(count("box_count_by_address") > 0);
+        // No box left (`balance_empty`), but some received.
+        assert!(count("box_count_by_address_empty") > 0);
+        assert_eq!(status("box_count_by_address_unused"), 200);
+        assert_eq!(count("box_count_by_address_unused"), 0);
+        for name in
+            ["box_count_by_address", "box_count_by_address_empty", "box_count_by_address_unused"]
+        {
+            let raw: Value = load(name);
+            assert_eq!(raw["items"], Value::Array(Vec::new()), "{name} lists a box");
+        }
+    }
+
+    #[test]
     fn token_info() {
         let nft: TokenInfo = load("token_nft");
         assert_eq!(nft.emission_amount, 1);
@@ -592,6 +608,29 @@ mod source {
 
         let balance = node.confirmed_balance(&sample_tree()).await.unwrap();
         assert!(balance.nano_ergs > 0);
+    }
+
+    #[tokio::test]
+    async fn box_count_posts_the_trees_address_and_asks_for_no_box() {
+        let (server, node) = node().await;
+        for name in
+            ["box_count_by_address", "box_count_by_address_empty", "box_count_by_address_unused"]
+        {
+            let address = manifest()["fixtures"][name]["body"].clone();
+            Mock::given(method("POST"))
+                .and(path("/blockchain/box/byAddress"))
+                .and(query_param("limit", "0"))
+                .and(body_json(address.clone()))
+                .respond_with(recorded(name))
+                .expect(1)
+                .mount(&server)
+                .await;
+            let tree = Address::decode(address.as_str().unwrap())
+                .unwrap()
+                .into_ergo_tree();
+            let total = load::<BoxCountResponse>(name).total;
+            assert_eq!(node.box_count(&tree).await.unwrap(), total, "{name}");
+        }
     }
 
     #[tokio::test]

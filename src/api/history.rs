@@ -273,7 +273,10 @@ fn pending_item(tx: overlay::TxDelta) -> HistoryItem {
     HistoryItem { tx_id: tx.tx_id, included: None, delta: tx.delta }
 }
 
-async fn pending_txs(
+/// The pending txs that touch the address guarded by `tree`, tracked or not, and the tip they
+/// were decided at; `None` before the engine's first block. Also what tells the balance a
+/// zero-balance address is used.
+pub(super) async fn pending_txs(
     engine: &impl EngineHandle,
     tree: &ErgoTree,
 ) -> Result<Option<PendingTxsAt>, ApiError> {

@@ -1,10 +1,12 @@
-//! The balance service: an address's confirmed balance and signed pending delta (DESIGN.md,
-//! "Balances"). Token keys have no balance, so the service takes an ErgoTree.
+//! The balance service: an address's confirmed balance and signed pending delta, and whether
+//! it was ever used (DESIGN.md, "Balances"). Token keys have no balance, so the service takes
+//! an ErgoTree.
 //!
-//! A tracked address is answered by the engine alone: its running totals and its overlay's
-//! delta, at one tip. An untracked one pairs the indexer's confirmed balance with the
-//! engine's pending delta, only when both are as of the same height, and is not tracked
-//! afterwards: one-off reads do not fill memory.
+//! A tracked address's balance comes from the engine alone: its running totals and its
+//! overlay's delta, at one tip. An untracked one pairs the indexer's confirmed balance with
+//! the engine's pending delta, only when both are as of the same height, and is not tracked
+//! afterwards: one-off reads do not fill memory. Either way, a zero balance asks the indexer
+//! whether the address ever received a box.
 
 use std::time::Duration;
 
@@ -13,7 +15,7 @@ use tracing::debug;
 
 use crate::{
     adapters::{BalanceReader, EngineHandle, balance::BalanceAt},
-    api::ApiError,
+    api::{ApiError, history::pending_txs},
     clients::NodeSource,
     engine::{PendingAt, Query, Reply, Totals, TrackingKey, overlay::PendingDelta},
     types::ergo::{self, ErgoTree},
@@ -36,12 +38,22 @@ impl Default for Config {
 }
 
 /// An address's balance as of a height: what its boxes hold, and the signed change its
-/// pending txs would make (positive incoming, negative leaving, per asset).
+/// pending txs would make (positive incoming, negative leaving, per asset). `used` says
+/// whether it ever received a box, confirmed or pending, so a wallet can tell a used empty
+/// address from a fresh one; it is read after the balance, and not as of `height`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AddressBalance {
     pub height: u32,
     pub confirmed: Totals,
     pub pending: PendingDelta,
+    pub used: bool,
+}
+
+/// The two halves of a balance at one height, before `used` is known.
+struct Halves {
+    height: u32,
+    confirmed: Totals,
+    pending: PendingDelta,
 }
 
 pub struct Balances<S> {
@@ -61,10 +73,36 @@ impl<S: NodeSource> Balances<S> {
         engine: &impl EngineHandle,
         tree: &ErgoTree,
     ) -> Result<AddressBalance, ApiError> {
-        match tracked(engine, tree).await? {
-            Some(balance) => Ok(balance),
-            None => self.untracked(engine, tree).await,
+        let Halves { height, confirmed, pending } = match tracked(engine, tree).await? {
+            Some(halves) => halves,
+            None => self.untracked(engine, tree).await?,
+        };
+        let used = confirmed != Totals::default()
+            || pending != PendingDelta::default()
+            || self.used(engine, tree).await?;
+        Ok(AddressBalance { height, confirmed, pending, used })
+    }
+
+    /// Whether an address with a zero balance ever received a box: a pending tx touches it,
+    /// or the indexer counts a box for it. A box sent to it makes a half non-zero, since every
+    /// box holds ERG, so this is asked only of zero balances. The pending txs cover one the
+    /// delta does not: a pending output already spent by another pending tx.
+    ///
+    /// Read after the balance, the engine first: the engine is never ahead of the indexer, so
+    /// a box either half showed is counted, and so is a tx confirmed between the reads.
+    async fn used(&self, engine: &impl EngineHandle, tree: &ErgoTree) -> Result<bool, ApiError> {
+        if pending_txs(engine, tree)
+            .await?
+            .is_some_and(|p| !p.txs.is_empty())
+        {
+            return Ok(true);
         }
+        let count = self
+            .reader
+            .box_count(tree)
+            .await
+            .map_err(|e| ApiError::from(&e))?;
+        Ok(count > 0)
     }
 
     /// The indexer's confirmed balance and the engine's pending delta, paired only at one
@@ -79,7 +117,7 @@ impl<S: NodeSource> Balances<S> {
         &self,
         engine: &impl EngineHandle,
         tree: &ErgoTree,
-    ) -> Result<AddressBalance, ApiError> {
+    ) -> Result<Halves, ApiError> {
         let key = TrackingKey::Tree(tree.clone());
         let mut read: Option<BalanceAt> = None;
         for attempt in 1..=self.config.attempts {
@@ -96,7 +134,7 @@ impl<S: NodeSource> Balances<S> {
                 match pending {
                     Some(p) if p.as_of.height == indexed => {
                         let BalanceAt { height, confirmed } = read.expect("read above");
-                        return Ok(AddressBalance {
+                        return Ok(Halves {
                             height,
                             confirmed: totals(confirmed),
                             pending: p.delta,
@@ -123,15 +161,12 @@ impl<S: NodeSource> Balances<S> {
 }
 
 /// A tracked address's balance, from one engine message. `None` if it is not tracked.
-async fn tracked(
-    engine: &impl EngineHandle,
-    tree: &ErgoTree,
-) -> Result<Option<AddressBalance>, ApiError> {
+async fn tracked(engine: &impl EngineHandle, tree: &ErgoTree) -> Result<Option<Halves>, ApiError> {
     match engine
         .query(Query::Balance(TrackingKey::Tree(tree.clone())))
         .await?
     {
-        Reply::Balance(balance) => Ok(balance.map(|b| AddressBalance {
+        Reply::Balance(balance) => Ok(balance.map(|b| Halves {
             height: b.as_of.height,
             confirmed: b.confirmed,
             pending: b.pending,

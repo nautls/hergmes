@@ -168,6 +168,26 @@
       "method": "GET",
       "path": "/blocks/modifier/abababababababababababababababababababababababababababababababab",
       "status": 404
+    },
+    "box_count_by_address": {
+      "method": "POST",
+      "path": "/blockchain/box/byAddress?limit=0",
+      "status": 200,
+      "body": "9gsbKAia1ARpA2zyotMzrWnJvmfuqcPemue5pfbm87Mnt5h1Tmm"
+    },
+    "box_count_by_address_empty": {
+      "method": "POST",
+      "path": "/blockchain/box/byAddress?limit=0",
+      "status": 200,
+      "body": "9gNvAv97W71Wm33GoXgSQBFJxinFubKvE6wh2dEhFTSgYEe783j",
+      "notes": "Holds no boxes now, but received some: total counts spent boxes too."
+    },
+    "box_count_by_address_unused": {
+      "method": "POST",
+      "path": "/blockchain/box/byAddress?limit=0",
+      "status": 200,
+      "body": "9iKCdiitfAVb1Wux5nFXiMcdYXGkhdNksAxJHQ28qiAMkxXupbt",
+      "notes": "An address the indexer never saw is total 0, not a 404."
     }
   }
 }
