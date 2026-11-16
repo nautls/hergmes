@@ -294,6 +294,34 @@ mod shapes {
         }
     }
 
+    /// A pool tx's input is the box when the node resolved it, `None` when it sent only
+    /// `boxId` and `spendingProof`, and a malformed field fails the list, as an output's does.
+    #[test]
+    fn mempool_inputs_resolved_unresolved_and_malformed() {
+        let mut txs: Vec<Value> = load("mempool");
+        let tx = txs
+            .iter_mut()
+            .find(|t| !t["inputs"].as_array().unwrap().is_empty())
+            .unwrap();
+        let input = tx["inputs"][0].clone();
+        let read = |input: &Value| {
+            serde_json::from_value::<MempoolTransactionInput>(input.clone()).map(|i| i.utxo)
+        };
+        let utxo: UTxO = serde_json::from_value(input.clone()).unwrap();
+        assert_eq!(read(&input).unwrap(), Some(utxo));
+        let bare = serde_json::json!({
+            "boxId": input["boxId"],
+            "spendingProof": input["spendingProof"],
+        });
+        assert_eq!(read(&bare).unwrap(), None);
+        let mut malformed = input;
+        malformed["value"] = "lots".into();
+        assert!(read(&malformed).is_err());
+        tx["inputs"][0] = malformed;
+        let text = serde_json::to_string(&txs).unwrap();
+        assert!(serde_json::from_str::<Vec<MempoolTransactionResponse>>(&text).is_err());
+    }
+
     #[test]
     fn box_by_id_unknown() {
         assert_not_found("box_by_id_unknown");

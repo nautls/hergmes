@@ -86,7 +86,10 @@ pub struct UnconfirmedTransaction {
     pub outputs: Vec<UTxO>,
 }
 
+/// A box. Read through [`NodeBox`], which names the node's fields for every box shape; the
+/// renames here are for writing it.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(try_from = "NodeBox")]
 pub struct UTxO {
     #[serde(rename = "boxId")]
     pub id: BoxId,
@@ -135,30 +138,110 @@ pub struct NonMandatoryRegisters {
 }
 
 /// A box as returned by the node's extra indexer (`/blockchain/...` endpoints).
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IndexedBox {
-    #[serde(flatten)]
     pub utxo: UTxO,
-
-    #[serde(rename = "inclusionHeight")]
     pub inclusion_height: u32,
+}
+
+impl<'de> Deserialize<'de> for IndexedBox {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        NodeBox::deserialize(deserializer)?.indexed()
+    }
 }
 
 /// A box as `/blockchain/box/byId` returns it: any box the indexer knows, and whether a tx
 /// spent it. Its own type, so the boxes of indexed blocks don't carry the flag.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BoxById {
-    #[serde(flatten)]
     pub indexed: IndexedBox,
 
     /// Whether `spentTransactionId` is set: `null` while unspent (node 6.0.8,
-    /// `ApiExtraCodecs.indexedBoxEncoder`, from `spendingTxIdOpt`). The id itself is not read.
-    #[serde(rename = "spentTransactionId", deserialize_with = "is_set")]
+    /// `ApiExtraCodecs.indexedBoxEncoder`, from `spendingTxIdOpt`). The id itself is not read,
+    /// and the field is required: a box without it can't be told unspent.
     pub spent: bool,
 }
 
-fn is_set<'de, D: Deserializer<'de>>(deserializer: D) -> Result<bool, D::Error> {
-    Ok(Option::<serde::de::IgnoredAny>::deserialize(deserializer)?.is_some())
+impl<'de> Deserialize<'de> for BoxById {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let read = NodeBox::deserialize(deserializer)?;
+        let spent = read
+            .spent
+            .ok_or_else(|| D::Error::missing_field("spentTransactionId"))?;
+        Ok(Self { indexed: read.indexed()?, spent })
+    }
+}
+
+/// Every field the relay reads of a box, in any of the node's shapes: a bare box, an indexed
+/// one, and a pool tx's input. Each shape is built from it, so the field names live here
+/// alone. Not `#[serde(flatten)]` for the shapes that add fields to a box: it buffers every
+/// box into a map before reading it, about twice the bytes allocated per box.
+///
+/// Only `boxId` is required here; each shape requires what it needs. A pool tx's input the
+/// node could not resolve has only `boxId` and `spendingProof` (see
+/// `clients::node::MempoolTransactionInput`).
+#[derive(Deserialize)]
+pub(crate) struct NodeBox {
+    #[serde(rename = "boxId")]
+    id: BoxId,
+    #[serde(rename = "ergoTree")]
+    ergo_tree: Option<ErgoTree>,
+    #[serde(rename = "creationHeight")]
+    creation_height: Option<u32>,
+    value: Option<u64>,
+    #[serde(rename = "assets")]
+    tokens: Option<Vec<Token>>,
+    #[serde(rename = "additionalRegisters")]
+    registers: Option<NonMandatoryRegisters>,
+    index: Option<u16>,
+    #[serde(rename = "transactionId")]
+    transaction_id: Option<TxId>,
+    #[serde(rename = "inclusionHeight")]
+    inclusion_height: Option<u32>,
+    /// `None` if absent, else whether it is set.
+    #[serde(rename = "spentTransactionId", default, deserialize_with = "is_set")]
+    spent: Option<bool>,
+}
+
+/// A field a box shape requires, absent.
+#[derive(Debug)]
+pub(crate) struct MissingField(&'static str);
+
+impl std::fmt::Display for MissingField {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "missing field `{}`", self.0)
+    }
+}
+
+impl TryFrom<NodeBox> for UTxO {
+    type Error = MissingField;
+
+    fn try_from(b: NodeBox) -> Result<Self, MissingField> {
+        let need = MissingField;
+        Ok(UTxO {
+            id: b.id,
+            ergo_tree: b.ergo_tree.ok_or(need("ergoTree"))?,
+            creation_height: b.creation_height.ok_or(need("creationHeight"))?,
+            value: b.value.ok_or(need("value"))?,
+            tokens: b.tokens.ok_or(need("assets"))?,
+            registers: b.registers.ok_or(need("additionalRegisters"))?,
+            index: b.index.ok_or(need("index"))?,
+            transaction_id: b.transaction_id.ok_or(need("transactionId"))?,
+        })
+    }
+}
+
+impl NodeBox {
+    fn indexed<E: Error>(self) -> Result<IndexedBox, E> {
+        let inclusion_height =
+            (self.inclusion_height).ok_or_else(|| E::missing_field("inclusionHeight"))?;
+        let utxo = UTxO::try_from(self).map_err(|MissingField(f)| E::missing_field(f))?;
+        Ok(IndexedBox { utxo, inclusion_height })
+    }
+}
+
+fn is_set<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<bool>, D::Error> {
+    Ok(Some(Option::<serde::de::IgnoredAny>::deserialize(deserializer)?.is_some()))
 }
 
 /// A transaction inside an [`IndexedBlock`]. Inputs are full boxes.

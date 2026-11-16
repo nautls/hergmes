@@ -10,7 +10,7 @@ use crate::{
         address::{self, Network, UnknownNetwork},
         ergo::{
             AddressTransactions, Balance, BalanceResponse, BlockHeader, BoxById, BoxId, ErgoTree,
-            HeaderId, IndexedBlock, IndexedBox, TokenId, TokenInfo, TxId, UTxO,
+            HeaderId, IndexedBlock, IndexedBox, NodeBox, TokenId, TokenInfo, TxId, UTxO,
             UnconfirmedTransaction,
         },
     },
@@ -98,10 +98,19 @@ pub(crate) struct MempoolTransactionResponse {
     pub outputs: Vec<UTxO>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+/// `None` unless every field of a box is there: the node sends only `boxId` and
+/// `spendingProof` for an input it could not resolve. A field that is there but malformed
+/// fails the whole list, as a malformed output does: it is the node's fault, not an
+/// unresolved input.
+#[derive(Debug, Clone)]
 pub(crate) struct MempoolTransactionInput {
-    #[serde(flatten)]
     pub utxo: Option<UTxO>,
+}
+
+impl<'de> Deserialize<'de> for MempoolTransactionInput {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Ok(Self { utxo: UTxO::try_from(NodeBox::deserialize(deserializer)?).ok() })
+    }
 }
 
 impl MempoolTransactionResponse {

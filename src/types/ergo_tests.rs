@@ -1,4 +1,5 @@
-//! The header type against the recorded fixtures: what it reads, and the JSON it keeps.
+//! The header type against the recorded fixtures: what it reads, and the JSON it keeps. The
+//! box shapes read in one pass: the same box as a bare `UTxO`, and a missing field named.
 
 use serde_json::Value;
 
@@ -67,4 +68,45 @@ fn numbers_are_kept_exactly() {
 fn a_header_missing_a_field_the_relay_reads_is_refused() {
     let text = format!(r#"{{ "id": "{ID}", "height": 7 }}"#);
     assert!(serde_json::from_str::<BlockHeader>(&text).is_err());
+}
+
+/// An indexed box and a box by id hold the box a bare `UTxO` reads, and the fields they add.
+#[test]
+fn box_shapes_read_the_same_box_in_one_pass() {
+    let text = fixtures::text("box_by_id_unspent");
+    let utxo: UTxO = serde_json::from_str(&text).unwrap();
+    let raw: Value = serde_json::from_str(&text).unwrap();
+    let height = raw["inclusionHeight"].as_u64().unwrap() as u32;
+    let indexed: IndexedBox = serde_json::from_str(&text).unwrap();
+    assert_eq!(indexed, IndexedBox { utxo, inclusion_height: height });
+    let by_id: BoxById = serde_json::from_str(&text).unwrap();
+    assert_eq!(by_id, BoxById { indexed, spent: false });
+}
+
+#[test]
+fn a_missing_box_field_is_named() {
+    let mut raw: Value = fixtures::load("box_by_id_spent");
+    let object = raw.as_object_mut().unwrap();
+    object.remove("inclusionHeight");
+    let error = serde_json::from_value::<IndexedBox>(raw.clone()).unwrap_err();
+    assert!(error.to_string().contains("`inclusionHeight`"), "{error}");
+    raw.as_object_mut()
+        .unwrap()
+        .insert("inclusionHeight".into(), 1.into());
+    raw.as_object_mut().unwrap().remove("value");
+    let error = serde_json::from_value::<BoxById>(raw.clone()).unwrap_err();
+    assert!(error.to_string().contains("`value`"), "{error}");
+    let error = serde_json::from_value::<UTxO>(raw).unwrap_err();
+    assert!(error.to_string().contains("`value`"), "{error}");
+}
+
+/// A box by id without `spentTransactionId` can't be told unspent, so it is not read.
+#[test]
+fn a_box_by_id_needs_spent_transaction_id() {
+    let mut raw: Value = fixtures::load("box_by_id_unspent");
+    raw.as_object_mut().unwrap().remove("spentTransactionId");
+    let error = serde_json::from_value::<BoxById>(raw.clone()).unwrap_err();
+    assert!(error.to_string().contains("`spentTransactionId`"), "{error}");
+    // An indexed box has no use for it.
+    serde_json::from_value::<IndexedBox>(raw).unwrap();
 }
