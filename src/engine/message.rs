@@ -93,6 +93,9 @@ pub enum Query {
         key: TrackingKey,
         from: Option<BlockRef>,
     },
+    /// The sizes an operator watches: counts only, never a key. Computed when asked, so
+    /// nothing is kept up to date for it. Not activity for any key.
+    Stats,
 }
 
 /// The answer to a [`Query`], in the matching variant. Where a reply is an `Option`, `None`
@@ -112,6 +115,21 @@ pub enum Reply {
     Boxes(Vec<Arc<UTxO>>),
     MempoolSnapshot(Option<(Arc<[UnconfirmedTransaction]>, BlockRef)>),
     CatchUp(Vec<Output>),
+    Stats(Stats),
+}
+
+/// The engine's sizes, for the metrics (DESIGN.md, "Metrics").
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Stats {
+    pub tip: Option<BlockRef>,
+    pub address_keys: usize,
+    pub token_keys: usize,
+    /// One per box and key, as the cap on tracked boxes counts them.
+    pub tracked_boxes: usize,
+    /// Blocks in the ring buffer.
+    pub ring_blocks: usize,
+    /// Full boxes the ring buffer's blocks hold.
+    pub ring_boxes: usize,
 }
 
 /// The boxes tracked, one per box and key, and the cap on them. A load of `n` boxes fits

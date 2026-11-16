@@ -1029,3 +1029,28 @@ mod recorded {
         assert!(matches!(result, Err(ApiError::NodeError(_))), "{result:?}");
     }
 }
+
+/// More requests than history reads may run at once, against a node slower than a read may
+/// take: the one left waiting is answered `not_ready` with the retry wait, and the rest are
+/// served.
+#[tokio::test(start_paused = true)]
+async fn a_page_behind_a_full_set_of_slow_reads_is_not_ready() {
+    use crate::{adapters::history::MAX_READS, clients::node::HISTORY_TIMEOUT};
+
+    let sim = SimChain::new(Chain::new(SimConfig::default()));
+    let tree = sim.lock().trees()[0].clone();
+    let history = History::new(sim.clone(), CONFIG);
+    let engine = Mutex::new(Engine::new(ENGINE));
+    sim.set_latency(Endpoint::AddressTransactions, HISTORY_TIMEOUT + Duration::from_secs(5));
+
+    let pages = (0..=MAX_READS).map(|_| history.page(&engine, &tree, None, Some(1)));
+    let mut pages: Vec<_> = pages.map(Box::pin).collect();
+    let mut answers = Vec::new();
+    while !pages.is_empty() {
+        let (answer, _, rest) = futures_util::future::select_all(pages).await;
+        answers.push(answer);
+        pages = rest;
+    }
+    assert_eq!(answers[0], Err(ApiError::NotReady { retry_after: CONFIG.retry }), "{answers:?}");
+    assert!(answers[1..].iter().all(Result::is_ok), "{answers:?}");
+}

@@ -13,7 +13,7 @@ use crate::{
     engine::{
         Balance, BlockDelta, BlockRef, BoxKey, Capacity, ChainLink, EngineError, Event, KeyDelta,
         KeyId, LoadedBox, Mempool, Output, PageError, PageIds, PendingAt, PendingTxsAt, Query,
-        Reply, ResyncReason, Spend, StoredBox, Totals, TrackingKey, WithPoolIds,
+        Reply, ResyncReason, Spend, Stats, StoredBox, Totals, TrackingKey, WithPoolIds,
         overlay::{self, PendingDelta},
     },
     types::ergo::{BoxId, HeaderId, IndexedBlock, UTxO},
@@ -35,7 +35,7 @@ pub struct Config {
 }
 
 impl Config {
-    /// About a day of blocks, ten minutes of grace, and about 220 MB of ids.
+    /// About a day of blocks, ten minutes of grace, and about 290 MB of ids.
     pub const DEFAULT: Self = Self { window: 720, grace: 5, max_tracked_boxes: 2_000_000 };
 }
 
@@ -186,6 +186,23 @@ impl Engine {
             Query::Boxes(ids) => Reply::Boxes(self.ring_boxes(&ids)),
             Query::MempoolSnapshot => Reply::MempoolSnapshot(self.mempool.latest()),
             Query::CatchUp { key, from } => Reply::CatchUp(self.catch_up(key, from)),
+            Query::Stats => Reply::Stats(self.stats()),
+        }
+    }
+
+    fn stats(&self) -> Stats {
+        let address_keys = self
+            .ids
+            .keys()
+            .filter(|key| matches!(key, TrackingKey::Tree(_)))
+            .count();
+        Stats {
+            tip: self.tip,
+            address_keys,
+            token_keys: self.ids.len() - address_keys,
+            tracked_boxes: self.reverse.len(),
+            ring_blocks: self.ring.len(),
+            ring_boxes: self.ring.iter().map(|d| d.boxes.len()).sum(),
         }
     }
 

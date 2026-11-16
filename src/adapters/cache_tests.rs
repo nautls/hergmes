@@ -108,6 +108,25 @@ fn a_budget_of_zero_caches_nothing() {
 }
 
 #[test]
+fn stats_count_the_boxes_their_weight_and_each_read() {
+    let [a, b] = [1, 2].map(|n| Arc::new(sized(n, 100, [0; 6], 0)));
+    let cache = BoxCache::new(1 << 20);
+    assert_eq!(cache.stats(), CacheStats::default());
+    cache.insert(a.clone());
+    cache.insert(b.clone());
+    assert!(cache.get(&a.id).is_some() && cache.get(&a.id).is_some());
+    assert!(cache.get(&digest(9)).is_none());
+    // Read with no `settle` first: the stats settle the cache themselves.
+    let weighted_bytes = u64::from(weight(&a)) + u64::from(weight(&b));
+    assert_eq!(cache.stats(), CacheStats { entries: 2, weighted_bytes, hits: 2, misses: 1 });
+
+    let disabled = BoxCache::disabled();
+    disabled.insert(a.clone());
+    assert!(disabled.get(&a.id).is_none());
+    assert_eq!(disabled.stats(), CacheStats::default(), "no cache, so no hit rate");
+}
+
+#[test]
 fn the_least_recently_used_box_goes_first() {
     let [a, b, c] = [1, 2, 3].map(|n| Arc::new(sized(n, 100, [0; 6], 0)));
     // Room for two of the three.

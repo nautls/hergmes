@@ -30,6 +30,7 @@ use crate::{
     api::{
         ApiError,
         http::Api,
+        metrics::Transport,
         protocol::{self, ClientMessage, Echo, Reject, ServerMessage, SubscribeId},
         ws::{
             CLOSE_TIMEOUT, Config, MISSED_PINGS, PING_INTERVAL, RecvError, SINK_CAPACITY, Socket,
@@ -364,6 +365,7 @@ impl<S: NodeSource + 'static, K: Socket> Connection<S, K> {
             }
             Opened::Resync(reason) => {
                 let echo = self.keys.remove(&key).expect("current").echo;
+                self.api.metrics.resync(reason);
                 self.write(&ServerMessage::Resync { key: &echo, reason, id: subscribe_id })
                     .await
             }
@@ -383,6 +385,7 @@ impl<S: NodeSource + 'static, K: Socket> Connection<S, K> {
             let echo = self.keys.remove(&key).expect("a live key").echo;
             self.feeds.remove(&key);
             let reason = ResyncReason::SlowConsumer;
+            self.api.metrics.resync(reason);
             self.write(&ServerMessage::Resync { key: &echo, reason, id: None })
                 .await?;
             self.close_with(close_code::POLICY, "slow consumer").await;
@@ -393,7 +396,8 @@ impl<S: NodeSource + 'static, K: Socket> Connection<S, K> {
             .get_or_init(|| protocol::keyless(&routed.output));
         let text = protocol::with_key(keyless, &self.keys[&key].echo);
         self.send(Message::Text(text.into())).await?;
-        if matches!(routed.output, Output::ResyncRequired { .. }) {
+        if let Output::ResyncRequired { reason, .. } = routed.output {
+            self.api.metrics.resync(reason);
             // The engine ended the subscription and took it off the key's count.
             self.keys.remove(&key);
             self.feeds.remove(&key);
@@ -442,6 +446,7 @@ impl<S: NodeSource + 'static, K: Socket> Connection<S, K> {
             }
             _ => debug!(code = reject.code(), "WebSocket subscribe refused"),
         }
+        self.api.metrics.rejected(Transport::Ws, reject.code());
         self.write(&ServerMessage::Rejected { key: echo, reject: &reject, id })
             .await
     }

@@ -24,6 +24,7 @@ pub mod headers;
 pub mod history;
 pub mod http;
 pub mod keys;
+pub mod metrics;
 pub mod pages;
 pub mod policy;
 pub mod protocol;
@@ -34,6 +35,7 @@ pub use balances::{AddressBalance, Balances};
 pub use cursor::Cursor;
 pub use headers::{Headers, HeadersPage};
 pub use history::{History, HistoryPage};
+pub use metrics::Metrics;
 pub use pages::{BoxPage, Pages, WithPoolBoxes};
 pub use policy::KeyPolicy;
 
@@ -68,8 +70,8 @@ pub enum ApiError {
     #[error("the relay tracks as many boxes as it can; try again later")]
     CapacityExceeded,
     /// A load that did not settle, an untracked address's balance whose halves never met at
-    /// one height, or a history page the indexer kept moving under; `retry_after` is the next
-    /// wait.
+    /// one height, or a history page the indexer kept moving under or that waited behind
+    /// slow reads; `retry_after` is the next wait.
     #[error("not ready yet; try again")]
     NotReady { retry_after: Duration },
     /// The node answered `503`, with its `Retry-After` if it sent one.

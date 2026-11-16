@@ -29,7 +29,7 @@ pub mod tokens;
 pub use balance::BalanceReader;
 pub use blocks::BlockConsumer;
 pub use boxes::BoxFetcher;
-pub use cache::BoxCache;
+pub use cache::{BoxCache, CacheStats};
 pub use follower::Follower;
 pub use headers::{HeaderCache, HeaderReader};
 pub use history::HistoryReader;

@@ -889,12 +889,37 @@ impl Harness {
     fn check(&mut self) {
         let tracked: Vec<&TrackingKey> = self.engine.ids.keys().collect();
         assert_eq!(tracked, self.keys.keys().collect::<Vec<_>>(), "tracked keys");
+        let Reply::Stats(stats) = self.engine.query(Query::Stats) else { unreachable!() };
         let Some(tip) = self.engine.tip() else {
             assert!(self.keys.is_empty());
+            assert_eq!(stats, Stats::default());
             return;
         };
         let oracle = self.chain.oracle_at(&tip.header_id);
         let utxo = oracle.utxo(tip.height);
+
+        // The sizes the metrics report are the model's: its keys by kind, the oracle's boxes
+        // of each, and the ring's length.
+        let addresses = self
+            .keys
+            .keys()
+            .filter(|key| matches!(key, TrackingKey::Tree(_)))
+            .count();
+        let boxes: usize = self
+            .keys
+            .keys()
+            .map(|key| oracle.unspent(key, tip.height).len())
+            .sum();
+        let ring_boxes: usize = self.engine.ring.iter().map(|d| d.boxes.len()).sum();
+        let expected = Stats {
+            tip: Some(tip),
+            address_keys: addresses,
+            token_keys: self.keys.len() - addresses,
+            tracked_boxes: boxes,
+            ring_blocks: self.ring_len as usize,
+            ring_boxes,
+        };
+        assert_eq!(stats, expected, "stats");
         let ids: HashSet<BoxId> = utxo.values().map(|b| b.id).collect();
 
         // Each tracked key's set and running totals equal the oracle's, and the reverse index
@@ -1364,6 +1389,35 @@ fn a_block_moves_a_box_between_keys_and_its_rollback_moves_it_back() {
         }
     );
     assert_eq!((f.state(&zero), f.state(&one), f.engine.reverse.clone()), before);
+}
+
+/// The sizes the metrics report, on a small case: the ring's boxes are the full boxes its
+/// blocks hold, each once however many keys it touched, and none for a block no key is in.
+#[test]
+fn stats_count_keys_by_kind_boxes_and_the_ring() {
+    let mut f = Fixture::new(Config::default());
+    let (zero, one) = (f.key(0), f.key(1));
+    let stats = |f: &mut Fixture| match f.engine.query(Query::Stats) {
+        Reply::Stats(stats) => stats,
+        other => panic!("{other:?}"),
+    };
+    let tip = f.engine.tip();
+    assert_eq!(stats(&mut f), Stats { tip, ring_blocks: 1, ..Stats::default() });
+
+    f.load(&zero);
+    f.load(&one);
+    let boxes = f.engine.reverse.len();
+    assert!(boxes > 0);
+    let loaded =
+        Stats { tip, address_keys: 2, tracked_boxes: boxes, ring_blocks: 1, ..Stats::default() };
+    assert_eq!(stats(&mut f), loaded, "a load adds nothing to the ring");
+
+    // One box moves from key 0 to key 1: the spent box and the created one, each stored once.
+    let source = sim::testing::box_of(&f.chain, 0);
+    let tx = f.chain.transfer(&[source], &f.chain.trees()[1].clone());
+    f.mine(vec![tx]);
+    let moved = Stats { tip: f.engine.tip(), ring_blocks: 2, ring_boxes: 2, ..loaded };
+    assert_eq!(stats(&mut f), moved);
 }
 
 #[test]

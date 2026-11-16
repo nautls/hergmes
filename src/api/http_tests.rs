@@ -153,6 +153,7 @@ impl Fixture {
             network: Network::Mainnet,
             policy,
             synced: follower.synced(),
+            metrics: Default::default(),
         });
         let router = router(api.clone());
         Self { sim, api, follower, router }
@@ -583,8 +584,33 @@ async fn unknown_routes_and_methods_are_plain_http_errors() {
     assert_eq!(f.get("/v1/nothing").await.status(), StatusCode::NOT_FOUND);
     assert_eq!(f.get("/v1/status/").await.status(), StatusCode::NOT_FOUND, "no trailing slash");
     assert_eq!(f.get("/v1/ws").await.status(), StatusCode::NOT_FOUND, "step 9");
+    assert_eq!(f.get("/metrics").await.status(), StatusCode::NOT_FOUND, "never on the public port");
     let post = Request::post("/v1/status").body(Body::empty()).unwrap();
     assert_eq!(f.send(post).await.status(), StatusCode::METHOD_NOT_ALLOWED);
+}
+
+/// Each refusal is counted once under its code, and a served request under none.
+#[tokio::test]
+async fn refusals_are_counted_by_code() {
+    let mut f = Fixture::new();
+    f.tick();
+    let boxes = format!("/v1/addresses/{}/boxes", f.address(0));
+    let count = |code: &str| {
+        let series = format!("hergmes_rejections_total{{transport=\"rest\",code=\"{code}\"}}");
+        f.api.metrics.count(&series)
+    };
+    f.ok(&boxes).await;
+    f.ok("/v1/status").await;
+    assert_eq!(f.get("/v1/nothing").await.status(), StatusCode::NOT_FOUND);
+    assert_eq!(count("invalid_limit") + count("invalid_address"), 0);
+    for _ in 0..2 {
+        f.error(&format!("{boxes}?limit=0"), StatusCode::BAD_REQUEST)
+            .await;
+    }
+    f.error("/v1/addresses/nope/boxes", StatusCode::BAD_REQUEST)
+        .await;
+    assert_eq!((count("invalid_limit"), count("invalid_address")), (2, 1));
+    assert_eq!(count("too_many_boxes"), 0);
 }
 
 #[tokio::test]

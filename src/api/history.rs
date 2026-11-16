@@ -11,7 +11,7 @@ use tokio::time::sleep;
 use tracing::debug;
 
 use crate::{
-    adapters::{EngineHandle, HistoryReader},
+    adapters::{EngineHandle, HistoryReader, history::HistoryError},
     api::{ApiError, cursor::TxCursor},
     clients::NodeSource,
     engine::{
@@ -206,7 +206,11 @@ impl<S: NodeSource> History<S> {
         self.reader
             .read(tree, offset, limit)
             .await
-            .map_err(|e| ApiError::from(&e))
+            .map_err(|error| match error {
+                HistoryError::Node(error) => ApiError::from(&error),
+                // The reads ahead are slow, not failing: the same request works once they end.
+                HistoryError::Busy => ApiError::NotReady { retry_after: self.config.retry },
+            })
     }
 }
 

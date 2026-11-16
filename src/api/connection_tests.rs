@@ -66,6 +66,7 @@ impl Fixture {
             network: Network::Mainnet,
             policy: KeyPolicy::default(),
             synced: follower.synced(),
+            metrics: Default::default(),
         });
         let mut f = Self { sim, engine, _task: task, follower, api };
         f.tick().await;
@@ -523,6 +524,7 @@ async fn a_routed_resync_ends_the_subscription_and_keeps_the_connection() {
         messages,
         [json!({ "type": "resync_required", "key": echo, "reason": "fork_beyond_window" })]
     );
+    assert_eq!(resyncs(&f, "fork_beyond_window"), 1, "a routed one");
     f.mine(6).await;
     assert!(client.texts().await.is_empty(), "nothing more for the ended subscription");
     assert!(client.closed.is_none());
@@ -660,7 +662,15 @@ async fn a_reconnect_after_the_grace_period_gets_resync_required() {
     let (f, _, messages, _) = reconnect_after(CONFIG.grace + 1).await;
     assert_eq!(types(&messages), ["resync_required"]);
     assert_eq!(messages[0]["reason"], "not_tracked");
+    assert_eq!(resyncs(&f, "not_tracked"), 1, "a subscribe's answer");
     assert!(!f.tracked(&token_key().0).await);
+}
+
+/// The `resync_required` messages counted under `reason`.
+fn resyncs(f: &Fixture, reason: &str) -> u64 {
+    f.api
+        .metrics
+        .count(&format!("hergmes_resyncs_total{{reason=\"{reason}\"}}"))
 }
 
 // --- Refusals ---
@@ -682,6 +692,15 @@ async fn refused_keys_are_rejected_and_the_connection_carries_on() {
         assert_eq!(messages, [json!({ "type": "rejected", "key": key, "reason": reason })]);
     }
     assert!(client.closed.is_none());
+    // Each is counted under its code, apart from REST's refusals.
+    let count = |transport: &str, code: &str| {
+        f.api.metrics.count(&format!(
+            "hergmes_rejections_total{{transport=\"{transport}\",code=\"{code}\"}}"
+        ))
+    };
+    assert_eq!(count("ws", "invalid_address"), 1);
+    assert_eq!(count("ws", "from_required"), 2);
+    assert_eq!(count("rest", "invalid_address"), 0);
 }
 
 /// A load that fails for now is `rejected` with the wait: here, the configured keys have not
@@ -1323,6 +1342,7 @@ async fn a_slow_consumer_gets_resync_required_and_is_closed() {
     assert_eq!(last, &json!({ "type": "resync_required", "key": echo, "reason": "slow_consumer" }));
     assert_eq!(client.closed.clone().unwrap().0, Some(close_code::POLICY));
     assert!(messages.len() < SINK_CAPACITY * 3, "bounded: {}", messages.len());
+    assert_eq!(resyncs(&f, "slow_consumer"), 1);
     client.server.await.unwrap();
 }
 

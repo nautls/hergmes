@@ -10,6 +10,7 @@ use axum::{
     Json, Router,
     extract::{Path, Query, State, rejection::PathRejection},
     http::{HeaderValue, Method, StatusCode, header::RETRY_AFTER},
+    middleware::map_response_with_state,
     response::{IntoResponse, Response},
     routing::get,
 };
@@ -20,8 +21,9 @@ use tracing::{debug, warn};
 use crate::{
     adapters::{EngineHandle, engine_tip},
     api::{
-        ApiError, Balances, Headers, History, KeyPolicy, Pages, headers, history,
+        ApiError, Balances, Headers, History, KeyPolicy, Metrics, Pages, headers, history,
         keys::{address_key, token_key},
+        metrics::Transport,
         pages,
         wire::{
             BalanceBody, ErrorBody, HeadersBody, HistoryBody, PageBody, StatusBody, WithPoolBody,
@@ -52,6 +54,8 @@ pub struct Api<S, E> {
     pub policy: KeyPolicy,
     /// Whether the follower's last tick left the engine at the node's tip.
     pub synced: watch::Receiver<bool>,
+    /// Counts the refusals sent to clients.
+    pub metrics: Metrics,
 }
 
 /// The routes, with CORS. Errors carry its headers too, so a browser client can read an
@@ -67,6 +71,7 @@ where
         .allow_origin(Any)
         .allow_methods([Method::GET])
         .expose_headers([RETRY_AFTER]);
+    let metrics = api.metrics.clone();
     Router::new()
         .route("/v1/addresses/{address}/boxes", get(address_boxes::<S, E>))
         .route("/v1/tokens/{token_id}/boxes", get(token_boxes::<S, E>))
@@ -77,7 +82,20 @@ where
         .route("/v1/headers", get(last_headers::<S, E>))
         .route("/v1/status", get(status::<S, E>))
         .with_state(api)
+        .layer(map_response_with_state(metrics, count_refusal))
         .layer(cors)
+}
+
+/// An error response's code, left on it for [`count_refusal`]: `IntoResponse` has no state
+/// to count with.
+#[derive(Debug, Clone, Copy)]
+struct Refused(&'static str);
+
+async fn count_refusal(State(metrics): State<Metrics>, response: Response) -> Response {
+    if let Some(Refused(code)) = response.extensions().get() {
+        metrics.rejected(Transport::Rest, code);
+    }
+    response
 }
 
 /// The query of a page request: `cursor` and `limit`. Read as pairs, so a value that is not
@@ -275,6 +293,7 @@ impl IntoResponse for ApiError {
         let message = self.public_message();
         let body = ErrorBody { error: self.code(), message: &message };
         let mut response = (status, Json(body)).into_response();
+        response.extensions_mut().insert(Refused(self.code()));
         if let Some(wait) = self.retry_after() {
             response
                 .headers_mut()

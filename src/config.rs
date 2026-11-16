@@ -58,13 +58,16 @@ pub mod vars {
     /// The most subscriptions one WebSocket connection holds, live and pending, counting
     /// subscribes the client cancelled until they finish.
     pub const MAX_SUBSCRIPTIONS_PER_CONNECTION: &str = "HERGMES_MAX_SUBSCRIPTIONS_PER_CONNECTION";
+    /// Where `/metrics` is served; unset, it is not served at all.
+    pub const METRICS_ADDR: &str = "HERGMES_METRICS_ADDR";
 }
 
 /// Loopback by default, so a fresh install is not exposed until the operator chooses: usually
 /// behind a reverse proxy, or `0.0.0.0:8080` in a container.
 pub const LISTEN_ADDR: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 8080);
 
-/// The box cache's default budget: about 32k to 1.2M boxes, at 100 B to 4 KB each.
+/// The box cache's default budget: about 28k of the largest boxes (4 KB) to 195k of the
+/// smallest, and about 185k of mainnet's usual ones (PLAN.md, step 10).
 pub const BOX_CACHE_MB: u64 = 128;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -85,6 +88,8 @@ pub struct Config {
     /// The box cache's budget in bytes, read in MiB; 0 disables the cache.
     pub box_cache_bytes: u64,
     pub listen_addr: SocketAddr,
+    /// Where the metrics are served, apart from the public API; `None` serves none.
+    pub metrics_addr: Option<SocketAddr>,
     pub ws: ws::Config,
 }
 
@@ -164,6 +169,9 @@ impl Config {
             allow_tokens: allowlist(vars::ALLOW_TOKENS, get(vars::ALLOW_TOKENS), token_id)?,
             box_cache_bytes,
             listen_addr: number(vars::LISTEN_ADDR, get(vars::LISTEN_ADDR), LISTEN_ADDR)?,
+            metrics_addr: get(vars::METRICS_ADDR)
+                .map(|v| number(vars::METRICS_ADDR, Some(v), LISTEN_ADDR))
+                .transpose()?,
             ws: ws::Config {
                 max_subscriptions: at_least_one(
                     vars::MAX_SUBSCRIPTIONS_PER_CONNECTION,

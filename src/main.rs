@@ -4,9 +4,9 @@ use dotenvy::dotenv;
 use hergmes::{
     adapters::{BoxCache, BoxFetcher, Follower, HeaderReader, TokenChecker, loader::Loader},
     api::{
-        Balances, Headers, History, Pages,
+        Balances, Headers, History, Metrics, Pages,
         http::{self, Api},
-        ws,
+        metrics, ws,
     },
     clients::NodeClient,
     config::Config,
@@ -45,6 +45,14 @@ async fn run() -> Result<(), AppError> {
     let listener = TcpListener::bind(addr)
         .await
         .map_err(|source| AppError::Listen { addr, source })?;
+    let metrics_listener = match config.metrics_addr {
+        Some(addr) => Some(
+            TcpListener::bind(addr)
+                .await
+                .map_err(|source| AppError::Listen { addr, source })?,
+        ),
+        None => None,
+    };
     let http_client = reqwest::Client::builder()
         .timeout(Duration::from_secs(30))
         .build()
@@ -57,6 +65,7 @@ async fn run() -> Result<(), AppError> {
     let (engine, mut engine_task) = runtime::spawn(Engine::new(config.engine));
     // Seeded by every first load, and read by the box fetcher to fill in pages.
     let cache = BoxCache::new(config.box_cache_bytes);
+    let counters = Metrics::new(cache.clone());
     info!(
         network = ?node.network(),
         window = config.engine.window,
@@ -90,10 +99,17 @@ async fn run() -> Result<(), AppError> {
         network: node.network(),
         policy,
         synced,
+        metrics: counters.clone(),
     });
     let routes = http::router(api.clone()).merge(ws::router(api, config.ws));
     let mut server = tokio::spawn(axum::serve(listener, routes).into_future());
     info!(%addr, max_subscriptions = config.ws.max_subscriptions, "Serving the REST API and the WebSocket");
+    // On its own address, off unless set: operators read it, the public does not.
+    let mut metrics_server = metrics_listener.map(|listener| {
+        info!(addr = ?config.metrics_addr, "Serving the metrics");
+        let routes = metrics::router(engine.clone(), counters);
+        tokio::spawn(axum::serve(listener, routes).into_future())
+    });
 
     let keeper = Arc::new(Keeper::new(engine, loader, tokens, Default::default()));
     let mut keepers = JoinSet::new();
@@ -122,6 +138,11 @@ async fn run() -> Result<(), AppError> {
             served = &mut server => {
                 return Err(AppError::Server(served?.err().unwrap_or_else(|| {
                     std::io::Error::other("it returned without an error")
+                })));
+            }
+            Some(served) = async { Some(metrics_server.as_mut()?.await) } => {
+                return Err(AppError::Server(served?.err().unwrap_or_else(|| {
+                    std::io::Error::other("the metrics server returned without an error")
                 })));
             }
             Some(stopped) = keepers.join_next_with_id() => match stopped {

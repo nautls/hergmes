@@ -31,6 +31,7 @@ tower-http = { version = "0.7.1", features = ["cors"] }
 tungstenite = { version = "0.29.0", default-features = false }
 tracing = { version = "0.1.44" }
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "registry"] }
+prometheus-client = "0.26.0"
 
 [features]
 # Exposes the `sim` module (SimChain + oracle) to integration tests.

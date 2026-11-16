@@ -42,6 +42,7 @@ fn only_the_node_url_is_required() {
     assert_eq!(config.allow_tokens, None, "every token within the supply limit");
     assert_eq!(config.box_cache_bytes, 128 * 1024 * 1024);
     assert_eq!(config.listen_addr.to_string(), "127.0.0.1:8080", "loopback until chosen");
+    assert_eq!(config.metrics_addr, None, "no metrics until chosen");
     assert_eq!(config.ws.max_subscriptions, 100);
 
     assert!(matches!(self::config(&[]), Err(ConfigError::Missing(vars::NODE_URL))));
@@ -67,6 +68,7 @@ fn every_setting_is_read() {
         (vars::MAX_BOXES_PER_KEY, "40"),
         (vars::MAX_TRACKED_BOXES, "900"),
         (vars::LISTEN_ADDR, "0.0.0.0:9000"),
+        (vars::METRICS_ADDR, "127.0.0.1:9100"),
         (vars::MAX_SUBSCRIPTIONS_PER_CONNECTION, "8"),
     ])
     .unwrap();
@@ -89,6 +91,7 @@ fn every_setting_is_read() {
     assert_eq!(config.allow_tokens, Some(vec![TOKEN.parse().unwrap()]));
     assert_eq!(config.box_cache_bytes, 3 * 1024 * 1024);
     assert_eq!(config.listen_addr.to_string(), "0.0.0.0:9000");
+    assert_eq!(config.metrics_addr.unwrap().to_string(), "127.0.0.1:9100");
     assert_eq!(config.ws.max_subscriptions, 8);
 }
 
@@ -131,6 +134,8 @@ fn bad_values_name_their_variable() {
         (vars::LISTEN_ADDR, "localhost:8080"),
         (vars::LISTEN_ADDR, "127.0.0.1"),
         (vars::LISTEN_ADDR, "127.0.0.1:65536"),
+        (vars::METRICS_ADDR, "off"),
+        (vars::METRICS_ADDR, "9100"),
         (vars::MAX_SUBSCRIPTIONS_PER_CONNECTION, "0"),
         (vars::MAX_SUBSCRIPTIONS_PER_CONNECTION, "many"),
     ] {
