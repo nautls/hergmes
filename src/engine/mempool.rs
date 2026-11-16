@@ -199,6 +199,11 @@ impl Mempool {
                 "Mempool snapshot re-decided"
             );
         }
+        if s.order.len() == before {
+            // The same txs in the same order, so every overlay is as it was: nothing to
+            // compare, where `emit` would walk every tracked key on each load.
+            return Vec::new();
+        }
         let height = s.tip.height;
         self.emit(height)
     }

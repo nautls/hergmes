@@ -499,7 +499,14 @@ impl Engine {
             .get_mut(&key_id)
             .expect("just inserted")
             .pending_sent = delta;
-        self.push_balances(&BTreeMap::new(), &mut outputs);
+        // Only the keys whose overlay the re-decision changed can have a new balance: a
+        // pending delta moves only with its overlay, and the loaded key's was just set. A
+        // walk of every key here made each load cost as much as there are keys, and a
+        // restart's reload of all of them quadratic (PLAN.md, step 10).
+        let changed: Vec<TrackingKey> = outputs.iter().map(|o| o.key().clone()).collect();
+        for key in &changed {
+            self.push_balance(key, None, &mut outputs);
+        }
         outputs
     }
 
@@ -572,16 +579,28 @@ impl Engine {
         };
         for (key, key_id) in &self.ids {
             let state = self.keys.get_mut(key_id).expect("an id is tracked");
-            let Some(totals) = &state.totals else {
-                continue;
-            };
-            let pending = self.mempool.tracked_delta(key).cloned().unwrap_or_default();
-            let totals_changed = before.get(key_id).is_some_and(|t| t != totals);
-            if totals_changed || pending != state.pending_sent {
-                state.pending_sent = pending.clone();
-                let balance = Balance { as_of: tip, confirmed: totals.clone(), pending };
+            let pending = self.mempool.tracked_delta(key);
+            if let Some(balance) = changed_balance(state, tip, before.get(key_id), pending) {
                 outputs.push(Output::Balance { key: key.clone(), balance });
             }
+        }
+    }
+
+    /// [`Engine::push_balances`] for one key, for an event that names the keys it changed.
+    /// Nothing for a key that is not tracked.
+    fn push_balance(
+        &mut self,
+        key: &TrackingKey,
+        before: Option<&Totals>,
+        outputs: &mut Vec<Output>,
+    ) {
+        let (Some(tip), Some(key_id)) = (self.tip, self.ids.get(key)) else {
+            return;
+        };
+        let state = self.keys.get_mut(key_id).expect("an id is tracked");
+        let pending = self.mempool.tracked_delta(key);
+        if let Some(balance) = changed_balance(state, tip, before, pending) {
+            outputs.push(Output::Balance { key: key.clone(), balance });
         }
     }
 
@@ -809,6 +828,25 @@ fn merge<'a>(
         (Some(_), None) => a.next().copied(),
         (None, _) => b.next().copied(),
     })
+}
+
+/// The balance to send for a key, if it differs from the last one sent: its totals changed
+/// from `before`, or its pending delta from the one sent. Records the delta as sent. `None`
+/// for a token key, which has no balance.
+fn changed_balance(
+    state: &mut KeyState,
+    tip: BlockRef,
+    before: Option<&Totals>,
+    pending: Option<&PendingDelta>,
+) -> Option<Balance> {
+    let totals = state.totals.as_ref()?;
+    let pending = pending.cloned().unwrap_or_default();
+    let totals_changed = before.is_some_and(|t| t != totals);
+    if !totals_changed && pending == state.pending_sent {
+        return None;
+    }
+    state.pending_sent = pending.clone();
+    Some(Balance { as_of: tip, confirmed: totals.clone(), pending })
 }
 
 #[cfg(test)]

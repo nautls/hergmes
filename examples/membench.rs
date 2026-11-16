@@ -11,6 +11,9 @@
 //! 135 bytes, and 600 a key. `cache` fills a [`BoxCache`] with small boxes and reports the growth against
 //! the cache's own weighted size, which is what the budget bounds.
 //!
+//! `engine` also prints what a load and a scrape's `Query::Stats` take on average, in
+//! microseconds: both must stay flat, or nearly, as the keys grow.
+//!
 //! One run is one process, so nothing but the structure under test grows. A run's figure
 //! still holds what the allocator keeps of freed memory (a load's full boxes are freed once
 //! the engine has their ids), so run each at two sizes and take the slope: with the boxes per
@@ -27,9 +30,12 @@ use hergmes::{
     engine::{BlockRef, Config, Engine, Event, LoadedBox, Query, Reply, TrackingKey},
     types::{
         Digest, HexBytes,
-        ergo::{BlockHeader, IndexedBlock, UTxO},
+        ergo::{BlockHeader, IndexedBlock, UTxO, UnconfirmedTransaction},
     },
 };
+
+/// Pending txs in the benchmark's mempool snapshot: a busy pool, a fifth of the node's cap.
+const POOL_TXS: u64 = 200;
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -104,7 +110,22 @@ fn engine(keys: usize, boxes_per_key: usize) {
         .apply(Event::BlockApplied(IndexedBlock { header, transactions: Vec::new() }))
         .expect("the first block");
 
+    // A pool as a busy node holds, paying no tracked key: every load decides the snapshot
+    // again and reads the new key's overlay from it, as it does in the relay.
+    let stranger = tree(u64::MAX);
+    let txs: Vec<UnconfirmedTransaction> = (0..POOL_TXS)
+        .map(|t| UnconfirmedTransaction {
+            id: digest(u64::MAX - 2 - 3 * t),
+            inputs: vec![plain_box(u64::MAX - 3 - 3 * t, &stranger)],
+            outputs: vec![plain_box(u64::MAX - 4 - 3 * t, &stranger)],
+        })
+        .collect();
+    engine
+        .apply(Event::MempoolSnapshot { txs: txs.into(), observed_tip: tip })
+        .expect("a snapshot is never an error");
+
     let before = resident();
+    let loading = std::time::Instant::now();
     for k in 0..keys {
         let tree = tree(k as u64);
         // Inclusion heights spread below the tip, as a real key's are.
@@ -120,13 +141,20 @@ fn engine(keys: usize, boxes_per_key: usize) {
         assert!(outputs.len() <= 1, "tracked, with at most its first balance: {outputs:?}");
     }
     let after = resident();
+    let load_micros = loading.elapsed().as_micros() / keys as u128;
 
+    // What a scrape costs the engine task: the walk of the key index, timed over a few runs.
+    let started = std::time::Instant::now();
+    for _ in 0..9 {
+        engine.query(Query::Stats);
+    }
+    let stats_micros = started.elapsed().as_micros() / 9;
     let Reply::Stats(stats) = engine.query(Query::Stats) else { unreachable!() };
     assert_eq!((stats.address_keys, stats.tracked_boxes), (keys, boxes), "every key was loaded");
     let grown = after.saturating_sub(before);
     println!(
         "engine keys={keys} boxes_per_key={boxes_per_key} boxes={boxes} rss_before={before} \
-         rss_after={after} grown={grown} bytes_per_box={:.1}",
+         rss_after={after} grown={grown} bytes_per_box={:.1} load_micros={load_micros} stats_micros={stats_micros}",
         grown as f64 / boxes as f64
     );
 }
