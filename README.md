@@ -33,50 +33,57 @@ reorg is either rolled back to the fork point or told to resync, never left sile
 ## Getting started
 
 ```sh
-cp .env.example .env
-# set ERGO_NODE_URL to your indexed node, e.g. http://127.0.0.1:9053
-cargo run
+ERGO_NODE_URL=http://127.0.0.1:9053 cargo run
 ```
 
-| Variable                                   | Default        | Description                                                                       |
-| ------------------------------------------ | -------------- | --------------------------------------------------------------------------------- |
-| `ERGO_NODE_URL`                            |                | URL of an indexed Ergo node (required)                                            |
-| `HERGMES_WINDOW_BLOCKS`                    | 720            | Blocks of deltas kept for replays, rollbacks and pinned pages                     |
-| `HERGMES_GRACE_BLOCKS`                     | 5              | Blocks a key with no subscribers stays tracked                                    |
-| `HERGMES_POLL_INTERVAL_MS`                 | 1000           | How often the node's status is read to spot a new block or mempool change         |
-| `HERGMES_MEMPOOL_REFRESH_MS`               | 10000          | Most time between full mempool fetches, even if the node's status shows no change |
-| `HERGMES_TOKEN_SUPPLY_LIMIT`               | 100            | Largest token emission that can be tracked                                        |
-| `HERGMES_TRACK_ADDRESSES`                  |                | Addresses tracked for the life of the process, comma-separated                    |
-| `HERGMES_TRACK_TOKENS`                     |                | Token ids tracked for the life of the process, comma-separated                    |
-| `HERGMES_ALLOW_ADDRESSES`                  | any            | Addresses clients may name: `p2pk`, `p2sh`, `p2s`, addresses or `none`            |
-| `HERGMES_DENY_ADDRESSES`                   |                | Addresses clients may not name; deny wins over allow                              |
-| `HERGMES_ALLOW_TOKENS`                     | any            | Token ids clients may name, or `none`                                             |
-| `HERGMES_BOX_CACHE_MB`                     | 128            | Memory for full boxes kept to serve pages, in MiB; 0 disables it                  |
-| `HERGMES_MAX_BOXES_PER_KEY`                | 50000          | Most boxes an address or token can have to be tracked                             |
-| `HERGMES_MAX_TRACKED_BOXES`                | 2000000        | Most boxes tracked over all keys (about 145 bytes each)                           |
-| `HERGMES_LISTEN_ADDR`                      | 127.0.0.1:8080 | IP and port of the REST API and the WebSocket                                     |
-| `HERGMES_MAX_SUBSCRIPTIONS_PER_CONNECTION` | 100            | Most subscriptions one WebSocket connection holds                                 |
-| `HERGMES_METRICS_ADDR`                     |                | IP and port of `/metrics`; unset, no metrics are served                           |
+Every other setting has a default. To change one, copy
+[`hergmes.example.toml`](hergmes.example.toml) to `hergmes.toml`, which the relay reads from the
+directory it starts in, or pass another file with `--config <path>`. The startup log names the
+file read, or says there is none. A key the relay does not know stops it at startup.
 
-By default (`any`), the relay serves any address and any token within the supply limit. The
-allow and deny lists narrow that, for an instance run for one dapp or one wallet; a refused key
-is `403 key_not_allowed`, on every route that takes a key (a box id and a tx are not keys).
-Keys in `HERGMES_TRACK_*` are always allowed. Denying one, or denying an address the allow list
-names, stops the relay at startup. The startup log shows the policy in force, so a misspelled
-variable shows up as `any`. For example:
+Three settings depend on where the relay runs, so a container can set them as environment
+variables instead, without a file: `ERGO_NODE_URL`, `HERGMES_LISTEN_ADDR` and
+`HERGMES_METRICS_ADDR`. Each is set in the file or as its variable, never both.
 
-```sh
+| Key                                | Default        | Description                                                                       |
+| ---------------------------------- | -------------- | --------------------------------------------------------------------------------- |
+| `node_url`                         |                | URL of an indexed Ergo node (required); or `ERGO_NODE_URL`                        |
+| `window_blocks`                    | 720            | Blocks of deltas kept for replays, rollbacks and pinned pages                     |
+| `grace_blocks`                     | 5              | Blocks a key with no subscribers stays tracked                                    |
+| `poll_interval_ms`                 | 1000           | How often the node's status is read to spot a new block or mempool change         |
+| `mempool_refresh_ms`               | 10000          | Most time between full mempool fetches, even if the node's status shows no change |
+| `token_supply_limit`               | 100            | Largest token emission that can be tracked                                        |
+| `track_addresses`                  | `[]`           | Addresses tracked for the life of the process                                     |
+| `track_tokens`                     | `[]`           | Token ids tracked for the life of the process                                     |
+| `allow_addresses`                  | omitted: any   | Addresses clients may name: `"p2pk"`, `"p2sh"`, `"p2s"` and addresses             |
+| `deny_addresses`                   | `[]`           | Addresses clients may not name; deny wins over allow                              |
+| `allow_tokens`                     | omitted: any   | Token ids clients may name                                                        |
+| `box_cache_mb`                     | 128            | Memory for full boxes kept to serve pages, in MiB; 0 disables it                  |
+| `max_boxes_per_key`                | 50000          | Most boxes an address or token can have to be tracked                             |
+| `max_tracked_boxes`                | 2000000        | Most boxes tracked over all keys (about 145 bytes each)                           |
+| `listen_addr`                      | 127.0.0.1:8080 | IP and port of the REST API and the WebSocket; or `HERGMES_LISTEN_ADDR`           |
+| `max_subscriptions_per_connection` | 100            | Most subscriptions one WebSocket connection holds                                 |
+| `metrics_addr`                     |                | IP and port of `/metrics`, omitted: none; or `HERGMES_METRICS_ADDR`               |
+
+By default, with the allow lists omitted, the relay serves any address and any token within the
+supply limit. The allow and deny lists narrow that, for an instance run for one dapp or one
+wallet; an empty allow list (`[]`) allows nothing. A refused key is `403 key_not_allowed`, on
+every route that takes a key (a box id and a tx are not keys). Keys in `track_addresses` and
+`track_tokens` are always allowed. Denying one, or denying an address the allow list names, stops
+the relay at startup, and the startup log shows the policy in force. For example:
+
+```toml
 # a dapp: its own contracts and tokens, with a higher supply limit
-HERGMES_ALLOW_ADDRESSES=<contract>,<contract>
-HERGMES_ALLOW_TOKENS=<token-id>,<token-id>
+allow_addresses = ["<contract>", "<contract>"]
+allow_tokens = ["<token-id>", "<token-id>"]
 # at least the largest emission among the allowed tokens
-HERGMES_TOKEN_SUPPLY_LIMIT=1000000
+token_supply_limit = 1000000
 
 # a wallet: keys and scripts it signs for, plus a few contracts it relies on
-HERGMES_ALLOW_ADDRESSES=p2pk,p2sh,<contract>
+allow_addresses = ["p2pk", "p2sh", "<contract>"]
 
 # a general-purpose instance, without busy contracts no client needs
-HERGMES_DENY_ADDRESSES=<miner-fee-contract>
+deny_addresses = ["<miner-fee-contract>"]
 ```
 
 The API listens on loopback by default, so a fresh install is not exposed until you choose. Put
@@ -90,7 +97,7 @@ under nginx's default `client_max_body_size` of 1 MB.
 
 Logging uses `tracing`; set `RUST_LOG` (e.g. `RUST_LOG=hergmes=debug`) to adjust verbosity.
 
-Set `HERGMES_METRICS_ADDR` (e.g. `127.0.0.1:9100`) to serve Prometheus metrics on `GET /metrics`,
+Set `metrics_addr` (e.g. `"127.0.0.1:9100"`) to serve Prometheus metrics on `GET /metrics`,
 on an address of its own and never on the public one: tracked keys by kind, tracked boxes, the
 ring buffer's and the box cache's sizes, cache hits and misses, resident memory, and refusals and
 resyncs by reason. They are counts only and name no address or token.
@@ -244,7 +251,7 @@ cargo test
 | `src/engine/`     | The engine: a pure state machine with no I/O and no clock |
 | `src/adapters/`   | Node I/O feeding the engine                               |
 | `src/runtime/`    | The engine task, output routing, configured keys          |
-| `src/config.rs`   | Configuration from environment variables                  |
+| `src/config.rs`   | Configuration from `hergmes.toml` and `ERGO_NODE_URL`     |
 | `src/api/`        | REST routes and their services, the WebSocket, metrics    |
 | `src/sim/`        | Simulated chain and oracle for tests (`sim` feature)      |
 | `tests/smoke.rs`  | Smoke tests against a real node                           |

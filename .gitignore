@@ -1,5 +1,5 @@
 /target
-.env
+/hergmes.toml
 DESIGN.md
 PLAN.md
 /sdk/**/node_modules

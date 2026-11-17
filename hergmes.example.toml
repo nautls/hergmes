@@ -1,0 +1,67 @@
+# hergmes configuration. Copy it to hergmes.toml in the directory the relay starts from, or pass
+# --config <path>. Every setting is optional but the node URL, and an unknown key stops startup.
+# The values shown are the defaults, except under a comment that says "An example".
+
+# --- Node ---
+
+# URL of an indexed Ergo node. Required: here, or as the ERGO_NODE_URL environment variable,
+# but not both. No default. An example:
+# node_url = "http://127.0.0.1:9053"
+
+# How often the node's status is read to spot a new block or mempool change, in milliseconds.
+# poll_interval_ms = 1000
+
+# Most time between full mempool fetches, even if the node's status shows no change, in ms.
+# mempool_refresh_ms = 10000
+
+# --- Serving ---
+# The two addresses can instead be set as HERGMES_LISTEN_ADDR and HERGMES_METRICS_ADDR, but each
+# not in both places.
+
+# IP and port of the REST API and the WebSocket. Loopback until you choose: 0.0.0.0:8080 in a
+# container.
+# listen_addr = "127.0.0.1:8080"
+
+# IP and port of GET /metrics, apart from the public API. Omitted (the default), no metrics are
+# served. An example:
+# metrics_addr = "127.0.0.1:9100"
+
+# Most subscriptions one WebSocket connection holds.
+# max_subscriptions_per_connection = 100
+
+# --- Keys ---
+
+# Addresses and token ids tracked for the life of the process. Always allowed.
+# track_addresses = []
+# track_tokens = []
+
+# Largest token emission that can be tracked.
+# token_supply_limit = 100
+
+# Addresses clients may name: the classes "p2pk", "p2sh" and "p2s", and addresses. Omitted (the
+# default), any address is allowed; [] allows none. An example:
+# allow_addresses = ["p2pk", "p2sh"]
+
+# Addresses clients may not name; deny wins over allow.
+# deny_addresses = []
+
+# Token ids clients may name. Omitted (the default), any token within the supply limit is
+# allowed; [] allows none. An example, which allows no token:
+# allow_tokens = []
+
+# --- Memory ---
+
+# Blocks of deltas kept for replays, rollbacks and pinned pages.
+# window_blocks = 720
+
+# Blocks a key with no subscribers stays tracked.
+# grace_blocks = 5
+
+# Memory for full boxes kept to serve pages, in MiB; 0 disables it.
+# box_cache_mb = 128
+
+# Most boxes an address or token can have to be tracked.
+# max_boxes_per_key = 50000
+
+# Most boxes tracked over all keys (about 145 bytes each).
+# max_tracked_boxes = 2000000

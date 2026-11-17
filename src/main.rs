@@ -1,6 +1,10 @@
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::Duration,
+};
 
-use dotenvy::dotenv;
 use hergmes::{
     adapters::{BoxCache, BoxFetcher, Follower, HeaderReader, TokenChecker, loader::Loader},
     api::{
@@ -9,23 +13,27 @@ use hergmes::{
         metrics, ws,
     },
     clients::NodeClient,
-    config::Config,
+    config::{self, Config},
     engine::Engine,
     error::AppError,
     runtime::{self, Keeper},
     trace::{self, default_subscriber},
 };
 use tokio::{net::TcpListener, task::JoinSet};
-use tracing::{error, info, warn};
+use tracing::{error, info};
 
 #[tokio::main]
 async fn main() -> Result<(), AppError> {
-    if let Err(e) = dotenv() {
-        warn!("Failed to load .env file: {:?}. Using environment variables instead.", e);
-    }
     trace::init(default_subscriber());
 
-    let result = run().await;
+    let result = match config::args(std::env::args_os().skip(1)) {
+        Ok(config::Args::Help) => {
+            println!("{}", config::HELP);
+            return Ok(());
+        }
+        Ok(config::Args::Run { config }) => run(config).await,
+        Err(error) => Err(error.into()),
+    };
     if let Err(error) = &result {
         error!(%error, "Stopping");
     }
@@ -38,8 +46,13 @@ async fn main() -> Result<(), AppError> {
 /// follower and keepers then stop with `EngineGone`: nothing can serve, so the process
 /// exits, and a restart reloads every key from the node. A keeper that gives up its key
 /// (logged), or panics, leaves the relay running: one key's trouble never stops it.
-async fn run() -> Result<(), AppError> {
-    let config = Config::from_env()?;
+async fn run(flag: Option<PathBuf>) -> Result<(), AppError> {
+    let path = config::locate(flag, Path::new(""));
+    match &path {
+        Some(path) => info!(path = %path.display(), "Reading the config file"),
+        None => info!("No config file, every setting but the node URL has its default"),
+    }
+    let config = Config::load(path.as_deref())?;
     // Bound first, so a port conflict stops the process before anything starts.
     let addr = config.listen_addr;
     let listener = TcpListener::bind(addr)
