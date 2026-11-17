@@ -291,7 +291,7 @@ impl Serialize for BoxBody<'_> {
     }
 }
 
-/// `GET /v1/tokens`: the known tokens among those asked for, in their order.
+/// `GET /v1/tokens/metadata`: the known tokens among those asked for, in their order.
 pub struct TokensBody<'a>(pub &'a [Arc<TokenMetadata>]);
 
 impl Serialize for TokensBody<'_> {

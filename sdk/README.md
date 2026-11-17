@@ -104,7 +104,7 @@ the route's JSON as it came, amounts as base-10 strings:
 | `history(address, { cursor, limit })`  | `GET /v1/addresses/{address}/transactions`         |
 | `headers({ limit })`                   | `GET /v1/headers`                                  |
 | `box(boxId)`                           | `GET /v1/boxes/{boxId}`                            |
-| `tokens(ids)`                          | `GET /v1/tokens?ids=...`                           |
+| `tokens(ids)`                          | `GET /v1/tokens/metadata?ids=...`                  |
 | `submitTransaction(tx, { broadcast })` | `POST /v1/transactions`                            |
 
 `tokens` answers the metadata of the tokens the relay's node knows among `ids`, leaving out the

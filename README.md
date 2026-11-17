@@ -120,7 +120,7 @@ resyncs by reason. They are counts only and name no address or token.
 | `GET /v1/addresses/{address}/transactions`    | An address's txs, newest first, pending on top    |
 | `GET /v1/headers`                             | The last block headers up to the tip, for signing |
 | `GET /v1/boxes/{boxId}`                       | One box, if a tx can spend it now                 |
-| `GET /v1/tokens?ids={tokenId},...`            | Tokens' names, decimals and emissions             |
+| `GET /v1/tokens/metadata?ids={tokenId},...`   | Tokens' names, decimals and emissions             |
 | `POST /v1/transactions`                       | Send a signed tx, or only check it                |
 | `GET /v1/status`                              | Version, network, tip and readiness               |
 
@@ -164,9 +164,9 @@ the node's best header, which `/blocks/lastHeaders` follows and which can run ah
 by a pending tx, or unknown is `404 box_not_found`. A box id is not a key, so the key policy
 does not apply.
 
-`/tokens?ids=` is the metadata of up to 100 tokens, comma-separated: `{ "items": [{ "tokenId",
-"mintingBoxId", "name", "description", "decimals", "emission" }] }`, in the order asked and each
-once. A token the indexer does not know is left out, so a request is never refused for one
+`/tokens/metadata?ids=` is the metadata of up to 100 tokens, comma-separated: `{ "items": [{
+"tokenId", "mintingBoxId", "name", "description", "decimals", "emission" }] }`, in the order asked
+and each once. A token the indexer does not know is left out, so a request is never refused for one
 unknown id. `name`, `description` and `decimals` are what the minter wrote in the minting box's
 R4 to R6 (EIP-4), read by the node: anyone can mint a token named like another, so they say
 nothing about who issued it. `mintingBoxId` is the first output of the minting tx holding the

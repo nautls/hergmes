@@ -745,7 +745,7 @@ async fn token_metadata_is_served_for_any_token() {
     let nft = token_id("nft-a");
     let unknown = "ab".repeat(32);
     let body = f
-        .ok(&format!("/v1/tokens?ids={large},{unknown},{nft}"))
+        .ok(&format!("/v1/tokens/metadata?ids={large},{unknown},{nft}"))
         .await;
     let items = body["items"].as_array().unwrap();
     assert_eq!(items.len(), 2);
@@ -762,15 +762,18 @@ async fn token_metadata_is_served_for_any_token() {
         })
     );
     assert_eq!(items[1]["tokenId"], nft.to_string());
-    assert_eq!(f.ok(&format!("/v1/tokens?ids={unknown}")).await["items"], serde_json::json!([]));
+    assert_eq!(
+        f.ok(&format!("/v1/tokens/metadata?ids={unknown}")).await["items"],
+        serde_json::json!([])
+    );
 
     let over = vec![nft.to_string(); 101].join(",");
     for (uri, code) in [
-        ("/v1/tokens".to_owned(), "invalid_ids"),
-        ("/v1/tokens?ids=".to_owned(), "invalid_ids"),
-        (format!("/v1/tokens?ids={over}"), "invalid_ids"),
-        ("/v1/tokens?ids=abcd".to_owned(), "invalid_token_id"),
-        (format!("/v1/tokens?ids={nft},"), "invalid_token_id"),
+        ("/v1/tokens/metadata".to_owned(), "invalid_ids"),
+        ("/v1/tokens/metadata?ids=".to_owned(), "invalid_ids"),
+        (format!("/v1/tokens/metadata?ids={over}"), "invalid_ids"),
+        ("/v1/tokens/metadata?ids=abcd".to_owned(), "invalid_token_id"),
+        (format!("/v1/tokens/metadata?ids={nft},"), "invalid_token_id"),
     ] {
         assert_eq!(f.error(&uri, StatusCode::BAD_REQUEST).await, code, "{uri}");
     }

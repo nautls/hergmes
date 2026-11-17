@@ -103,7 +103,7 @@ where
         .route("/v1/addresses/{address}/transactions", get(address_history::<S, E>))
         .route("/v1/headers", get(last_headers::<S, E>))
         .route("/v1/boxes/{box_id}", get(box_by_id::<S, E>))
-        .route("/v1/tokens", get(token_metadata::<S, E>))
+        .route("/v1/tokens/metadata", get(token_metadata::<S, E>))
         .route(
             "/v1/transactions",
             post(submit_transaction::<S, E>).layer(DefaultBodyLimit::max(MAX_TX_BODY)),

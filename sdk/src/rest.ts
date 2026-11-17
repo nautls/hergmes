@@ -131,7 +131,7 @@ export class RestClient {
     const items: TokenList["items"] = [];
     for (let i = 0; i < unique.length; i += MAX_TOKEN_IDS) {
       const chunk = unique.slice(i, i + MAX_TOKEN_IDS).join(",");
-      const list = await this.#get<TokenList>("v1/tokens", { ids: chunk }, options);
+      const list = await this.#get<TokenList>("v1/tokens/metadata", { ids: chunk }, options);
       items.push(...list.items);
     }
     return { items };
