@@ -28,8 +28,8 @@
     }
   },
   "scripts": {
-    "build": "tsdown",
-    "check": "tsc",
+    "build": "tsdown && pnpm --dir examples/vue build",
+    "check": "tsc && pnpm --dir examples/vue check",
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",

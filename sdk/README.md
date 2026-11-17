@@ -185,7 +185,7 @@ export function useHandle<H extends Handle<unknown>>(open: () => H, deps: Depend
 
 ### Vue
 
-`state` is frozen, so a `shallowRef` holds it. The handle opens again when what `open` reads
+`examples/vue` is a runnable page built on this helper. `state` is frozen, so a `shallowRef` holds it. The handle opens again when what `open` reads
 changes (a prop, a ref):
 
 ```ts

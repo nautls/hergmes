@@ -16,7 +16,8 @@ node scripts/record-fixtures.ts --node http://127.0.0.1:9053   # re-record node 
 
 The TypeScript client SDK lives in `sdk/` (pnpm; it runs on Node 22, its tooling needs 22.18).
 Its tests start the `sim-relay` binary (`src/bin/sim-relay.rs`, the relay over `SimChain`), which
-the test setup builds:
+the test setup builds. `sdk/examples/vue`, a Vue page on the SDK, is a workspace package built
+against the SDK's source; `pnpm check` and `pnpm build` cover it:
 
 ```sh
 cd sdk
