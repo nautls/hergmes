@@ -16,7 +16,8 @@ use crate::{
     sim::Chain,
     types::ergo::{
         AddressTransactions, Balance, BlockHeader, BoxById, BoxId, ErgoTree, HeaderId,
-        IndexedBlock, IndexedBox, TokenId, TokenInfo, TxId, UTxO, UnconfirmedTransaction,
+        IndexedBlock, IndexedBox, TokenId, TokenInfo, TokenMetadata, TxId, UTxO,
+        UnconfirmedTransaction,
     },
 };
 
@@ -31,6 +32,7 @@ pub enum Endpoint {
     UnspentByErgoTree,
     UnspentByToken,
     TokenInfo,
+    Tokens,
     BoxesWithPool,
     IndexedBox,
     ConfirmedBalance,
@@ -170,6 +172,10 @@ impl NodeSource for SimChain {
     async fn token_info(&self, token_id: &TokenId) -> Result<Option<TokenInfo>, NodeError> {
         self.serve(Endpoint::TokenInfo, |c| Ok(c.token_info(token_id)))
             .await
+    }
+
+    async fn tokens(&self, ids: &[TokenId]) -> Result<Vec<TokenMetadata>, NodeError> {
+        self.serve(Endpoint::Tokens, |c| Ok(c.tokens(ids))).await
     }
 
     async fn boxes_with_pool(&self, ids: &[BoxId]) -> Result<Vec<UTxO>, NodeError> {

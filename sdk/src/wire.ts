@@ -89,6 +89,26 @@ export interface HeadersPage {
   items: BlockHeader[];
 }
 
+/**
+ * A token's metadata: `name`, `description` and `decimals` are what its minter wrote in the
+ * minting box (EIP-4), so they say nothing about who issued it.
+ */
+export interface TokenMetadata {
+  tokenId: string;
+  /** The first output of the minting tx holding the token; not the token id. */
+  mintingBoxId: string;
+  name: string;
+  description: string;
+  decimals: number;
+  /** Every unit minted. */
+  emission: string;
+}
+
+/** The known tokens among those asked for, in their order; unknown ids are left out. */
+export interface TokenList {
+  items: TokenMetadata[];
+}
+
 /** The id of a tx the node took, sent or only checked. */
 export interface Submitted {
   transactionId: string;

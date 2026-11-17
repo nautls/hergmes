@@ -104,7 +104,16 @@ the route's JSON as it came, amounts as base-10 strings:
 | `history(address, { cursor, limit })`  | `GET /v1/addresses/{address}/transactions`         |
 | `headers({ limit })`                   | `GET /v1/headers`                                  |
 | `box(boxId)`                           | `GET /v1/boxes/{boxId}`                            |
+| `tokens(ids)`                          | `GET /v1/tokens?ids=...`                           |
 | `submitTransaction(tx, { broadcast })` | `POST /v1/transactions`                            |
+
+`tokens` answers the metadata of the tokens the relay's node knows among `ids`, leaving out the
+others; more than 100 ids take a request per 100, one after another.
+
+```ts
+const { items } = await relay.rest.tokens(tokenIds);
+const decimals = new Map(items.map((t) => [t.tokenId, t.decimals]));
+```
 
 `submitTransaction` takes a signed tx in hex, or as Fleet's `SignedTransaction`, which the SDK
 serializes. With `broadcast: false` the node only checks it.

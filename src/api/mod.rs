@@ -7,7 +7,8 @@
 //! tracked and from the indexer and the engine's mempool snapshot if not; the history service
 //! reads an address's txs from the indexer; the header service walks back from the engine's
 //! tip; the box service reads one box by id, from the engine's pool snapshot or the indexer;
-//! the transaction service hands a serialized tx to the node. The HTTP layer (`http`)
+//! the transaction service hands a serialized tx to the node; the token service reads tokens'
+//! metadata from the indexer, keeping what it read. The HTTP layer (`http`)
 //! parses, calls them and serializes through the wire types (`wire`). The WebSocket (`ws`)
 //! runs a task per connection (`connection`), speaking the messages in `protocol`.
 
@@ -31,6 +32,7 @@ pub mod metrics;
 pub mod pages;
 pub mod policy;
 pub mod protocol;
+pub mod tokens;
 pub mod transactions;
 pub mod wire;
 pub mod ws;
@@ -43,6 +45,7 @@ pub use history::{History, HistoryPage};
 pub use metrics::Metrics;
 pub use pages::{BoxPage, Pages, WithPoolBoxes};
 pub use policy::KeyPolicy;
+pub use tokens::Tokens;
 pub use transactions::{Refusal, Transactions};
 
 /// Why a request failed, one variant per error code. The code is for programs, the message
@@ -57,6 +60,9 @@ pub enum ApiError {
     InvalidAddress(String),
     #[error("a token id is 64 hex characters")]
     InvalidTokenId,
+    /// No `ids`, or more than [`tokens::MAX_IDS`].
+    #[error("ids is 1 to {} comma-separated token ids", tokens::MAX_IDS)]
+    InvalidIds,
     #[error("a box id is 64 hex characters")]
     InvalidBoxId,
     /// `broadcast` is neither `true` nor `false`.
@@ -110,6 +116,7 @@ impl ApiError {
         match self {
             Self::InvalidAddress(_) => "invalid_address",
             Self::InvalidTokenId => "invalid_token_id",
+            Self::InvalidIds => "invalid_ids",
             Self::InvalidBoxId => "invalid_box_id",
             Self::InvalidBroadcast => "invalid_broadcast",
             Self::InvalidCursor(_) => "invalid_cursor",

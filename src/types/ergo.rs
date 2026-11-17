@@ -297,6 +297,26 @@ pub struct TokenInfo {
     pub emission_amount: u64,
 }
 
+/// A token as `POST /blockchain/tokens` lists it (node 6.0.8,
+/// `ApiExtraCodecs.IndexedTokenEncoder`), read from the mint by the indexer
+/// (`IndexedToken.fromBox`): `name` and `description` are the minting box's R4 and R5 as
+/// UTF-8, empty if absent or not bytes, and `decimals` is R6 as a decimal string or an `Int`, 0
+/// otherwise, so it can be negative. None of it changes once the mint is indexed.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct TokenMetadata {
+    pub id: TokenId,
+    /// The first output of the mint tx holding the token. Not the token id, which is the mint
+    /// tx's first input.
+    #[serde(rename = "boxId")]
+    pub minting_box_id: BoxId,
+    /// Every unit minted, summed over the mint tx's outputs.
+    #[serde(rename = "emissionAmount")]
+    pub emission: u64,
+    pub name: Box<str>,
+    pub description: Box<str>,
+    pub decimals: i32,
+}
+
 /// Response of `POST /blockchain/balance`.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct BalanceResponse {

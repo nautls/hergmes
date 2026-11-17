@@ -43,6 +43,7 @@ fn every_error() -> Vec<(ApiError, StatusCode, Option<&'static str>)> {
     vec![
         (ApiError::InvalidAddress("bad".into()), S::BAD_REQUEST, None),
         (ApiError::InvalidTokenId, S::BAD_REQUEST, None),
+        (ApiError::InvalidIds, S::BAD_REQUEST, None),
         (ApiError::InvalidBoxId, S::BAD_REQUEST, None),
         (ApiError::InvalidBroadcast, S::BAD_REQUEST, None),
         (
@@ -118,7 +119,7 @@ async fn every_error_has_its_status_code_and_retry_after() {
 fn every_variant_is_in_the_table() {
     let codes: std::collections::BTreeSet<_> =
         every_error().iter().map(|(e, ..)| e.code()).collect();
-    assert_eq!(codes.len(), 19, "{codes:?}");
+    assert_eq!(codes.len(), 20, "{codes:?}");
 }
 
 #[test]
@@ -173,6 +174,7 @@ impl Fixture {
             history: History::new(sim.clone(), Default::default()),
             headers: Headers::new(HeaderReader::new(sim.clone(), follower.headers())),
             boxes: Boxes::new(sim.clone()),
+            tokens: Tokens::new(sim.clone()),
             transactions: Transactions::new(sim.clone()),
             network: Network::Mainnet,
             policy,
@@ -730,6 +732,50 @@ async fn a_box_by_id_is_outside_the_key_policy() {
     assert_eq!(body["boxId"], held.id.to_string());
 }
 
+// --- Token metadata ---
+
+/// Tokens in the wire shape, in request order, the unknown id left out; refused ids get
+/// their codes. Outside the key policy and the supply limit: a relay that admits no token
+/// still serves the metadata of one over the limit.
+#[tokio::test]
+async fn token_metadata_is_served_for_any_token() {
+    let policy = KeyPolicy::new(None, [], Some(&[]), &[]);
+    let f = Fixture::with_policy(Chain::new(SimConfig::default()), policy);
+    let large = token_id("large");
+    let nft = token_id("nft-a");
+    let unknown = "ab".repeat(32);
+    let body = f
+        .ok(&format!("/v1/tokens?ids={large},{unknown},{nft}"))
+        .await;
+    let items = body["items"].as_array().unwrap();
+    assert_eq!(items.len(), 2);
+    let expected = f.sim.lock().tokens(&[large]).remove(0);
+    assert_eq!(
+        items[0],
+        serde_json::json!({
+            "tokenId": large.to_string(),
+            "mintingBoxId": expected.minting_box_id.to_string(),
+            "name": "large",
+            "description": "",
+            "decimals": 0,
+            "emission": "1000000",
+        })
+    );
+    assert_eq!(items[1]["tokenId"], nft.to_string());
+    assert_eq!(f.ok(&format!("/v1/tokens?ids={unknown}")).await["items"], serde_json::json!([]));
+
+    let over = vec![nft.to_string(); 101].join(",");
+    for (uri, code) in [
+        ("/v1/tokens".to_owned(), "invalid_ids"),
+        ("/v1/tokens?ids=".to_owned(), "invalid_ids"),
+        (format!("/v1/tokens?ids={over}"), "invalid_ids"),
+        ("/v1/tokens?ids=abcd".to_owned(), "invalid_token_id"),
+        (format!("/v1/tokens?ids={nft},"), "invalid_token_id"),
+    ] {
+        assert_eq!(f.error(&uri, StatusCode::BAD_REQUEST).await, code, "{uri}");
+    }
+}
+
 // --- Transactions ---
 
 impl Fixture {
@@ -822,6 +868,7 @@ async fn a_tx_is_answered_with_its_id_or_the_nodes_refusal() {
         history: History::new(node.clone(), Default::default()),
         headers: Headers::new(HeaderReader::new(node.clone(), f.follower.headers())),
         boxes: Boxes::new(node.clone()),
+        tokens: Tokens::new(node.clone()),
         transactions: Transactions::new(node),
         network: Network::Mainnet,
         policy: KeyPolicy::default(),

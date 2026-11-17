@@ -2,6 +2,7 @@
 export type ErrorCode =
   | "invalid_address"
   | "invalid_token_id"
+  | "invalid_ids"
   | "invalid_box_id"
   | "invalid_broadcast"
   | "transaction_rejected"

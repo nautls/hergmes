@@ -4,7 +4,8 @@ use crate::{
     clients::node::{IndexedHeightResponse, InfoResponse, NodeError},
     types::ergo::{
         AddressTransactions, Balance, BlockHeader, BoxById, BoxId, ErgoTree, HeaderId,
-        IndexedBlock, IndexedBox, TokenId, TokenInfo, TxId, UTxO, UnconfirmedTransaction,
+        IndexedBlock, IndexedBox, TokenId, TokenInfo, TokenMetadata, TxId, UTxO,
+        UnconfirmedTransaction,
     },
 };
 
@@ -69,6 +70,13 @@ pub trait NodeSource: Send + Sync {
         &self,
         token_id: &TokenId,
     ) -> impl Future<Output = Result<Option<TokenInfo>, NodeError>> + Send;
+
+    /// The metadata of the tokens the indexer knows among `ids`, in their order; unknown ids
+    /// are left out (node 6.0.8, `BlockchainApiRoute.getTokenInfoByIds`).
+    fn tokens(
+        &self,
+        ids: &[TokenId],
+    ) -> impl Future<Output = Result<Vec<TokenMetadata>, NodeError>> + Send;
 
     /// Unspent boxes from the UTXO set and the mempool. Missing ids are left out.
     fn boxes_with_pool(

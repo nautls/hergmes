@@ -23,7 +23,7 @@ use crate::types::ergo::{BoxId, Token, UTxO};
 /// allocations. That last part is measured, not derived: with 128 here, a cache of the
 /// smallest boxes took 205 bytes per entry more than its weight (`examples/membench.rs`), so
 /// it is 128 + 205. Run the benchmark again after a moka upgrade.
-const ENTRY: usize = 2 * size_of::<usize>() + size_of::<BoxId>() + 333;
+pub(crate) const ENTRY: usize = 2 * size_of::<usize>() + size_of::<BoxId>() + 333;
 
 /// Full boxes by id, shared by the loader and the box fetcher. Cloning shares the cache.
 ///

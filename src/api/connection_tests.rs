@@ -13,7 +13,7 @@ use tokio::{task::JoinHandle, time::sleep};
 use super::*;
 use crate::{
     adapters::{BoxCache, BoxFetcher, EngineHandle, Follower, HeaderReader, Loader, TokenChecker},
-    api::{Balances, Boxes, Headers, History, KeyPolicy, Pages, Transactions, ws::Closed},
+    api::{Balances, Boxes, Headers, History, KeyPolicy, Pages, Tokens, Transactions, ws::Closed},
     engine::{self, Engine, Event, Query, Reply},
     runtime::{Settled, settling, spawn},
     sim::{Chain, Endpoint, SimChain, SimConfig, token_id},
@@ -64,6 +64,7 @@ impl Fixture {
             history: History::new(sim.clone(), Default::default()),
             headers: Headers::new(HeaderReader::new(sim.clone(), follower.headers())),
             boxes: Boxes::new(sim.clone()),
+            tokens: Tokens::new(sim.clone()),
             transactions: Transactions::new(sim.clone()),
             network: Network::Mainnet,
             policy: KeyPolicy::default(),

@@ -11,6 +11,7 @@ import type {
   Status,
   Submitted,
   Spendable,
+  TokenList,
 } from "./wire.ts";
 
 export interface RestOptions {
@@ -44,6 +45,9 @@ export interface SubmitOptions extends RequestOptions {
   /** `false` only checks the tx, with no broadcast. */
   broadcast?: boolean;
 }
+
+/** The most token ids the relay takes in one request. */
+const MAX_TOKEN_IDS = 100;
 
 /** Attempts in all for a `503` unless set: the first, and two retries. */
 const MAX_ATTEMPTS = 3;
@@ -114,6 +118,23 @@ export class RestClient {
   /** A box a tx can spend now: confirmed, or a mempool output. */
   box(boxId: string, options: RequestOptions = {}): Promise<PoolBox> {
     return this.#get(`v1/boxes/${encodeURIComponent(boxId)}`, {}, options);
+  }
+
+  /**
+   * The metadata of the tokens among `ids` the relay's node knows, in their order and each
+   * once in any case; unknown ids are left out. Over 100 ids are asked 100 per request, one
+   * request after another, and answered as one list. No ids make no request.
+   */
+  async tokens(ids: readonly string[], options: RequestOptions = {}): Promise<TokenList> {
+    // Lowercased as the relay reads them, so one token named in two cases is asked once.
+    const unique = [...new Set(ids.map((id) => id.toLowerCase()))];
+    const items: TokenList["items"] = [];
+    for (let i = 0; i < unique.length; i += MAX_TOKEN_IDS) {
+      const chunk = unique.slice(i, i + MAX_TOKEN_IDS).join(",");
+      const list = await this.#get<TokenList>("v1/tokens", { ids: chunk }, options);
+      items.push(...list.items);
+    }
+    return { items };
   }
 
   /**

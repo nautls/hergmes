@@ -21,7 +21,7 @@ use std::{
 
 use hergmes::{
     adapters::{BoxCache, BoxFetcher, Follower, TokenChecker, loader::Loader},
-    api::{ApiError, Balances, Boxes, History, Pages, Refusal, Transactions, pages},
+    api::{ApiError, Balances, Boxes, History, Pages, Refusal, Tokens, Transactions, pages},
     clients::NodeClient,
     engine::{BlockRef, Engine, StoredBox, Totals, TrackingKey},
     runtime::{self, Handle},
@@ -50,6 +50,7 @@ struct Relay {
     balances: Balances<NodeClient>,
     history: History<NodeClient>,
     boxes: Boxes<NodeClient>,
+    tokens: Tokens<NodeClient>,
     transactions: Transactions<NodeClient>,
     _follower: JoinHandle<()>,
 }
@@ -107,6 +108,7 @@ impl Relay {
             balances: Balances::new(node.clone(), Default::default()),
             history: History::new(node.clone(), Default::default()),
             boxes: Boxes::new(node.clone()),
+            tokens: Tokens::new(node.clone()),
             transactions: Transactions::new(node),
             _follower: follower,
         }
@@ -304,6 +306,31 @@ async fn a_box_by_id_and_a_garbage_tx_check() {
             assert!(message.starts_with("Can not parse transaction bytes"), "{message}");
         }
         other => panic!("{other:?}"),
+    }
+}
+
+/// The sample tokens' metadata in one request, each as the node's own `/token/byId` has it;
+/// the unknown id is left out.
+#[tokio::test]
+#[ignore = "needs a real node: set ERGO_NODE_URL"]
+async fn token_metadata_is_the_nodes_token_by_id() {
+    let relay = Relay::start().await;
+    let samples = ["nft", "smallSupplyToken", "largeSupplyToken"];
+    let ids: Vec<String> = samples
+        .iter()
+        .map(|s| manifest()["samples"][s].as_str().unwrap().to_owned())
+        .collect();
+    let asked = format!("{},{},{}", ids[0], "ab".repeat(32), ids[1..].join(","));
+    let served = relay.tokens.metadata(Some(&asked)).await.unwrap();
+    assert_eq!(served.len(), ids.len());
+    for (token, id) in served.iter().zip(&ids) {
+        let node = relay.get(&format!("/blockchain/token/byId/{id}")).await;
+        assert_eq!(token.id.to_string(), *id);
+        assert_eq!(token.minting_box_id.to_string(), node["boxId"].as_str().unwrap());
+        assert_eq!(token.emission, node["emissionAmount"].as_u64().unwrap());
+        assert_eq!(*token.name, *node["name"].as_str().unwrap());
+        assert_eq!(*token.description, *node["description"].as_str().unwrap());
+        assert_eq!(i64::from(token.decimals), node["decimals"].as_i64().unwrap());
     }
 }
 

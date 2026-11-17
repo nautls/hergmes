@@ -178,6 +178,24 @@ describe(`the REST routes against the oracle (SEED=${String(SEED)})`, () => {
   });
 });
 
+test("tokens' metadata, any supply, in the order asked", async () => {
+  await sim.settle();
+  const { tokens } = await sim.keys();
+  const emissions = new Map(tokens.map((t) => [t.tokenId, t.emission]));
+  const unknown = "ab".repeat(32);
+  const ids = [unknown, ...tokens.map((t) => t.tokenId).reverse()];
+  const { items } = await client.tokens(ids);
+  // Tokens minted in the pool only, or on an orphaned branch, are unknown to the indexer.
+  const known = ids.filter((id) => items.some((t) => t.tokenId === id));
+  expect(items.map((t) => t.tokenId)).toEqual(known);
+  for (const token of items) {
+    expect(token.emission).toBe(emissions.get(token.tokenId));
+    expect(token.mintingBoxId).not.toBe(token.tokenId);
+  }
+  const names = items.map((t) => t.name).filter((name) => name !== "");
+  expect(names.sort()).toEqual(["large", "nft-a", "nft-b", "over-101", "small-100", "small-5"]);
+});
+
 describe("errors", () => {
   test("refusals of the request itself", async () => {
     await sim.settle();
@@ -190,6 +208,7 @@ describe("errors", () => {
       [() => client.balance("nope"), 400, "invalid_address"],
       [() => client.boxes({ tokenId: "nope" }), 400, "invalid_token_id"],
       [() => client.box("nope"), 400, "invalid_box_id"],
+      [() => client.tokens(["nope"]), 400, "invalid_token_id"],
       [() => client.boxes({ address }, { limit: 0 }), 400, "invalid_limit"],
       [() => client.boxes({ address }, { limit: 1001 }), 400, "invalid_limit"],
       [() => client.history(address, { limit: 101 }), 400, "invalid_limit"],

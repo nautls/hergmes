@@ -1,5 +1,5 @@
-//! The REST routes: parse, call the page, balance, history, header, box and transaction
-//! services, serialize.
+//! The REST routes: parse, call the page, balance, history, header, box, token and
+//! transaction services, serialize.
 //!
 //! Errors are `{ "error": "<code>", "message": "..." }`, with a `reason` for a refused tx,
 //! and every 503 carries `Retry-After`.
@@ -29,15 +29,15 @@ use tracing::{debug, warn};
 use crate::{
     adapters::{EngineHandle, engine_tip},
     api::{
-        ApiError, Balances, Boxes, Headers, History, KeyPolicy, Metrics, Pages, Transactions,
-        headers, history,
+        ApiError, Balances, Boxes, Headers, History, KeyPolicy, Metrics, Pages, Tokens,
+        Transactions, headers, history,
         keys::{address_key, token_key},
         metrics::Transport,
         pages,
         transactions::{self, MAX_HEX_CHARS},
         wire::{
             BalanceBody, BoxBody, ErrorBody, HeadersBody, HistoryBody, PageBody, StatusBody,
-            SubmittedBody, WithPoolBody,
+            SubmittedBody, TokensBody, WithPoolBody,
         },
     },
     clients::NodeSource,
@@ -64,6 +64,7 @@ pub struct Api<S, E> {
     pub history: History<S>,
     pub headers: Headers<S>,
     pub boxes: Boxes<S>,
+    pub tokens: Tokens<S>,
     pub transactions: Transactions<S>,
     /// The node's network: addresses of another one are refused.
     pub network: Network,
@@ -101,6 +102,7 @@ where
         .route("/v1/addresses/{address}/transactions", get(address_history::<S, E>))
         .route("/v1/headers", get(last_headers::<S, E>))
         .route("/v1/boxes/{box_id}", get(box_by_id::<S, E>))
+        .route("/v1/tokens", get(token_metadata::<S, E>))
         .route(
             "/v1/transactions",
             post(submit_transaction::<S, E>).layer(DefaultBodyLimit::max(MAX_TX_BODY)),
@@ -251,6 +253,15 @@ async fn box_by_id<S: NodeSource, E: EngineHandle>(
     Ok(Json(BoxBody(&found)).into_response())
 }
 
+/// Outside the key policy: a token id here is not a key (see [`Tokens`]).
+async fn token_metadata<S: NodeSource, E: EngineHandle>(
+    State(api): State<Arc<Api<S, E>>>,
+    params: Params,
+) -> Result<Response, ApiError> {
+    let tokens = api.tokens.metadata(param(&params, "ids")).await?;
+    Ok(Json(TokensBody(&tokens)).into_response())
+}
+
 /// The body is the tx's bytes in hex, best as `text/plain`, so a browser sends it without a
 /// CORS preflight; any content type is read. `?broadcast=false` only validates it. A body
 /// over the limit, or not UTF-8, is refused in the service's terms, never the framework's.
@@ -289,6 +300,7 @@ impl ApiError {
         match self {
             Self::InvalidAddress(_)
             | Self::InvalidTokenId
+            | Self::InvalidIds
             | Self::InvalidBoxId
             | Self::InvalidBroadcast
             | Self::InvalidCursor(_)
@@ -319,6 +331,7 @@ impl ApiError {
             Self::BoxUnavailable { .. } => Some(DEFAULT_RETRY),
             Self::InvalidAddress(_)
             | Self::InvalidTokenId
+            | Self::InvalidIds
             | Self::InvalidBoxId
             | Self::InvalidBroadcast
             | Self::InvalidCursor(_)

@@ -4,7 +4,7 @@ use dotenvy::dotenv;
 use hergmes::{
     adapters::{BoxCache, BoxFetcher, Follower, HeaderReader, TokenChecker, loader::Loader},
     api::{
-        Balances, Boxes, Headers, History, Metrics, Pages, Transactions,
+        Balances, Boxes, Headers, History, Metrics, Pages, Tokens, Transactions,
         http::{self, Api},
         metrics, ws,
     },
@@ -98,6 +98,7 @@ async fn run() -> Result<(), AppError> {
         history: History::new(node.clone(), Default::default()),
         headers: Headers::new(headers),
         boxes: Boxes::new(node.clone()),
+        tokens: Tokens::new(node.clone()),
         transactions: Transactions::new(node.clone()),
         network: node.network(),
         policy,

@@ -8,12 +8,14 @@
  *   node scripts/record-fixtures.ts --headers-only [--node URL] [--out DIR]
  *   node scripts/record-fixtures.ts --used-only [--node URL] [--out DIR]
  *   node scripts/record-fixtures.ts --tx-only [--node URL] [--out DIR]
+ *   node scripts/record-fixtures.ts --tokens-only [--node URL] [--out DIR]
  *
  * --history-only records only the address tx history fixtures, for the sample address of
  * the existing manifest.json, and adds them to it, leaving every other fixture as it is.
  * --headers-only does the same for the header fixtures, for the manifest's sample header.
  * --used-only does the same for the box count fixtures, which say whether an address is used.
  * --tx-only does the same for the transaction fixtures (see recordTransactions).
+ * --tokens-only does the same for the token metadata batch, for the manifest's sample tokens.
  *
  * Runs on Node 23.6+ (native type stripping) with no dependencies.
  * The node URL defaults to $ERGO_NODE_URL. The node must run the extra indexer.
@@ -297,6 +299,18 @@ async function recordHeaders(rec: Recorder, headerId: string) {
   await rec.record("header_by_id_unknown", "GET", `/blocks/modifier/${UNKNOWN_ID}`);
 }
 
+/** Several tokens' metadata in one call, the sample tokens with an unknown id among them:
+ * the node lists the tokens it knows, in request order (BlockchainApiRoute.getTokenInfoByIds). */
+async function recordTokens(rec: Recorder, samples: Json) {
+  await rec.record(
+    "tokens",
+    "POST",
+    "/blockchain/tokens",
+    [samples.nft, samples.smallSupplyToken, UNKNOWN_ID, samples.largeSupplyToken],
+    "The unknown id, third in the request, is left out.",
+  );
+}
+
 /** The box counts that tell whether an address was ever used: `limit=0` returns no box and
  * reads none (Segment.getFromSegments), and `total` counts every box the address received,
  * spent or not (Segment.boxCount). */
@@ -473,6 +487,7 @@ async function main() {
       "headers-only": { type: "boolean", default: false },
       "used-only": { type: "boolean", default: false },
       "tx-only": { type: "boolean", default: false },
+      "tokens-only": { type: "boolean", default: false },
     },
   });
   if (!args.node) fail("Pass --node or set ERGO_NODE_URL");
@@ -495,6 +510,9 @@ async function main() {
     return addTo(node, outDir, "transaction", (rec, m) =>
       recordTransactions(rec, boxId(m.fixtures.box_by_id_spent.path), m.fixtures),
     );
+  }
+  if (args["tokens-only"]) {
+    return addTo(node, outDir, "token", (rec, m) => recordTokens(rec, m.samples));
   }
   const previous = (() => {
     try {
@@ -621,6 +639,7 @@ async function main() {
   await rec.record("token_small_supply", "GET", `/blockchain/token/byId/${small}`);
   await rec.record("token_large_supply", "GET", `/blockchain/token/byId/${large}`);
   await rec.record("token_unknown", "GET", `/blockchain/token/byId/${UNKNOWN_ID}`);
+  await recordTokens(rec, { nft, smallSupplyToken: small, largeSupplyToken: large });
   await rec.record("unspent_by_token_nft", "GET", unspentByToken(nft));
   await rec.record("unspent_by_token_small_supply", "GET", unspentByToken(small));
   await rec.record(

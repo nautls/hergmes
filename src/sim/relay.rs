@@ -45,7 +45,8 @@ use crate::{
         engine_tip, follower, loader, mempool,
     },
     api::{
-        Balances, Boxes, Headers, History, KeyPolicy, Pages, Transactions, balances, history,
+        Balances, Boxes, Headers, History, KeyPolicy, Pages, Tokens, Transactions, balances,
+        history,
         http::{self, Api},
         keys::{address_key, token_key},
         protocol::WirePendingTx,
@@ -135,6 +136,7 @@ impl SimRelay {
             history: History::new(sim.clone(), history::Config { attempts: 3, retry: RETRY }),
             headers: Headers::new(HeaderReader::new(sim.clone(), follower.headers())),
             boxes: Boxes::new(sim.clone()),
+            tokens: Tokens::new(sim.clone()),
             transactions: Transactions::new(sim.clone()),
             network: NETWORK,
             policy: KeyPolicy::default(),

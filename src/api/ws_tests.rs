@@ -26,7 +26,7 @@ use tower::ServiceExt;
 use super::*;
 use crate::{
     adapters::{BoxCache, BoxFetcher, Follower, HeaderReader, Loader, TokenChecker},
-    api::{Balances, Boxes, Headers, History, KeyPolicy, Pages, Transactions},
+    api::{Balances, Boxes, Headers, History, KeyPolicy, Pages, Tokens, Transactions},
     engine::{Config as EngineConfig, Engine},
     runtime::spawn,
     sim::{Chain, SimChain, SimConfig},
@@ -60,6 +60,7 @@ async fn server() -> Server {
         history: History::new(sim.clone(), Default::default()),
         headers: Headers::new(HeaderReader::new(sim.clone(), follower.headers())),
         boxes: Boxes::new(sim.clone()),
+        tokens: Tokens::new(sim.clone()),
         transactions: Transactions::new(sim.clone()),
         network: Network::Mainnet,
         policy: KeyPolicy::default(),

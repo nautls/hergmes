@@ -43,4 +43,6 @@ export type {
   Status,
   Submitted,
   Spendable,
+  TokenList,
+  TokenMetadata,
 } from "./wire.ts";

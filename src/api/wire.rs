@@ -7,7 +7,7 @@
 //! Amounts are base-10 integer strings: ERG supply in nanoErgs and token amounts exceed 2^53,
 //! which a JSON number does not carry exactly in JavaScript.
 
-use std::{collections::BTreeMap, fmt::Display};
+use std::{collections::BTreeMap, fmt::Display, sync::Arc};
 
 use serde::{
     Serialize, Serializer,
@@ -24,7 +24,7 @@ use crate::{
     types::{
         HexBytes,
         address::Network,
-        ergo::{HeaderId, NonMandatoryRegisters, TokenId, TxId, UTxO},
+        ergo::{HeaderId, NonMandatoryRegisters, TokenId, TokenMetadata, TxId, UTxO},
     },
 };
 
@@ -288,6 +288,34 @@ impl Serialize for BoxBody<'_> {
         let found = self.0;
         WireBox { utxo: &found.utxo, inclusion_height: found.inclusion_height }
             .serialize(serializer)
+    }
+}
+
+/// `GET /v1/tokens`: the known tokens among those asked for, in their order.
+pub struct TokensBody<'a>(pub &'a [Arc<TokenMetadata>]);
+
+impl Serialize for TokensBody<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let items: Vec<_> = self.0.iter().map(|t| WireToken(t)).collect();
+        let mut s = serializer.serialize_struct("Tokens", 1)?;
+        s.serialize_field("items", &items)?;
+        s.end()
+    }
+}
+
+struct WireToken<'a>(&'a TokenMetadata);
+
+impl Serialize for WireToken<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let t = self.0;
+        let mut s = serializer.serialize_struct("Token", 6)?;
+        s.serialize_field("tokenId", &t.id)?;
+        s.serialize_field("mintingBoxId", &t.minting_box_id)?;
+        s.serialize_field("name", &t.name)?;
+        s.serialize_field("description", &t.description)?;
+        s.serialize_field("decimals", &t.decimals)?;
+        s.serialize_field("emission", &Amount(t.emission))?;
+        s.end()
     }
 }
 

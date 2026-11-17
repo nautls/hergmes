@@ -34,7 +34,7 @@ use crate::{
             AddressTransaction, AddressTransactions, Balance, BlockHeader, BoxAssets, BoxById,
             BoxId, ErgoTree, GENESIS_PARENT_ID, HeaderId, IndexedBlock, IndexedBox,
             IndexedTransaction, NonMandatoryRegisters, Token, TokenBalance, TokenId, TokenInfo,
-            TxId, UTxO, UnconfirmedTransaction,
+            TokenMetadata, TxId, UTxO, UnconfirmedTransaction,
         },
     },
 };
@@ -1077,6 +1077,37 @@ impl Chain {
     pub fn token_info(&self, id: &TokenId) -> Option<TokenInfo> {
         let emission = *self.indexer.tokens.get(id)?;
         Some(TokenInfo { emission_amount: emission })
+    }
+
+    /// The tokens among `ids` whose mint the indexer has applied, in their order. The minting
+    /// box is the first box the indexer saw holding the token, as the node's is the mint tx's
+    /// first output holding it. Genesis tokens are named; nothing else has a name, a
+    /// description or decimals.
+    pub fn tokens(&self, ids: &[TokenId]) -> Vec<TokenMetadata> {
+        ids.iter()
+            .filter_map(|id| {
+                let emission = *self.indexer.tokens.get(id)?;
+                let minting = self
+                    .indexer
+                    .all
+                    .values()
+                    .filter(|e| e.utxo.tokens.iter().any(|t| t.id == *id))
+                    .min_by_key(|e| e.global_index)
+                    .expect("a minted token is in a box");
+                let name = GENESIS_TOKENS
+                    .iter()
+                    .find(|(name, ..)| token_id(name) == *id)
+                    .map_or("", |(name, ..)| name);
+                Some(TokenMetadata {
+                    id: *id,
+                    minting_box_id: minting.utxo.id,
+                    emission,
+                    name: name.into(),
+                    description: "".into(),
+                    decimals: 0,
+                })
+            })
+            .collect()
     }
 
     /// Any box the indexer has seen created, spent or not, and which.

@@ -230,6 +230,28 @@ mod shapes {
         assert_not_found("token_unknown");
     }
 
+    /// The batch lists the known tokens in request order, leaving out the unknown id, each as
+    /// its own `/token/byId` answers it.
+    #[test]
+    fn tokens_leave_out_unknown_ids() {
+        let requested: Vec<TokenId> =
+            serde_json::from_value(manifest()["fixtures"]["tokens"]["body"].clone()).unwrap();
+        assert_eq!(requested[2], digest(&"ab".repeat(32)));
+        let tokens: Vec<TokenMetadata> = load("tokens");
+        let ids: Vec<TokenId> = tokens.iter().map(|t| t.id).collect();
+        assert_eq!(ids, [requested[0], requested[1], requested[3]]);
+        for (token, alone) in
+            tokens
+                .iter()
+                .zip(["token_nft", "token_small_supply", "token_large_supply"])
+        {
+            assert_eq!(*token, load::<TokenMetadata>(alone), "{alone}");
+        }
+        let large = &tokens[2];
+        assert!(large.emission > 1 << 53, "read exactly, past a JavaScript number");
+        assert_ne!(large.minting_box_id, large.id, "the minting box is not the token id");
+    }
+
     #[test]
     fn unspent_by_token_nft_is_one_box() {
         let boxes: Vec<IndexedBox> = load("unspent_by_token_nft");
@@ -606,6 +628,23 @@ mod source {
             1
         );
         assert_eq!(node.token_info(&unknown).await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn tokens_posts_ids() {
+        let (server, node) = node().await;
+        let requested = manifest()["fixtures"]["tokens"]["body"].clone();
+        let ids: Vec<TokenId> = serde_json::from_value(requested.clone()).unwrap();
+        Mock::given(method("POST"))
+            .and(path("/blockchain/tokens"))
+            .and(body_json(requested))
+            .respond_with(recorded("tokens"))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let tokens = node.tokens(&ids).await.unwrap();
+        assert_eq!(tokens, load::<Vec<TokenMetadata>>("tokens"));
     }
 
     #[tokio::test]
