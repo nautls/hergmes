@@ -22,8 +22,8 @@ use crate::{
     },
     engine::{Balance, BlockRef, Config as EngineConfig, Engine, EngineError, Event, Output},
     sim::{
-        self, Chain, Endpoint, SimChain, SimConfig, SimOp, strategy,
-        testing::{reference_delta, unused_tree},
+        self, Chain, Endpoint, SimChain, SimConfig, SimOp, reference_delta, strategy,
+        testing::unused_tree,
     },
     types::ergo::{BoxId, TokenBalance, UTxO},
 };

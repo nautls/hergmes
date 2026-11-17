@@ -8,7 +8,7 @@ use proptest::{prelude::*, sample::Index};
 use super::*;
 use crate::{
     engine::{PendingTx, PoolBox, overlay::TxDelta},
-    sim::{self, Chain, Oracle, SimConfig, SimOp, strategy, testing::reference_delta},
+    sim::{self, Chain, Oracle, SimConfig, SimOp, reference_delta, strategy},
     types::{
         Digest,
         ergo::{TxId, UnconfirmedTransaction},

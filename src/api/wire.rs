@@ -111,7 +111,7 @@ impl Serialize for Registers<'_> {
 
 /// The block a page or a streamed balance is as of.
 #[derive(Serialize)]
-pub(super) struct AsOf<'a> {
+pub(crate) struct AsOf<'a> {
     height: u32,
     #[serde(rename = "headerId")]
     header_id: &'a HeaderId,
@@ -193,7 +193,7 @@ impl Serialize for BalanceBody<'_> {
     }
 }
 
-pub(super) struct Confirmed<'a>(pub &'a Totals);
+pub(crate) struct Confirmed<'a>(pub &'a Totals);
 
 impl Serialize for Confirmed<'_> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
@@ -201,7 +201,7 @@ impl Serialize for Confirmed<'_> {
     }
 }
 
-pub(super) struct Pending<'a>(pub &'a PendingDelta);
+pub(crate) struct Pending<'a>(pub &'a PendingDelta);
 
 impl Serialize for Pending<'_> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {

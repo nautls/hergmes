@@ -300,7 +300,7 @@ fn delta<S: Serializer>(
 
 /// A pending tx as it affects one key: its outputs to the key, with no `inclusionHeight`,
 /// and the key's boxes it spends, by id.
-struct WirePendingTx<'a>(&'a PendingTx);
+pub(crate) struct WirePendingTx<'a>(pub &'a PendingTx);
 
 impl Serialize for WirePendingTx<'_> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {

@@ -10,7 +10,7 @@ use std::{
 };
 
 use crate::{
-    engine::{BlockRef, BoxKey, PendingTx, Totals, TrackingKey},
+    engine::{BlockRef, BoxKey, PendingTx, Totals, TrackingKey, overlay::PendingDelta},
     sim::SimBlock,
     types::ergo::{
         BoxId, IndexedBlock, IndexedBox, IndexedTransaction, TxId, UTxO, UnconfirmedTransaction,
@@ -119,6 +119,39 @@ impl Oracle {
             .collect();
         overlay(&confirmed, mempool, key)
     }
+}
+
+/// The reference pending delta, computed another way than the engine's: the key's balance
+/// once the overlay confirms (its confirmed boxes and the overlay's outputs, minus everything
+/// the overlay spends), minus its confirmed balance. Also checks that the first is never
+/// negative, which the unsigned totals would catch by overflowing.
+pub fn reference_delta(confirmed: &[&UTxO], overlay: &[PendingTx]) -> PendingDelta {
+    let spent: HashSet<BoxId> = overlay
+        .iter()
+        .flat_map(|p| p.spent.iter().copied())
+        .collect();
+    let created = overlay.iter().flat_map(|p| p.created.iter().map(|b| &**b));
+    let after = totals(
+        confirmed
+            .iter()
+            .copied()
+            .chain(created)
+            .filter(|b| !spent.contains(&b.id)),
+    );
+    let before = totals(confirmed.iter().copied());
+
+    let mut delta = PendingDelta {
+        nano_ergs: i128::from(after.nano_ergs) - i128::from(before.nano_ergs),
+        tokens: BTreeMap::new(),
+    };
+    for (id, &amount) in &after.tokens {
+        *delta.tokens.entry(*id).or_default() += i128::from(amount);
+    }
+    for (id, &amount) in &before.tokens {
+        *delta.tokens.entry(*id).or_default() -= i128::from(amount);
+    }
+    delta.tokens.retain(|_, amount| *amount != 0);
+    delta
 }
 
 /// ERG and token totals over `boxes`. A token appears only with a non-zero amount.

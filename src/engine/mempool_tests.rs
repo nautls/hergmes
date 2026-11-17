@@ -14,8 +14,8 @@ use crate::{
         overlay::{keys_of, pending_order},
     },
     sim::{
-        self, Chain, SimConfig, strategy,
-        testing::{digest, new_chain, reference_delta, sample_history, tx, utxo},
+        self, Chain, SimConfig, reference_delta, strategy,
+        testing::{digest, new_chain, sample_history, tx, utxo},
     },
     types::{
         Digest, HexBytes,

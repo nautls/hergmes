@@ -9,6 +9,7 @@ use std::{
 
 use blake2::{Blake2b256, Digest as _};
 use reqwest::StatusCode;
+use serde::{Deserialize, Serialize};
 
 use crate::{
     clients::{
@@ -155,23 +156,60 @@ impl Default for SimConfig {
 
 /// One step of a random history. Box and tx choices are seeds and indexes resolved against
 /// the state at the time, so any sequence of ops is valid and proptest can shrink it freely.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// As JSON, for the sim relay's control routes: tagged by `op`, fields in camel case, and
+/// seeds as decimal strings, since a `u64` past 2^53 is not an exact JSON number in
+/// JavaScript (`{ "op": "mine", "fromPool": 2, "fresh": 3, "seed": "7" }`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "op", rename_all = "camelCase", rename_all_fields = "camelCase", deny_unknown_fields)]
 pub enum SimOp {
     /// Mine a block with up to `from_pool` mempool txs and `fresh` new ones.
-    Mine { from_pool: u8, fresh: u8, seed: u64 },
+    Mine {
+        from_pool: u8,
+        fresh: u8,
+        #[serde(with = "decimal")]
+        seed: u64,
+    },
     /// Orphan the last `depth` blocks and mine a branch of `depth + 1 + extra` blocks.
-    Reorg { depth: u8, extra: u8, seed: u64 },
+    Reorg {
+        depth: u8,
+        extra: u8,
+        #[serde(with = "decimal")]
+        seed: u64,
+    },
     /// Submit a pending tx, often chained on another pending tx.
-    MempoolAdd { seed: u64 },
+    MempoolAdd {
+        #[serde(with = "decimal")]
+        seed: u64,
+    },
     /// Submit a pending tx that spends an input of the `pick`-th visible pending tx.
-    MempoolConflict { pick: u32, seed: u64 },
+    MempoolConflict {
+        pick: u32,
+        #[serde(with = "decimal")]
+        seed: u64,
+    },
     /// Remove the `pick`-th visible pending tx, leaving its children in the pool.
     MempoolDrop { pick: u32 },
     /// Put back the `pick`-th tx replaced by a double spend since the last block, as a cleanup
     /// result racing the replacement does.
     MempoolRecheckRace { pick: u32 },
     /// Keep the indexer this many blocks behind the tip.
-    IndexerLag(u8),
+    IndexerLag { lag: u8 },
+}
+
+/// A `u64` as a decimal string.
+mod decimal {
+    use serde::{Deserialize, Deserializer, Serializer, de::Error};
+
+    pub fn serialize<S: Serializer>(value: &u64, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_str(value)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<u64, D::Error> {
+        String::deserialize(deserializer)?
+            .parse()
+            .map_err(D::Error::custom)
+    }
 }
 
 /// The simulated node and indexer. Driven directly with `&mut self`; [`SimChain`] shares it
@@ -327,7 +365,7 @@ impl Chain {
             SimOp::MempoolRecheckRace { pick } => {
                 self.mempool_recheck_race(pick);
             }
-            SimOp::IndexerLag(lag) => self.set_indexer_lag(lag.into()),
+            SimOp::IndexerLag { lag } => self.set_indexer_lag(lag.into()),
         }
     }
 
