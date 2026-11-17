@@ -12,10 +12,7 @@ use crate::{
     adapters::{Follower, follower},
     engine::{BlockRef, Config as EngineConfig, Engine, Event, Totals, overlay::TxDelta},
     sim::{self, Chain, Endpoint, SimChain, SimConfig, SimOp, strategy, testing::ready},
-    types::{
-        Digest,
-        ergo::{BoxId, UTxO},
-    },
+    types::{Digest, ergo::BoxId},
 };
 
 const ENGINE: EngineConfig = EngineConfig { window: 4, grace: 2, ..EngineConfig::DEFAULT };
@@ -152,7 +149,9 @@ impl Harness {
         let mut list = Vec::new();
         for block in chain.branch(&chain.indexed_tip().header_id) {
             for tx in &block.txs {
-                if let Some(delta) = reference_delta(tree, &tx.inputs, &tx.outputs) {
+                let (inputs, outputs) =
+                    (tx.inputs.iter().map(|b| &**b), tx.outputs.iter().map(|b| &**b));
+                if let Some(delta) = sim::net_change(tree, inputs, outputs) {
                     list.push((tx.id, block.header.height, delta));
                 }
             }
@@ -410,34 +409,6 @@ fn pay(chain: &mut Chain, to: &ErgoTree) {
     };
     let tx = chain.transfer(&[input], to);
     chain.mine_txs(vec![tx]);
-}
-
-/// What a tx pays to `tree` minus what it takes from it, summed with the oracle's totals:
-/// another way than `tx_delta`. `None` if it touches no box of the tree.
-fn reference_delta(
-    tree: &ErgoTree,
-    inputs: &[std::sync::Arc<UTxO>],
-    outputs: &[std::sync::Arc<UTxO>],
-) -> Option<PendingDelta> {
-    let mine = |boxes: &[std::sync::Arc<UTxO>]| -> Vec<UTxO> {
-        boxes
-            .iter()
-            .filter(|b| b.ergo_tree == *tree)
-            .map(|b| (**b).clone())
-            .collect()
-    };
-    let (spent, created) = (mine(inputs), mine(outputs));
-    if spent.is_empty() && created.is_empty() {
-        return None;
-    }
-    let (spent, created) = (sim::totals(&spent), sim::totals(&created));
-    let mut delta = signed(&created);
-    delta.nano_ergs -= i128::from(spent.nano_ergs);
-    for (id, a) in spent.tokens {
-        *delta.tokens.entry(id).or_default() -= i128::from(a);
-    }
-    delta.tokens.retain(|_, a| *a != 0);
-    Some(delta)
 }
 
 fn signed(totals: &Totals) -> PendingDelta {

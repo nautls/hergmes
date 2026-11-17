@@ -1,4 +1,5 @@
 export { RelayError, type ErrorCode, type RejectReason } from "./error.ts";
+export type { HistoryItem, HistoryOptions, HistoryState, TxHistory } from "./history.ts";
 export type {
   Assets,
   Balance,
@@ -35,7 +36,7 @@ export type {
   BoxPage,
   ConfirmedBox as WireConfirmedBox,
   HeadersPage,
-  HistoryItem,
+  HistoryItem as WireHistoryItem,
   HistoryPage,
   Key,
   PoolBox,

@@ -3,7 +3,7 @@ import {
   RelayError,
   RestClient,
   type WireConfirmedBox as ConfirmedBox,
-  type HistoryItem,
+  type WireHistoryItem as HistoryItem,
   type Key,
   type PoolBox,
 } from "../src/index.ts";

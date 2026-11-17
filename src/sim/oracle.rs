@@ -13,7 +13,8 @@ use crate::{
     engine::{BlockRef, BoxKey, PendingTx, Totals, TrackingKey, overlay::PendingDelta},
     sim::SimBlock,
     types::ergo::{
-        BoxId, IndexedBlock, IndexedBox, IndexedTransaction, TxId, UTxO, UnconfirmedTransaction,
+        BoxId, ErgoTree, IndexedBlock, IndexedBox, IndexedTransaction, TxId, UTxO,
+        UnconfirmedTransaction,
     },
 };
 
@@ -112,13 +113,86 @@ impl Oracle {
 
     /// The key's reference overlay given `mempool`, against the tip's unspent set.
     pub fn overlay(&self, key: &TrackingKey, mempool: &[UnconfirmedTransaction]) -> Vec<PendingTx> {
-        let confirmed: HashSet<BoxId> = self
-            .utxo(self.tip().height)
+        overlay(&self.confirmed_ids(), mempool, key)
+    }
+
+    /// The whole history of the address guarded by `tree`, newest first: the txs of
+    /// `mempool` that can be valid on the tip and spend from or pay to it, a child above the
+    /// parent it spends from ([`pending_order`] reversed), then this branch's txs that do, the
+    /// tip's last tx first.
+    pub fn history(
+        &self,
+        tree: &ErgoTree,
+        mempool: &[UnconfirmedTransaction],
+    ) -> Vec<HistoryEntry> {
+        let order = pending_order(&self.confirmed_ids(), mempool);
+        let pending = order.iter().rev().filter_map(|tx| {
+            let delta = net_change(tree, &tx.inputs, &tx.outputs)?;
+            Some(HistoryEntry { tx_id: tx.id, height: None, delta })
+        });
+        let mut confirmed = Vec::new();
+        for block in &self.blocks {
+            for tx in &block.txs {
+                let (inputs, outputs) =
+                    (tx.inputs.iter().map(|b| &**b), tx.outputs.iter().map(|b| &**b));
+                if let Some(delta) = net_change(tree, inputs, outputs) {
+                    let height = Some(block.header.height);
+                    confirmed.push(HistoryEntry { tx_id: tx.id, height, delta });
+                }
+            }
+        }
+        pending.chain(confirmed.into_iter().rev()).collect()
+    }
+
+    /// The ids of the tip's unspent boxes.
+    fn confirmed_ids(&self) -> HashSet<BoxId> {
+        self.utxo(self.tip().height)
             .values()
             .map(|b| b.id)
-            .collect();
-        overlay(&confirmed, mempool, key)
+            .collect()
     }
+}
+
+/// A tx in an address's history: its net change for the address, and the height of the
+/// block that included it, `None` while it is pending.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HistoryEntry {
+    pub tx_id: TxId,
+    pub height: Option<u32>,
+    pub delta: PendingDelta,
+}
+
+/// What a tx pays to `tree` minus what it takes from it, summed with [`totals`]: another way
+/// than the engine's `tx_delta`. `None` if it touches no box of the tree.
+pub fn net_change<'a>(
+    tree: &ErgoTree,
+    inputs: impl IntoIterator<Item = &'a UTxO>,
+    outputs: impl IntoIterator<Item = &'a UTxO>,
+) -> Option<PendingDelta> {
+    let spent: Vec<&UTxO> = inputs
+        .into_iter()
+        .filter(|b| b.ergo_tree == *tree)
+        .collect();
+    let created: Vec<&UTxO> = outputs
+        .into_iter()
+        .filter(|b| b.ergo_tree == *tree)
+        .collect();
+    if spent.is_empty() && created.is_empty() {
+        return None;
+    }
+    let (spent, created) = (totals(spent), totals(created));
+    let mut delta = PendingDelta {
+        nano_ergs: i128::from(created.nano_ergs) - i128::from(spent.nano_ergs),
+        tokens: BTreeMap::new(),
+    };
+    for (id, &amount) in &created.tokens {
+        *delta.tokens.entry(*id).or_default() += i128::from(amount);
+    }
+    for (id, &amount) in &spent.tokens {
+        *delta.tokens.entry(*id).or_default() -= i128::from(amount);
+    }
+    delta.tokens.retain(|_, amount| *amount != 0);
+    Some(delta)
 }
 
 /// The reference pending delta, computed another way than the engine's: the key's balance

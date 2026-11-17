@@ -9,6 +9,7 @@
  */
 
 import { ensureUTxOBigInt, type Box } from "@fleet-sdk/common";
+import { RelayError } from "./error.ts";
 import type { ClientMessage, ServerMessage, WirePendingTx } from "./protocol.ts";
 import type {
   Assets as WireAssets,
@@ -124,6 +125,30 @@ const TRANSIENT = new Set([
 
 /** Statuses below 500 that are for now: a timeout and a rate limit, as a proxy may answer. */
 const TRANSIENT_STATUS = new Set([408, 429]);
+
+/** Whether a failure is for now: it has a `retryAfter`, or it is a network error or a 5xx. */
+export function transient(error: SubscriptionError): boolean {
+  return (
+    error.retryAfter !== undefined ||
+    (error.status ?? 0) >= 500 ||
+    (error.status !== undefined && TRANSIENT_STATUS.has(error.status)) ||
+    (error.status === undefined && TRANSIENT.has(error.code))
+  );
+}
+
+/** A failed REST read as a {@link SubscriptionError}. */
+export function failure(e: unknown): SubscriptionError {
+  if (e instanceof RelayError) {
+    return {
+      code: e.code ?? `http_${String(e.status)}`,
+      message: e.message,
+      status: e.status,
+      ...(e.retryAfter === undefined ? {} : { retryAfter: e.retryAfter }),
+    };
+  }
+  // `fetch` fails with a `TypeError` when the request never got an answer.
+  return { code: e instanceof TypeError ? "network" : "bad_response", message: String(e) };
+}
 
 /**
  * Why the machine took a new snapshot, for diagnostics: the relay asked (`resync_required`, or
@@ -343,12 +368,7 @@ export class KeyMachine {
     this.#awaiting = undefined;
     this.#working = undefined;
     this.#generation++;
-    const transient =
-      error.retryAfter !== undefined ||
-      (error.status ?? 0) >= 500 ||
-      (error.status !== undefined && TRANSIENT_STATUS.has(error.status)) ||
-      (error.status === undefined && TRANSIENT.has(error.code));
-    if (!transient) {
+    if (!transient(error)) {
       this.#set({ phase: "rejected", error });
       return [];
     }
@@ -487,7 +507,8 @@ function keysetOrder(a: ConfirmedBox, b: ConfirmedBox): number {
   return a.boxId < b.boxId ? -1 : a.boxId > b.boxId ? 1 : 0;
 }
 
-function assets(wire: WireAssets): Assets {
+/** Wire amounts, as `bigint`. */
+export function assets(wire: WireAssets): Assets {
   return {
     nanoErgs: BigInt(wire.nanoErgs),
     tokens: new Map(wire.tokens.map((t) => [t.tokenId, BigInt(t.amount)])),

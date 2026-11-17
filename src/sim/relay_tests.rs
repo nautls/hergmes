@@ -234,9 +234,26 @@ async fn agrees(router: &Router, tip: &Value) {
             let (_, balance) = get_json(router, &format!("/v1/{kind}/{key}/balance")).await;
             assert_eq!(balance["confirmed"], expected["balance"]["confirmed"]);
             assert_eq!(balance["pending"], expected["balance"]["pending"]);
+            assert_eq!(history(router, &key).await, expected["history"], "{key}'s history");
         } else {
             assert_eq!(expected.get("balance"), None);
+            assert_eq!(expected.get("history"), None);
         }
+    }
+}
+
+/// An address's whole history, read from the route page by page.
+async fn history(router: &Router, address: &str) -> Value {
+    let mut items = Vec::new();
+    let mut path = format!("/v1/addresses/{address}/transactions?limit=100");
+    loop {
+        let (status, page) = get_json(router, &path).await;
+        assert_eq!(status, 200, "{page}");
+        items.extend(page["items"].as_array().unwrap().iter().cloned());
+        let Some(cursor) = page["nextCursor"].as_str() else {
+            return Value::Array(items);
+        };
+        path = format!("/v1/addresses/{address}/transactions?limit=100&cursor={cursor}");
     }
 }
 

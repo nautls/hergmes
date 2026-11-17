@@ -8,8 +8,8 @@
 //!   indexer, driven with `&mut self` (mine, reorg, submit, drop, lag) or by [`SimOp`]s.
 //! - [`SimChain`]: a shared `Chain` served through [`NodeSource`](crate::clients::NodeSource),
 //!   with a call log and a hook that runs before each call.
-//! - [`Oracle`]: unspent sets, totals and the reference overlay, recomputed by replaying a
-//!   branch from genesis.
+//! - [`Oracle`]: unspent sets, totals, the reference overlay and an address's history,
+//!   recomputed by replaying a branch from genesis.
 //! - [`strategy`]: proptest strategies for random histories.
 //! - [`relay`]: the real API over a `SimChain`, with control routes, for the client SDK's
 //!   tests.
@@ -28,5 +28,8 @@ pub use chain::{
     Chain, GENESIS_TOKENS, OutputSpec, RETRY_AFTER, SimBlock, SimConfig, SimOp, SimTx, timestamp,
     token_id,
 };
-pub use oracle::{Oracle, filter_overlay, overlay, pending_order, reference_delta, totals};
+pub use oracle::{
+    HistoryEntry, Oracle, filter_overlay, net_change, overlay, pending_order, reference_delta,
+    totals,
+};
 pub use source::{Endpoint, Hook, SimChain};

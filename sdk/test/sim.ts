@@ -7,6 +7,7 @@ import type {
   PoolBox,
   WireAssets as Assets,
   WireConfirmedBox as ConfirmedBox,
+  WireHistoryItem,
 } from "../src/index.ts";
 
 /** A chain op, as the sim relay draws and applies them; seeds are decimal strings. */
@@ -25,6 +26,8 @@ export interface Expected {
   boxes: ConfirmedBox[];
   pending: PendingTx[];
   balance?: { confirmed: Assets; pending: Assets };
+  /** An address's whole history, newest first, pending txs on top. */
+  history?: WireHistoryItem[];
 }
 
 export interface SimKeys {

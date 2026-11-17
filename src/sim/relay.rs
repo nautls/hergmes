@@ -14,8 +14,9 @@
 //! - `POST /sim/settle`: the indexer brought to the tip (no lag, no recovery), then ticks
 //!   until the engine is at the node's tip with its mempool; answers `{ tip }`.
 //! - `GET /sim/expected/addresses/{address}`, `GET /sim/expected/tokens/{tokenId}`: the
-//!   oracle's state for the key at the tip, in the relay's wire shapes. Only right after a
-//!   tick or settle that synced, with no op since: `409` otherwise.
+//!   oracle's state for the key at the tip, in the relay's wire shapes: its boxes and overlay,
+//!   and for an address its balance and its whole history, as the history route's items. Only
+//!   right after a tick or settle that synced, with no op since: `409` otherwise.
 //! - `GET /sim/keys`: the chain's trees as addresses, and its tokens with their emission.
 
 use std::{
@@ -53,7 +54,10 @@ use crate::{
     },
     engine::{self, BlockRef, Engine, TrackingKey},
     runtime::{Handle, Settled, spawn},
-    sim::{Chain, SimChain, SimConfig, SimOp, reference_delta, strategy, totals},
+    sim::{
+        Chain, HistoryEntry, SimChain, SimConfig, SimOp, reference_delta, strategy, timestamp,
+        totals,
+    },
     types::address::{self, Network},
 };
 
@@ -241,7 +245,7 @@ impl SimRelay {
             .collect();
         let pending: Vec<_> = overlay.iter().map(WirePendingTx).collect();
         let mut body = json!({ "tip": AsOf::from(&tip), "boxes": boxes, "pending": pending });
-        if let TrackingKey::Tree(_) = key {
+        if let TrackingKey::Tree(tree) = key {
             let held: Vec<_> = unspent.values().map(|b| &**b).collect();
             let confirmed = totals(held.iter().copied());
             let delta = reference_delta(&held, &overlay);
@@ -249,6 +253,12 @@ impl SimRelay {
                 "confirmed": Confirmed(&confirmed),
                 "pending": Pending(&delta),
             });
+            let history: Vec<_> = oracle
+                .history(tree, &chain.mempool())
+                .iter()
+                .map(history_item)
+                .collect();
+            body["history"] = json!(history);
         }
         Ok(body)
     }
@@ -389,6 +399,18 @@ async fn expected(relay: &SimRelay, key: &TrackingKey) -> Response {
 
 async fn keys(State(relay): Relay) -> Json<Value> {
     Json(relay.keys())
+}
+
+/// A history entry as the history route writes an item: `txId`, then `height` and `timestamp`
+/// once included, then `delta`.
+fn history_item(entry: &HistoryEntry) -> Value {
+    let mut item = json!({ "txId": entry.tx_id });
+    if let Some(height) = entry.height {
+        item["height"] = json!(height);
+        item["timestamp"] = json!(timestamp(height));
+    }
+    item["delta"] = json!(Pending(&entry.delta));
+    item
 }
 
 #[cfg(test)]

@@ -1,49 +1,6 @@
 import { afterEach, expect, test, vi } from "vitest";
 import { Relay, type SubscriptionState } from "../src/index.ts";
-
-/** A socket the test feeds by hand; it opens at once and records what is sent. */
-class FakeSocket extends EventTarget {
-  static readonly OPEN = 1;
-  static last: FakeSocket | undefined;
-  /** Whether new sockets open; one that doesn't stays connecting. */
-  static opens = true;
-  readyState = 0;
-  readonly url: string;
-  readonly sent: unknown[] = [];
-
-  constructor(url: string) {
-    super();
-    this.url = url;
-    FakeSocket.last = this;
-    if (!FakeSocket.opens) return;
-    queueMicrotask(() => {
-      this.readyState = FakeSocket.OPEN;
-      this.dispatchEvent(new Event("open"));
-    });
-  }
-
-  send(text: string): void {
-    this.sent.push(JSON.parse(text));
-  }
-
-  close(): void {
-    this.readyState = 3;
-  }
-
-  /** Delivers messages one after another within the caller's task. */
-  deliver(...messages: unknown[]): void {
-    for (const m of messages) {
-      const data = typeof m === "string" ? m : JSON.stringify(m);
-      this.dispatchEvent(new MessageEvent("message", { data }));
-    }
-  }
-
-  /** The socket closed under the relay. */
-  drop(): void {
-    this.readyState = 3;
-    this.dispatchEvent(new Event("close"));
-  }
-}
+import { FakeSocket } from "./fake-socket.ts";
 
 const key = { address: "9fAddress" };
 const at = (height: number) => ({ height, headerId: height.toString(16).padStart(64, "0") });
@@ -55,7 +12,7 @@ const balance = (height: number, nanoErgs: number) => ({
   pending: { nanoErgs: "0", tokens: [] },
 });
 const task = () => new Promise((r) => setTimeout(r, 0));
-const Socket = FakeSocket as unknown as typeof WebSocket;
+const Socket = FakeSocket.class;
 /** A `fetch` that never answers: snapshots stay in progress. */
 const pending: typeof fetch = () => new Promise<Response>(() => undefined);
 

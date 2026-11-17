@@ -1,6 +1,8 @@
-import { RelayError } from "./error.ts";
+import { call } from "./call.ts";
+import { HistoryFeed, type HistoryOptions, type TxHistory } from "./history.ts";
 import {
   KeyMachine,
+  failure,
   type Action,
   type MachineContext,
   type Resync,
@@ -88,6 +90,7 @@ export class Relay {
   readonly #pageSize: number;
   readonly #debug: RelayOptions["debug"];
   readonly #entries = new Map<string, Entry>();
+  readonly #histories = new Set<HistoryFeed>();
   readonly #tipListeners = new Set<(tip: BlockRef) => void>();
   readonly #backoff: (attempt: number) => number;
   readonly #context: MachineContext;
@@ -189,7 +192,26 @@ export class Relay {
     };
   }
 
-  /** Closes the socket and ends every subscription. A later subscribe opens a new socket. */
+  /**
+   * An address's tx history, newest first, pending txs on top: its first page is read now,
+   * and older pages as the app asks. See {@link HistoryOptions.refresh} to keep the first
+   * page current.
+   */
+  history(address: string, options: HistoryOptions = {}): TxHistory {
+    const history = new HistoryFeed(address, options.limit, {
+      rest: this.rest,
+      backoff: this.#backoff,
+      hold: options.refresh ? this.subscribe({ address }, { boxes: false }) : undefined,
+      closed: (h) => this.#histories.delete(h),
+    });
+    this.#histories.add(history);
+    return history;
+  }
+
+  /**
+   * Closes the socket, ends every subscription and stops every history. A later subscribe
+   * opens a new socket.
+   */
   close(): void {
     const socket = this.#socket;
     this.#socket = undefined;
@@ -197,6 +219,7 @@ export class Relay {
     this.#tip = undefined;
     this.#stopReconnecting();
     socket?.close(1000);
+    for (const history of this.#histories) history.close();
     for (const entry of this.#entries.values()) {
       forget(entry);
       this.#change(entry, () => entry.machine.end());
@@ -275,17 +298,7 @@ export class Relay {
       read = await this.#read(machine.key, reading.signal);
     } catch (e) {
       if (entry.machine !== machine || reading.signal.aborted) return;
-      const error =
-        e instanceof RelayError
-          ? {
-              code: e.code ?? `http_${String(e.status)}`,
-              message: e.message,
-              status: e.status,
-              ...(e.retryAfter === undefined ? {} : { retryAfter: e.retryAfter }),
-            }
-          : // `fetch` fails with a `TypeError` when the request never got an answer.
-            { code: e instanceof TypeError ? "network" : "bad_response", message: String(e) };
-      this.#change(entry, () => machine.snapshotFailed(generation, error));
+      this.#change(entry, () => machine.snapshotFailed(generation, failure(e)));
       return;
     }
     if (entry.machine !== machine) return;
@@ -392,19 +405,4 @@ function backoff(firstMs: number, maxMs: number): (attempt: number) => number {
 function forget(entry: Entry): void {
   clearTimeout(entry.retry);
   entry.reading?.abort();
-}
-
-/**
- * Calls an app's function. What it throws is the app's: rethrown on a task of its own, where
- * it surfaces as any uncaught error does, so the SDK's own work and the other listeners carry
- * on.
- */
-function call<T>(listener: ((value: T) => void) | undefined, value: T): void {
-  try {
-    listener?.(value);
-  } catch (error) {
-    setTimeout(() => {
-      throw error;
-    }, 0);
-  }
 }
