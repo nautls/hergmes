@@ -44,6 +44,14 @@ pub const CLOSE_TIMEOUT: Duration = Duration::from_secs(5);
 /// The largest message or frame a client may send. The longest valid one, a subscribe with a
 /// P2S address of about 5,600 characters and a `from`, is about 6 KB.
 pub const MAX_MESSAGE: usize = 16 * 1024;
+/// tungstenite's read buffer, per connection, held for the connection's life and zero-filled
+/// on its first read, so resident whether the client sends anything or not. Its default,
+/// 128 KiB, is for heavy inbound traffic; a client here sends a few subscribes and a pong
+/// every [`PING_INTERVAL`], and the default made an idle connection cost about 131 KiB
+/// (`examples/membench.rs`, `connections`), against about 8 KiB with this. A frame larger than
+/// the buffer still arrives whole: the buffer grows to fit it, up to [`MAX_MESSAGE`]
+/// (tungstenite 0.29.0, `protocol/frame/mod.rs`, `FrameCodec::read_frame` and `read_in`).
+pub const READ_BUFFER: usize = 4 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Config {
@@ -79,6 +87,7 @@ async fn upgrade<S: NodeSource + 'static>(
     upgrade
         .max_message_size(MAX_MESSAGE)
         .max_frame_size(MAX_MESSAGE)
+        .read_buffer_size(READ_BUFFER)
         .on_upgrade(move |socket| connection::serve(api, config, socket))
 }
 
