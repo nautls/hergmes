@@ -10,7 +10,7 @@ import type {
   PoolBox,
   Status,
   Submitted,
-  WithPool,
+  Spendable,
 } from "./wire.ts";
 
 export interface RestOptions {
@@ -87,8 +87,11 @@ export class RestClient {
     return this.#get(`${keyPath(key)}/boxes`, query, options);
   }
 
-  /** A key's boxes with the mempool applied, in one response. */
-  withPool(key: Key, options: RequestOptions = {}): Promise<WithPool> {
+  /**
+   * What a tx can spend now from a key, in one response: its confirmed boxes and the pool's
+   * outputs to it, less what pool txs spend. `view.spendable` on a subscription keeps it live.
+   */
+  spendable(key: Key, options: RequestOptions = {}): Promise<Spendable> {
     return this.#get(`${keyPath(key)}/boxes/with-pool`, {}, options);
   }
 

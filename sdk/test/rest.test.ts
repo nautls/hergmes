@@ -121,7 +121,7 @@ describe(`the REST routes against the oracle (SEED=${String(SEED)})`, () => {
         }
         expect(pages, keyContext).toEqual(expected.boxes);
 
-        const view = await client.withPool(key);
+        const view = await client.spendable(key);
         const now = spendable(expected);
         expect(view, keyContext).toEqual({
           asOf: { height: tip.height },

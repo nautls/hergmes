@@ -150,7 +150,7 @@ test("routes are built under the root's path, with keys encoded", async () => {
   const { fetch, calls } = stub(page, page, page, page);
   const client = new RestClient("http://relay/hergmes", { fetch });
   await client.boxes({ address: "9f/x" }, { limit: 3, cursor: "c+/" });
-  await client.withPool({ tokenId: "ab" });
+  await client.spendable({ tokenId: "ab" });
   await client.headers();
   await client.submitTransaction("00", { broadcast: true });
   expect(calls.map((c) => c.url)).toEqual([

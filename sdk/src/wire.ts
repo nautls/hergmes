@@ -42,7 +42,7 @@ export interface BoxPage {
  * A key's boxes with the mempool applied, confirmed ones first. `truncated` says the confirmed
  * part was cut to the route's limit; `total` is the whole view's size either way.
  */
-export interface WithPool {
+export interface Spendable {
   asOf: AsOfHeight;
   items: PoolBox[];
   truncated: boolean;

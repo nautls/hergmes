@@ -42,5 +42,5 @@ export type {
   PoolBox,
   Status,
   Submitted,
-  WithPool,
+  Spendable,
 } from "./wire.ts";

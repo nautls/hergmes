@@ -99,7 +99,7 @@ the route's JSON as it came, amounts as base-10 strings:
 | -------------------------------------- | -------------------------------------------------- |
 | `status()`                             | `GET /v1/status`                                   |
 | `boxes(key, { cursor, limit })`        | `GET /v1/{addresses,tokens}/{key}/boxes`           |
-| `withPool(key)`                        | `GET /v1/{addresses,tokens}/{key}/boxes/with-pool` |
+| `spendable(key)`                       | `GET /v1/{addresses,tokens}/{key}/boxes/with-pool` |
 | `balance(address)`                     | `GET /v1/addresses/{address}/balance`              |
 | `history(address, { cursor, limit })`  | `GET /v1/addresses/{address}/transactions`         |
 | `headers({ limit })`                   | `GET /v1/headers`                                  |
