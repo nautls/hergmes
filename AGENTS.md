@@ -14,7 +14,22 @@ RUST_LOG=hergmes=debug cargo run
 node scripts/record-fixtures.ts --node http://127.0.0.1:9053   # re-record node fixtures
 ```
 
-CI runs the first three. All of them must pass before a change is done.
+The TypeScript client SDK lives in `sdk/` (pnpm; it runs on Node 22, its tooling needs 22.18).
+Its tests start the `sim-relay` binary (`src/bin/sim-relay.rs`, the relay over `SimChain`), which
+the test setup builds:
+
+```sh
+cd sdk
+pnpm install
+pnpm format:check             # pnpm format to fix
+pnpm lint
+pnpm check                    # type check
+pnpm build
+pnpm test                     # replay a run: SEED=<seed> pnpm test
+```
+
+CI runs the first three cargo commands and every `sdk/` command. All of them must pass before a
+change is done.
 
 ## Workflow
 
