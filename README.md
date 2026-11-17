@@ -10,7 +10,7 @@ balance as a signed change on top of the confirmed amount ("10 ERG incoming", "1
 
 > **Status:** early development. The relay follows the node, tracks the keys clients ask for
 > and the ones named in its configuration, and serves the REST API and the WebSocket stream.
-> The client SDK is not built yet.
+> The TypeScript client SDK is in [`sdk/`](sdk/README.md), not published yet.
 
 ## How it works
 
