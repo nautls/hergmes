@@ -365,3 +365,23 @@ test("closing the relay forgets its tip", async () => {
   relay.close();
   expect(relay.tip).toBeUndefined();
 });
+
+test("subscribe calls at once with the state, then on changes, never twice with one state", async () => {
+  const relay = new Relay("http://relay", { WebSocket: Socket });
+  const sub = relay.subscribe(key, { boxes: false });
+  const seen: SubscriptionState[] = [];
+  const off = sub.subscribe((state) => seen.push(state));
+  expect(seen).toEqual([sub.state]);
+  await task();
+  // The subscribe's phase change came before the store's first call: not sent again.
+  expect(seen).toHaveLength(1);
+  FakeSocket.last?.deliver({ type: "subscribed", id: 0, key }, balance(10, 1));
+  await task();
+  expect(seen).toHaveLength(2);
+  expect(seen[1]).toBe(sub.state);
+  off();
+  FakeSocket.last?.deliver(balance(11, 2));
+  await task();
+  expect(seen).toHaveLength(2);
+  relay.close();
+});

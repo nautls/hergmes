@@ -1,4 +1,4 @@
-import { call } from "./call.ts";
+import { call, store } from "./call.ts";
 import { HistoryFeed, type HistoryOptions, type TxHistory } from "./history.ts";
 import {
   KeyMachine,
@@ -59,6 +59,12 @@ export interface Subscription {
    * removes the listener.
    */
   onChange(listener: (state: SubscriptionState) => void): () => void;
+  /**
+   * Calls `listener` with the current state at once, then as {@link Subscription.onChange} does,
+   * never twice with the same state. Answers a function that removes the listener. The
+   * contract of a Svelte store, so the handle is one (`$sub`).
+   */
+  subscribe(listener: (state: SubscriptionState) => void): () => void;
   /** Ends this hold; the key is unsubscribed once no hold is left. */
   close(): void;
 }
@@ -176,6 +182,9 @@ export class Relay {
       onChange(listener) {
         held.listeners.add(listener);
         return () => held.listeners.delete(listener);
+      },
+      subscribe(listener) {
+        return store(this, listener);
       },
       close: () => {
         if (!open) return;

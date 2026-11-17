@@ -442,3 +442,18 @@ test("an older page read keeps a first page's failure, and a first page read can
   expect(route.firsts()).toBe(reads);
   relay.close();
 });
+
+test("subscribe calls at once with the state, then on changes", async () => {
+  const route = served(() => page([tx("a", 1)]));
+  const relay = new Relay("http://relay", { fetch: route.fetch });
+  const history = relay.history(address);
+  const seen: HistoryState[] = [];
+  const off = history.subscribe((state) => seen.push(state));
+  expect(seen).toEqual([history.state]);
+  expect(seen[0]?.loading).toBe(true);
+  await history.more();
+  await task();
+  expect(seen.map(ids)).toEqual([[], ["a@1"]]);
+  off();
+  relay.close();
+});

@@ -13,7 +13,7 @@ import {
   type SubscriptionError,
   type SubscriptionState,
 } from "./machine.ts";
-import { call } from "./call.ts";
+import { call, store } from "./call.ts";
 import type { RestClient } from "./rest.ts";
 import type { HistoryItem as WireHistoryItem, HistoryPage } from "./wire.ts";
 
@@ -83,6 +83,12 @@ export interface TxHistory {
    * together (on a `setTimeout(0)`). Answers a function that removes the listener.
    */
   onChange(listener: (state: HistoryState) => void): () => void;
+  /**
+   * Calls `listener` with the current state at once, then as {@link TxHistory.onChange} does,
+   * never twice with the same state. Answers a function that removes the listener. The
+   * contract of a Svelte store, so the handle is one (`$history`).
+   */
+  subscribe(listener: (state: HistoryState) => void): () => void;
   /** Stops reading and releases the address's hold, if `refresh` took one. */
   close(): void;
 }
@@ -198,6 +204,10 @@ export class HistoryFeed implements TxHistory {
   onChange(listener: (state: HistoryState) => void): () => void {
     this.#listeners.add(listener);
     return () => this.#listeners.delete(listener);
+  }
+
+  subscribe(listener: (state: HistoryState) => void): () => void {
+    return store(this, listener);
   }
 
   close(): void {

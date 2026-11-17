@@ -12,3 +12,21 @@ export function call<T>(listener: ((value: T) => void) | undefined, value: T): v
     }, 0);
   }
 }
+
+/**
+ * A Svelte store's `subscribe` over a handle's `state` and `onChange`: `listener` gets the
+ * current state at once, then each change, never the same state twice in a row (a change
+ * made before the batched call would otherwise come again).
+ */
+export function store<T>(
+  handle: { readonly state: T; onChange(listener: (state: T) => void): () => void },
+  listener: (state: T) => void,
+): () => void {
+  let last = handle.state;
+  listener(last);
+  return handle.onChange((state) => {
+    if (state === last) return;
+    last = state;
+    listener(state);
+  });
+}
