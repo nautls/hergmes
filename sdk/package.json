@@ -1,12 +1,15 @@
 {
-  "name": "hergmes-sdk",
-  "version": "0.0.0",
+  "name": "@hergmes/sdk",
+  "version": "0.0.1-alpha",
   "private": true,
   "description": "Client for the hergmes relay: realtime, mempool-aware boxes and balances on Ergo.",
   "type": "module",
   "packageManager": "pnpm@11.25.0",
   "engines": {
     "node": ">=22"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "files": [
     "dist"
@@ -25,14 +28,12 @@
     "format:check": "prettier --check .",
     "test": "vitest run"
   },
-  "peerDependencies": {
+  "dependencies": {
     "@fleet-sdk/common": "^0.10.0",
     "@fleet-sdk/serializer": "^0.11.0"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
-    "@fleet-sdk/common": "^0.10.0",
-    "@fleet-sdk/serializer": "^0.11.0",
     "@types/node": "^22.20.5",
     "eslint": "^10.15.0",
     "prettier": "^3.10.1",
