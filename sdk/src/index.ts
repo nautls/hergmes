@@ -1,4 +1,24 @@
 export { RelayError, type ErrorCode, type RejectReason } from "./error.ts";
+export type {
+  Assets,
+  Balance,
+  BoxView,
+  ConfirmedBox,
+  PendingTx,
+  Phase,
+  Resync,
+  SubscriptionError,
+  SubscriptionState,
+} from "./machine.ts";
+export type {
+  ClientMessage,
+  Delta,
+  ResyncReason,
+  ServerMessage,
+  Spend,
+  WirePendingTx,
+} from "./protocol.ts";
+export { Relay, type RelayOptions, type SubscribeOptions, type Subscription } from "./relay.ts";
 export {
   RestClient,
   type HeadersOptions,
@@ -7,4 +27,19 @@ export {
   type RestOptions,
   type SubmitOptions,
 } from "./rest.ts";
-export type * from "./wire.ts";
+export type {
+  Assets as WireAssets,
+  AsOfHeight,
+  Balance as WireBalance,
+  BlockRef,
+  BoxPage,
+  ConfirmedBox as WireConfirmedBox,
+  HeadersPage,
+  HistoryItem,
+  HistoryPage,
+  Key,
+  PoolBox,
+  Status,
+  Submitted,
+  WithPool,
+} from "./wire.ts";

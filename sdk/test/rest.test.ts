@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import {
   RelayError,
   RestClient,
-  type ConfirmedBox,
+  type WireConfirmedBox as ConfirmedBox,
   type HistoryItem,
   type Key,
   type PoolBox,

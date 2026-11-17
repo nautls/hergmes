@@ -69,6 +69,11 @@ export class RestClient {
     this.#maxAttempts = Math.max(1, options.maxAttempts ?? MAX_ATTEMPTS);
   }
 
+  /** The root the routes are resolved against, its path ending in `/`. */
+  get root(): URL {
+    return new URL(this.#base);
+  }
+
   /** The relay's version, network, tip, and whether it is ready. */
   status(options: RequestOptions = {}): Promise<Status> {
     return this.#get("v1/status", {}, options);

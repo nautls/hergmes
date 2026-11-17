@@ -1,7 +1,13 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { createInterface } from "node:readline";
 import { inject } from "vitest";
-import type { Assets, BlockRef, ConfirmedBox, Key, PoolBox } from "../src/index.ts";
+import type {
+  BlockRef,
+  Key,
+  PoolBox,
+  WireAssets as Assets,
+  WireConfirmedBox as ConfirmedBox,
+} from "../src/index.ts";
 
 /** A chain op, as the sim relay draws and applies them; seeds are decimal strings. */
 export type SimOp = { op: string } & Record<string, unknown>;
