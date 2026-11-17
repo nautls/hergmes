@@ -3,6 +3,13 @@
   "version": "0.0.1-alpha",
   "private": true,
   "description": "Client for the hergmes relay: realtime, mempool-aware boxes and balances on Ergo.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nautls/hergmes.git",
+    "directory": "sdk"
+  },
+  "homepage": "https://github.com/nautls/hergmes/tree/master/sdk#readme",
+  "bugs": "https://github.com/nautls/hergmes/issues",
   "type": "module",
   "packageManager": "pnpm@11.25.0",
   "engines": {
