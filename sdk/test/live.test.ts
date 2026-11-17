@@ -11,6 +11,7 @@ import {
   type Subscription,
   type WireAssets,
 } from "../src/index.ts";
+import { Faults } from "./faults.ts";
 import { SimRelay, seeds, type Expected } from "./sim.ts";
 
 let sim: SimRelay;
@@ -83,6 +84,9 @@ function sorted(a: Assets): Assets {
   };
 }
 
+/** Backoff waits short enough for a settle to converge well inside the deadline. */
+const BACKOFF = { firstMs: 10, maxMs: 50 };
+
 test(`subscriptions converge to the oracle at every checkpoint (SEED=${String(SEED)})`, async () => {
   const frames: string[] = [];
   const resyncs: Resync[] = [];
@@ -90,18 +94,27 @@ test(`subscriptions converge to the oracle at every checkpoint (SEED=${String(SE
     if ("frame" in event) frames.push(event.frame);
     else resyncs.push(event.resync);
   };
+  const next = seeds(SEED);
+  // The network's faults: cuts, between ops and after a drawn number of frames (so some land
+  // inside a catch-up), and delays. Each relay draws from its own stream of the run's seed.
+  const faults = {
+    boxes: new Faults({ draw: seeds(next()), maxDelayMs: 20, cutWithin: 60 }),
+    balances: new Faults({ draw: seeds(next()), maxDelayMs: 20, cutWithin: 60 }),
+  };
   // One box a page, so every snapshot pages; balance-only on a second connection, since a key has
   // one subscription per connection.
-  const boxes = new Relay(sim.url, { pageSize: 1, debug });
-  const balances = new Relay(sim.url, { debug });
+  const options = { debug, backoff: BACKOFF };
+  const boxes = new Relay(sim.url, { ...options, pageSize: 1, WebSocket: faults.boxes.WebSocket });
+  const balances = new Relay(sim.url, { ...options, WebSocket: faults.balances.WebSocket });
   const subs = new Map<string, { key: Key; box: Subscription; balance?: Subscription }>();
-  const next = seeds(SEED);
   const ops: unknown[] = [];
 
   /**
    * Subscribes every key not yet subscribed: the addresses, and the tokens under the supply
    * limit. A token the indexer does not know yet (minted in the pool only) is refused, and
-   * tried again at the next call.
+   * tried again at the next call. A token no longer listed under the limit is let go: two
+   * conflicting pool txs with the same first input both mint its id, and the one built last
+   * gives its emission, which may be over the limit.
    */
   const subscribeAll = async () => {
     const { addresses, tokens } = await sim.keys();
@@ -109,6 +122,13 @@ test(`subscriptions converge to the oracle at every checkpoint (SEED=${String(SE
       ...addresses.map((address) => ({ address })),
       ...tokens.filter((t) => BigInt(t.emission) <= 100n).map((t) => ({ tokenId: t.tokenId })),
     ];
+    const listed = new Set(keys.map((key) => JSON.stringify(key)));
+    for (const [name, sub] of subs) {
+      if (listed.has(name)) continue;
+      sub.box.close();
+      sub.balance?.close();
+      subs.delete(name);
+    }
     for (const key of keys) {
       const name = JSON.stringify(key);
       const sub = subs.get(name);
@@ -132,13 +152,23 @@ test(`subscriptions converge to the oracle at every checkpoint (SEED=${String(SE
       // Before the ops too, so the SDK follows them live, catching up from a snapshot taken
       // while they apply.
       await subscribeAll();
+      faults.boxes.paused = faults.balances.paused = false;
       for (let step = 0; step < 12; step++) {
         ops.push(await sim.random(next()));
         if (next() % 3n === 0n) await sim.tick();
+        if (next() % 6n === 0n) {
+          const name = next() % 2n === 0n ? "boxes" : "balances";
+          ops.push(`cut ${name}`);
+          faults[name].cut(`at op ${String(ops.length)}`);
+        }
       }
+      // No cut while converging: the network has calmed down.
+      faults.boxes.paused = faults.balances.paused = true;
       const tip = await sim.settle();
       const context = () =>
         `round ${String(round)}, ops ${JSON.stringify(ops)}, ` +
+        `boxes' faults ${faults.boxes.log.join("; ")}, ` +
+        `balances' faults ${faults.balances.log.join("; ")}, ` +
         `last frames ${frames.slice(-40).join("\n")}`;
 
       await subscribeAll();
@@ -194,8 +224,10 @@ test(`subscriptions converge to the oracle at every checkpoint (SEED=${String(SE
           expect(balance.state.balance, keyContext).toMatchObject(want.balance ?? {});
         }
       }
-      // The run has no faults, so the SDK never finds a message its view can't take. The relay
-      // may still ask for a new snapshot: a reorg can orphan the block a key was loaded at.
+      // Cuts and delays lose or reorder nothing a subscription receives, so the SDK never finds a
+      // message its view can't take. The relay may still ask for a new snapshot: a reorg can
+      // orphan the block a key was loaded at, and a key resumed after a cut may have been
+      // untracked meanwhile.
       expect(
         resyncs.filter((r) => r.by === "sdk"),
         context(),

@@ -52,15 +52,19 @@ const balance = (at: BlockRef, nanoErgs: number, pending = 0): ServerMessage => 
   pending: { nanoErgs: String(pending), tokens: [] },
 });
 
-/** A machine with its ids and resyncs recorded. */
-function machine(boxes = true) {
+/** A machine with its ids and resyncs recorded; the n-th backoff is n + 1 seconds. */
+function machine(boxes = true, online = true) {
   let id = 0;
   const resyncs: Resync[] = [];
   const m = new KeyMachine(
     key,
     boxes,
-    () => id++,
-    (r) => resyncs.push(r),
+    {
+      nextId: () => id++,
+      onResync: (r) => resyncs.push(r),
+      backoff: (attempt) => (attempt + 1) * 1000,
+    },
+    online,
   );
   return { m, resyncs };
 }
@@ -196,18 +200,20 @@ describe("a box subscription", () => {
     expect(resyncs).toEqual([{ key, by: "relay", reason: "cursor_expired" }]);
   });
 
-  test("is rejected when the snapshot fails otherwise, or the relay refuses it", () => {
+  test("is rejected for good when the snapshot fails with a 4xx, or the relay refuses it", () => {
     const failed = machine().m;
     const generation = snapshotOf(failed.start());
-    failed.snapshotFailed(generation, { code: "unknown_token", message: "unknown" });
+    failed.snapshotFailed(generation, { code: "unknown_token", message: "unknown", status: 404 });
     expect(failed.state).toMatchObject({ phase: "rejected", error: { code: "unknown_token" } });
 
     const refused = machine().m;
     refused.snapshotLoaded(snapshotOf(refused.start()), block(10), []);
-    refused.receive({ type: "rejected", id: 0, key, reason: "capacity_exceeded", retryAfter: 120 });
+    expect(
+      refused.receive({ type: "rejected", id: 0, key, reason: "too_many_subscriptions" }),
+    ).toEqual([]);
     expect(refused.state).toMatchObject({
       phase: "rejected",
-      error: { code: "capacity_exceeded", retryAfter: 120 },
+      error: { code: "too_many_subscriptions" },
     });
     expect(refused.receive(mempool(10))).toEqual([]);
     expect(refused.state.phase).toBe("rejected");
@@ -299,5 +305,157 @@ describe("a balance-only subscription", () => {
     expect(resyncs).toEqual([{ key, by: "relay", reason: "slow_consumer" }]);
     m.receive(balance(block(11), 9));
     expect(m.state.balance?.asOf).toEqual(block(10));
+  });
+});
+
+/** The retry a failure answered: its generation and wait. */
+function retryOf(actions: Action[]) {
+  const [action] = actions;
+  if (action?.kind !== "retry") throw new Error(`no retry in ${JSON.stringify(actions)}`);
+  return action;
+}
+
+describe("across a dropped socket", () => {
+  test("a live key resumes from its block, keeping its view meanwhile", () => {
+    const { m, resyncs } = live();
+    const view = m.state.view;
+    expect(m.disconnected()).toEqual([]);
+    expect(m.state).toMatchObject({ phase: "disconnected", view });
+    // What the old socket still delivers is not this subscription's.
+    m.receive(delta("block", 11, [], [7]));
+    expect(subscribeOf(m.connected())).toEqual({ op: "subscribe", key, from: block(10), id: 1 });
+    expect(m.state.phase).toBe("catching_up");
+    m.receive({ type: "subscribed", id: 1, key });
+    m.receive(delta("block", 11, [confirmed(3, 11)], [1]));
+    expect(m.state.view).toBe(view);
+    m.receive(mempool(11));
+    expect(m.state.phase).toBe("live");
+    expect(m.state.view?.confirmed.map((b) => b.boxId)).toEqual([hex(2), hex(3)]);
+    expect(resyncs).toEqual([]);
+  });
+
+  test("a key cut off during its catch-up resumes from the block it reached", () => {
+    const { m } = machine();
+    m.snapshotLoaded(snapshotOf(m.start()), block(10), [confirmed(1, 9)]);
+    m.receive({ type: "subscribed", id: 0, key });
+    m.receive(delta("block", 11, [confirmed(2, 11)], [1]));
+    m.disconnected();
+    expect(m.state.phase).toBe("disconnected");
+    expect(subscribeOf(m.connected()).from).toEqual(block(11));
+  });
+
+  test("a live key cut off again during its resume's replay resumes from the block it reached", () => {
+    const { m } = live();
+    m.disconnected();
+    const first = subscribeOf(m.connected());
+    m.receive({ type: "subscribed", id: first.id, key });
+    m.receive(delta("block", 11, [confirmed(3, 11)], [1]));
+    // Not published yet: the replay is not over.
+    expect(m.state.view?.at).toEqual(block(10));
+    m.disconnected();
+    expect(subscribeOf(m.connected()).from).toEqual(block(11));
+  });
+
+  test("a snapshot read carries on, and its subscribe waits for the socket", () => {
+    const { m } = machine();
+    const generation = snapshotOf(m.start());
+    m.disconnected();
+    expect(m.state.phase).toBe("snapshot");
+    expect(m.snapshotLoaded(generation, block(10), [])).toEqual([]);
+    expect(m.state.phase).toBe("disconnected");
+    expect(subscribeOf(m.connected())).toEqual({ op: "subscribe", key, from: block(10), id: 0 });
+  });
+
+  test("a balance-only key subscribes again, and one started offline waits", () => {
+    const { m } = machine(false);
+    m.start();
+    m.receive({ type: "subscribed", id: 0, key });
+    m.receive(balance(block(10), 5));
+    m.disconnected();
+    expect(m.state).toMatchObject({ phase: "disconnected", balance: { asOf: block(10) } });
+    expect(subscribeOf(m.connected())).toEqual({ op: "subscribe", key, id: 1 });
+
+    const offline = machine(false, false).m;
+    expect(offline.start()).toEqual([]);
+    expect(offline.state.phase).toBe("disconnected");
+    expect(subscribeOf(offline.connected())).toEqual({ op: "subscribe", key, id: 0 });
+  });
+
+  test("a socket opening changes nothing for a key it did not cut off", () => {
+    const { m } = live();
+    expect(m.connected()).toEqual([]);
+    const reading = machine().m;
+    reading.start();
+    expect(reading.connected()).toEqual([]);
+    expect(reading.state.phase).toBe("snapshot");
+  });
+
+  test("ending it ignores a snapshot read and a retry still in flight", () => {
+    const { m } = machine();
+    const generation = snapshotOf(m.start());
+    m.end();
+    expect(m.snapshotLoaded(generation, block(10), [])).toEqual([]);
+    expect(m.connected()).toEqual([]);
+
+    const waiting = machine().m;
+    const retry = retryOf(
+      waiting.snapshotFailed(snapshotOf(waiting.start()), { code: "network", message: "down" }),
+    );
+    waiting.end();
+    expect(waiting.retry(retry.generation)).toEqual([]);
+    expect(waiting.state.phase).toBe("disconnected");
+  });
+});
+
+describe("a failure for now", () => {
+  test("waits the relay's retryAfter, then starts again", () => {
+    const { m } = machine(false);
+    m.start();
+    const retry = retryOf(
+      m.receive({ type: "rejected", id: 0, key, reason: "capacity_exceeded", retryAfter: 120 }),
+    );
+    expect(retry.ms).toBe(120_000);
+    expect(m.state).toMatchObject({
+      phase: "waiting",
+      error: { code: "capacity_exceeded", retryAfter: 120 },
+    });
+    expect(m.retry(retry.generation - 1)).toEqual([]);
+    expect(subscribeOf(m.retry(retry.generation))).toEqual({ op: "subscribe", key, id: 1 });
+    // Fired twice: the second finds nothing waiting.
+    expect(m.retry(retry.generation)).toEqual([]);
+  });
+
+  test("backs off on a network error or a 5xx, from the first wait once the key was live", () => {
+    const { m } = machine();
+    /** Fails the snapshot the last action asked for; answers the retry. */
+    const fail = (actions: Action[], code: string, status?: number) =>
+      retryOf(
+        m.snapshotFailed(snapshotOf(actions), {
+          code,
+          message: code,
+          ...(status === undefined ? {} : { status }),
+        }),
+      );
+    const first = fail(m.start(), "network");
+    expect(first.ms).toBe(1000);
+    expect(m.state).toMatchObject({ phase: "waiting", error: { code: "network", retryAfter: 1 } });
+    const second = fail(m.retry(first.generation), "node_error", 502);
+    expect(second.ms).toBe(2000);
+    const third = fail(m.retry(second.generation), "http_500", 500);
+    expect(third.ms).toBe(3000);
+    // A proxy's timeout and rate limit are for now too.
+    const fourth = fail(m.retry(third.generation), "http_408", 408);
+    const fifth = fail(m.retry(fourth.generation), "http_429", 429);
+    expect(fifth.ms).toBe(5000);
+
+    const actions = m.snapshotLoaded(snapshotOf(m.retry(fifth.generation)), block(10), []);
+    m.receive({ type: "subscribed", id: subscribeOf(actions).id, key });
+    m.receive(mempool(10));
+    expect(m.state.phase).toBe("live");
+    // Over the socket a 5xx has no status: its code says it is for now.
+    m.disconnected();
+    const sub = subscribeOf(m.connected());
+    const again = retryOf(m.receive({ type: "rejected", id: sub.id, key, reason: "node_error" }));
+    expect(again.ms).toBe(1000);
   });
 });

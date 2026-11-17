@@ -116,3 +116,12 @@ export function seeds(seed: bigint): () => bigint {
     return z ^ (z >> 31n);
   };
 }
+
+/** Waits until `done` holds, or fails after 10 s: far past the longest wait measured. */
+export async function until(done: () => boolean, what: string): Promise<void> {
+  const deadline = Date.now() + 10_000;
+  while (!done()) {
+    if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
+    await new Promise((r) => setTimeout(r, 5));
+  }
+}

@@ -1,7 +1,7 @@
 import { ensureUTxOBigInt } from "@fleet-sdk/common";
-import { afterAll, afterEach, beforeAll, expect, test } from "vitest";
+import { afterAll, afterEach, beforeAll, expect, test, vi } from "vitest";
 import { Relay, type BlockRef, type Subscription } from "../src/index.ts";
-import { SimRelay } from "./sim.ts";
+import { SimRelay, until } from "./sim.ts";
 
 let sim: SimRelay;
 let relay: Relay;
@@ -16,16 +16,8 @@ afterAll(() => {
 
 afterEach(() => {
   relay.close();
+  vi.restoreAllMocks();
 });
-
-/** Waits until `done` holds, or fails after 10 s: far past the longest wait measured. */
-async function until(done: () => boolean, what: string): Promise<void> {
-  const deadline = Date.now() + 10_000;
-  while (!done()) {
-    if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
-    await new Promise((r) => setTimeout(r, 5));
-  }
-}
 
 const liveAt = (sub: Subscription, tip: BlockRef) => () =>
   sub.state.phase === "live" && sub.state.view?.at.headerId === tip.headerId;
@@ -176,22 +168,32 @@ test("a hold closed after its socket dropped opens no socket to unsubscribe", as
   expect(opened.count).toBe(1);
 });
 
-test("a box subscription comes back after its socket dropped, once subscribed again", async () => {
+test("a box subscription resumes by itself after its socket dropped, with no snapshot", async () => {
   const { WebSocket, opened } = counting();
-  relay = new Relay(sim.url, { WebSocket });
+  let reads = 0;
+  const fetch: typeof globalThis.fetch = (input, init) => {
+    if ((input as string | URL).toString().includes("/boxes")) reads++;
+    return globalThis.fetch(input, init);
+  };
+  // The first wait drawn as its longest, 200 ms, for the test to act while the key is cut off.
+  vi.spyOn(Math, "random").mockReturnValue(1);
+  relay = new Relay(sim.url, { WebSocket, fetch, backoff: { firstMs: 200, maxMs: 400 } });
   const key = { address: await address(2) };
   const sub = relay.subscribe(key);
   let tip = await sim.settle();
   await until(liveAt(sub, tip), "the key live");
+  const snapshots = reads;
   opened.last?.close();
   await until(() => sub.state.phase === "disconnected", "the drop");
-  const view = sub.state.view;
-  const again = relay.subscribe(key);
-  expect(again.state.view).toBe(view);
+  // A subscribe to the key while it is cut off waits for the reconnect too.
+  relay.subscribe(key);
+  expect(opened.count).toBe(1);
+  await until(() => opened.count === 2, "the reconnect");
   tip = await mine(5);
-  await until(liveAt(again, tip), "the key live again");
-  expect(again.state.view?.confirmed).toEqual(
+  await until(liveAt(sub, tip), "the key live again");
+  expect(sub.state.view?.confirmed).toEqual(
     (await sim.expected(key)).boxes.map((b) => ensureUTxOBigInt(b)),
   );
+  expect(reads).toBe(snapshots);
   expect(opened.count).toBe(2);
 });

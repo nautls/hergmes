@@ -1,5 +1,11 @@
 import { RelayError } from "./error.ts";
-import { KeyMachine, type Action, type Resync, type SubscriptionState } from "./machine.ts";
+import {
+  KeyMachine,
+  type Action,
+  type MachineContext,
+  type Resync,
+  type SubscriptionState,
+} from "./machine.ts";
 import { keyName, type ClientMessage, type ServerMessage } from "./protocol.ts";
 import { RestClient, type RestOptions } from "./rest.ts";
 import type { BlockRef, ConfirmedBox, Key } from "./wire.ts";
@@ -11,6 +17,14 @@ export interface RelayOptions extends RestOptions {
   WebSocket?: typeof WebSocket;
   /** Sees every message the relay sends, as text, and every new snapshot taken. For logging. */
   debug?: (event: { frame: string } | { resync: Resync }) => void;
+  /**
+   * The waits before reconnecting the socket and before retrying a key that failed for now
+   * with no `retryAfter`: each drawn from 0 to a bound that starts at `firstMs` and doubles,
+   * up to `maxMs`, so clients a relay restart cut off together don't come back together, at
+   * the first try or any later one. Both start over once a key is live again. Defaults to 1 s
+   * and 30 s.
+   */
+  backoff?: { firstMs?: number; maxMs?: number };
 }
 
 export interface SubscribeOptions {
@@ -55,11 +69,17 @@ interface Entry {
   listeners: Set<(state: SubscriptionState) => void>;
   /** The state the listeners were last called with. */
   notified: SubscriptionState;
+  /** The machine's pending retry. */
+  retry: ReturnType<typeof setTimeout> | undefined;
+  /** Cancels the machine's snapshot read in flight. */
+  reading: AbortController | undefined;
 }
 
 /**
  * A relay: its REST API, its tip, and subscriptions to keys over one WebSocket, opened on the
- * first subscribe. A key is subscribed once however many holds it has.
+ * first subscribe. A key is subscribed once however many holds it has. When the socket closes,
+ * for whatever reason, it opens again after a backoff while any key is held, and each key
+ * resumes from the block it had reached.
  */
 export class Relay {
   readonly rest: RestClient;
@@ -69,8 +89,14 @@ export class Relay {
   readonly #debug: RelayOptions["debug"];
   readonly #entries = new Map<string, Entry>();
   readonly #tipListeners = new Set<(tip: BlockRef) => void>();
+  readonly #backoff: (attempt: number) => number;
+  readonly #context: MachineContext;
   #socket: WebSocket | undefined;
   #queue: string[] = [];
+  /** The wait before the socket opens again; no socket is opened meanwhile. */
+  #reconnect: ReturnType<typeof setTimeout> | undefined;
+  /** Reconnects since a key last went live. */
+  #attempt = 0;
   #tip: BlockRef | undefined;
   #ids = 0;
   /** Keys whose state changed since their listeners were last called. */
@@ -86,6 +112,14 @@ export class Relay {
     this.#WebSocket = options.WebSocket ?? globalThis.WebSocket;
     this.#pageSize = Math.min(PAGE_SIZE, Math.max(1, options.pageSize ?? PAGE_SIZE));
     this.#debug = options.debug;
+    this.#backoff = backoff(options.backoff?.firstMs ?? 1000, options.backoff?.maxMs ?? 30_000);
+    this.#context = {
+      nextId: () => this.#ids++ % 2 ** 32,
+      onResync: (resync) => {
+        call(this.#debug, { resync });
+      },
+      backoff: this.#backoff,
+    };
   }
 
   /** The relay's tip, the block every box and balance it serves is at, once known. */
@@ -105,15 +139,24 @@ export class Relay {
     let entry = this.#entries.get(name);
     if (!entry) {
       const machine = this.#machine(key, boxes);
-      entry = { machine, holds: 0, listeners: new Set(), notified: machine.state };
+      entry = {
+        machine,
+        holds: 0,
+        listeners: new Set(),
+        notified: machine.state,
+        retry: undefined,
+        reading: undefined,
+      };
       this.#entries.set(name, entry);
       const created = entry;
       this.#change(created, () => created.machine.start());
-    } else if (restarts(entry.machine.state) || (boxes && !entry.machine.boxes)) {
-      // A subscription that ended (its socket dropped, or the relay refused it) starts again;
-      // a box subscription replaces a balance-only one, since it carries the balance too.
+    } else if (entry.machine.state.phase === "rejected" || (boxes && !entry.machine.boxes)) {
+      // A subscription the relay refused for good starts again; a box subscription replaces a
+      // balance-only one, since it carries the balance too. A dropped socket needs nothing: the
+      // reconnect resumes the key.
       const replaced = entry;
       const following = boxes || replaced.machine.boxes;
+      forget(replaced);
       this.#change(replaced, () => {
         replaced.machine = this.#machine(key, following, replaced.machine.state);
         return replaced.machine.start();
@@ -139,7 +182,9 @@ export class Relay {
         if (this.#entries.get(name) !== held) return;
         if (--held.holds > 0) return;
         this.#entries.delete(name);
+        forget(held);
         this.#change(held, () => held.machine.stop());
+        if (this.#entries.size === 0) this.#stopReconnecting();
       },
     };
   }
@@ -150,32 +195,41 @@ export class Relay {
     this.#socket = undefined;
     this.#queue = [];
     this.#tip = undefined;
+    this.#stopReconnecting();
     socket?.close(1000);
     for (const entry of this.#entries.values()) {
-      this.#change(entry, () => entry.machine.disconnected());
+      forget(entry);
+      this.#change(entry, () => entry.machine.end());
     }
     this.#entries.clear();
   }
 
   #machine(key: Key, boxes: boolean, previous?: SubscriptionState): KeyMachine {
-    return new KeyMachine(
-      key,
-      boxes,
-      () => this.#ids++ % 2 ** 32,
-      (resync) => {
-        call(this.#debug, { resync });
-      },
-      previous,
-    );
+    return new KeyMachine(key, boxes, this.#context, this.#online(), previous);
+  }
+
+  /** Whether a subscribe can go out now: the socket is open or opening, or may be opened. */
+  #online(): boolean {
+    return this.#socket !== undefined || this.#reconnect === undefined;
+  }
+
+  #stopReconnecting(): void {
+    clearTimeout(this.#reconnect);
+    this.#reconnect = undefined;
+    this.#attempt = 0;
   }
 
   /** Does what a machine asked, then has the key's listeners called if its state changed. */
   #run(entry: Entry, actions: Action[], before: SubscriptionState): void {
     for (const action of actions) {
       if (action.kind === "send") this.#send(action.message);
-      else void this.#snapshot(entry, entry.machine, action.generation);
+      else if (action.kind === "snapshot")
+        void this.#snapshot(entry, entry.machine, action.generation);
+      else this.#retry(entry, entry.machine, action.generation, action.ms);
     }
     if (entry.machine.state === before) return;
+    // A key live again: the socket carried a whole subscribe, so the relay is back for good.
+    if (entry.machine.state.phase === "live" && before.phase !== "live") this.#attempt = 0;
     this.#changed.add(entry);
     if (this.#notifying === undefined) {
       this.#notifying = setTimeout(() => {
@@ -202,20 +256,35 @@ export class Relay {
     this.#run(entry, step(), before);
   }
 
+  #retry(entry: Entry, machine: KeyMachine, generation: number, ms: number): void {
+    clearTimeout(entry.retry);
+    entry.retry = setTimeout(() => {
+      entry.retry = undefined;
+      if (entry.machine !== machine) return;
+      this.#change(entry, () => machine.retry(generation));
+    }, ms);
+  }
+
   async #snapshot(entry: Entry, machine: KeyMachine, generation: number): Promise<void> {
+    // A newer read replaces this machine's last one.
+    entry.reading?.abort();
+    const reading = new AbortController();
+    entry.reading = reading;
     let read: { asOf: BlockRef; boxes: ConfirmedBox[] };
     try {
-      read = await this.#read(machine.key);
+      read = await this.#read(machine.key, reading.signal);
     } catch (e) {
-      if (entry.machine !== machine) return;
+      if (entry.machine !== machine || reading.signal.aborted) return;
       const error =
         e instanceof RelayError
           ? {
               code: e.code ?? `http_${String(e.status)}`,
               message: e.message,
+              status: e.status,
               ...(e.retryAfter === undefined ? {} : { retryAfter: e.retryAfter }),
             }
-          : { code: "network", message: String(e) };
+          : // `fetch` fails with a `TypeError` when the request never got an answer.
+            { code: e instanceof TypeError ? "network" : "bad_response", message: String(e) };
       this.#change(entry, () => machine.snapshotFailed(generation, error));
       return;
     }
@@ -224,12 +293,12 @@ export class Relay {
   }
 
   /** Every page of a key's boxes, pinned to the first page's block. */
-  async #read(key: Key): Promise<{ asOf: BlockRef; boxes: ConfirmedBox[] }> {
-    const first = await this.rest.boxes(key, { limit: this.#pageSize });
+  async #read(key: Key, signal: AbortSignal): Promise<{ asOf: BlockRef; boxes: ConfirmedBox[] }> {
+    const first = await this.rest.boxes(key, { limit: this.#pageSize, signal });
     const boxes = [...first.items];
     let cursor = first.nextCursor;
     while (cursor !== null) {
-      const page = await this.rest.boxes(key, { limit: this.#pageSize, cursor });
+      const page = await this.rest.boxes(key, { limit: this.#pageSize, cursor, signal });
       boxes.push(...page.items);
       cursor = page.nextCursor;
     }
@@ -239,6 +308,8 @@ export class Relay {
   #send(message: ClientMessage): void {
     // With no socket there is no subscription to end: the relay ended it with the connection.
     if (message.op === "unsubscribe" && !this.#socket) return;
+    // Waiting to reconnect: machines send nothing then, and subscribe again once it opens.
+    if (!this.#online()) return;
     const text = JSON.stringify(message);
     const socket = this.#connect();
     if (socket.readyState === this.#WebSocket.OPEN) socket.send(text);
@@ -254,17 +325,40 @@ export class Relay {
       this.#queue = [];
     });
     socket.addEventListener("message", (event: MessageEvent) => {
+      // A frame of a socket already given up carries nothing the keys still wait for.
+      if (this.#socket !== socket) return;
       if (typeof event.data === "string") this.#receive(event.data);
     });
     socket.addEventListener("close", () => {
       if (this.#socket !== socket) return;
       this.#socket = undefined;
       this.#queue = [];
+      if (this.#entries.size > 0) {
+        this.#reconnect = setTimeout(() => {
+          this.#reconnected();
+        }, this.#backoff(this.#attempt++));
+      }
       for (const entry of this.#entries.values()) {
         this.#change(entry, () => entry.machine.disconnected());
       }
     });
     return socket;
+  }
+
+  /**
+   * The backoff ended: opens a socket, and once it is open every key the cut ended subscribes
+   * again on it. Until then they stay `disconnected`, as they do if it fails to open.
+   */
+  #reconnected(): void {
+    this.#reconnect = undefined;
+    if (this.#entries.size === 0) return;
+    const socket = this.#connect();
+    socket.addEventListener("open", () => {
+      if (this.#socket !== socket) return;
+      for (const entry of this.#entries.values()) {
+        this.#change(entry, () => entry.machine.connected());
+      }
+    });
   }
 
   #receive(text: string): void {
@@ -289,9 +383,15 @@ export class Relay {
   }
 }
 
-/** Whether a subscribe for the key starts its subscription again: it ended. */
-function restarts(state: SubscriptionState): boolean {
-  return state.phase === "disconnected" || state.phase === "rejected";
+/** The wait before the `attempt`-th retry, from 0: see {@link RelayOptions.backoff}. */
+function backoff(firstMs: number, maxMs: number): (attempt: number) => number {
+  return (attempt) => Math.random() * Math.min(maxMs, firstMs * 2 ** attempt);
+}
+
+/** Cancels what a key's machine still has under way: its retry's wait and its snapshot read. */
+function forget(entry: Entry): void {
+  clearTimeout(entry.retry);
+  entry.reading?.abort();
 }
 
 /**
