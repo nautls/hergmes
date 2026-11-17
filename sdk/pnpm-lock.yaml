@@ -14,9 +14,6 @@ importers:
       '@fleet-sdk/common':
         specifier: ^0.10.0
         version: 0.10.0
-      '@fleet-sdk/core':
-        specifier: ^0.12.0
-        version: 0.12.0
       '@fleet-sdk/serializer':
         specifier: ^0.11.0
         version: 0.11.0
@@ -100,10 +97,6 @@ packages:
 
   '@fleet-sdk/common@0.10.0':
     resolution: {integrity: sha512-N92zENyHYhKtKxhJ6jJbWgV3PCkCGM0LYLmn6OOXNqDVbwT9UFgHOTt7eXFd9tqIhwMMPCnlffNe4c+P+CnsJA==}
-    engines: {node: '>=18'}
-
-  '@fleet-sdk/core@0.12.0':
-    resolution: {integrity: sha512-AYdfivEzfokem2eovnhp5rfv+cFrVR87l/ff71uxt1Xn1Arv0QivNtXn9H00i0t3LkiTxI7ttgU56FAbjWbUKw==}
     engines: {node: '>=18'}
 
   '@fleet-sdk/crypto@0.11.0':
@@ -1206,12 +1199,6 @@ snapshots:
       levn: 0.4.1
 
   '@fleet-sdk/common@0.10.0': {}
-
-  '@fleet-sdk/core@0.12.0':
-    dependencies:
-      '@fleet-sdk/common': 0.10.0
-      '@fleet-sdk/crypto': 0.11.0
-      '@fleet-sdk/serializer': 0.11.0
 
   '@fleet-sdk/crypto@0.11.0':
     dependencies:

@@ -27,13 +27,11 @@
   },
   "peerDependencies": {
     "@fleet-sdk/common": "^0.10.0",
-    "@fleet-sdk/core": "^0.12.0",
     "@fleet-sdk/serializer": "^0.11.0"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "@fleet-sdk/common": "^0.10.0",
-    "@fleet-sdk/core": "^0.12.0",
     "@fleet-sdk/serializer": "^0.11.0",
     "@types/node": "^22.20.5",
     "eslint": "^10.15.0",

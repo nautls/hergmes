@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import type { SignedTransaction } from "@fleet-sdk/common";
+import { deserializeTransaction } from "@fleet-sdk/serializer";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import {
   RelayError,
@@ -245,4 +248,20 @@ describe("errors", () => {
     }
     expect(cursor, "no address has two boxes").toBeDefined();
   });
+});
+
+test("a tx as Fleet's JSON is sent as its bytes in hex", async () => {
+  const hex = readFileSync(new URL("../../tests/fixtures/tx_signed.hex", import.meta.url), "utf8")
+    .trim()
+    .toLowerCase();
+  const tx = deserializeTransaction<SignedTransaction>(hex);
+  const bodies: unknown[] = [];
+  const fetch = (_: string | URL | Request, init?: RequestInit) => {
+    bodies.push(init?.body);
+    return Promise.resolve(Response.json({ transactionId: tx.id }));
+  };
+  const client = new RestClient("http://relay", { fetch });
+  expect(await client.submitTransaction(tx)).toEqual({ transactionId: tx.id });
+  await client.submitTransaction(hex, { broadcast: false });
+  expect(bodies).toEqual([hex, hex]);
 });

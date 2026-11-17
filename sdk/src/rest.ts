@@ -1,3 +1,5 @@
+import type { SignedTransaction } from "@fleet-sdk/common";
+import { serializeTransaction } from "@fleet-sdk/serializer";
 import { RelayError } from "./error.ts";
 import type {
   Balance,
@@ -111,10 +113,17 @@ export class RestClient {
     return this.#get(`v1/boxes/${encodeURIComponent(boxId)}`, {}, options);
   }
 
-  /** Sends a signed tx, serialized in hex, or with `broadcast: false` only checks it. */
-  submitTransaction(hex: string, options: SubmitOptions = {}): Promise<Submitted> {
+  /**
+   * Sends a signed tx, serialized in hex or as Fleet's JSON, or with `broadcast: false` only
+   * checks it. The JSON is serialized here, since the relay takes the bytes only.
+   */
+  submitTransaction(
+    tx: string | SignedTransaction,
+    options: SubmitOptions = {},
+  ): Promise<Submitted> {
+    const body = typeof tx === "string" ? tx : toHex(serializeTransaction(tx).toBytes());
     const query = { broadcast: options.broadcast === false ? "false" : undefined };
-    const init = { method: "POST", body: hex, headers: { "content-type": "text/plain" } };
+    const init = { method: "POST", body, headers: { "content-type": "text/plain" } };
     return this.#request("v1/transactions", query, init, options);
   }
 
@@ -164,4 +173,8 @@ function sleep(ms: number, signal: AbortSignal | undefined): Promise<void> {
     }, ms);
     signal?.addEventListener("abort", onAbort, { once: true });
   });
+}
+
+function toHex(bytes: Uint8Array): string {
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
