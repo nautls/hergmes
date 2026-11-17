@@ -26,6 +26,11 @@
 # served. An example:
 # metrics_addr = "127.0.0.1:9100"
 
+# Browser pages and extensions that may use the REST API and the WebSocket, by their Origin
+# header: "*" for any, exact origins ("https://app.example") and whole schemes
+# ("chrome-extension://*"); [] allows none. A request without an Origin is always served.
+# allow_origins = ["*"]
+
 # Most subscriptions one WebSocket connection holds.
 # max_subscriptions_per_connection = 100
 

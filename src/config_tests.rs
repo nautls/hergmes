@@ -46,6 +46,7 @@ fn defaults(config: &Config) {
     assert_eq!(config.box_cache_bytes, 128 * 1024 * 1024);
     assert_eq!(config.listen_addr.to_string(), "127.0.0.1:8080", "loopback until chosen");
     assert_eq!(config.ws.max_subscriptions, 100);
+    assert_eq!(config.allow_origins, OriginPolicy::Any);
 }
 
 #[test]
@@ -458,6 +459,7 @@ fn the_named_keys_are_the_file_keys() {
         keys::MAX_TRACKED_BOXES,
         keys::MAX_SUBSCRIPTIONS_PER_CONNECTION,
         keys::LISTEN_ADDR,
+        keys::ALLOW_ORIGINS,
         keys::METRICS_ADDR,
     ];
     let mut in_example: Vec<&str> = include_str!("../hergmes.example.toml")
@@ -469,4 +471,31 @@ fn the_named_keys_are_the_file_keys() {
     named.sort();
     in_example.sort();
     assert_eq!(named, in_example);
+}
+
+#[test]
+fn allow_origins_lists_schemes_and_exact_origins() {
+    let listed =
+        config(r#"allow_origins = ["chrome-extension://*", "https://Wallet.example"]"#).unwrap();
+    assert_eq!(
+        listed.allow_origins,
+        OriginPolicy::Listed {
+            exact: vec!["https://wallet.example".to_owned()],
+            schemes: vec!["chrome-extension".to_owned()],
+        }
+    );
+    assert_eq!(config("allow_origins = [\"*\"]").unwrap().allow_origins, OriginPolicy::Any);
+    assert_eq!(
+        config("allow_origins = []").unwrap().allow_origins,
+        OriginPolicy::Listed { exact: vec![], schemes: vec![] },
+        "browsers refused, requests without an Origin served"
+    );
+}
+
+#[test]
+fn an_origin_a_browser_never_sends_stops_startup() {
+    for entry in ["https://wallet.example/", "wallet.example", "https://*.example"] {
+        let result = config(&format!("allow_origins = [\"{entry}\"]"));
+        assert_eq!(invalid_key(result), keys::ALLOW_ORIGINS, "{entry}");
+    }
 }

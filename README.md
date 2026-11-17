@@ -62,6 +62,7 @@ variables instead, without a file: `ERGO_NODE_URL`, `HERGMES_LISTEN_ADDR` and
 | `max_boxes_per_key`                | 50000          | Most boxes an address or token can have to be tracked                             |
 | `max_tracked_boxes`                | 2000000        | Most boxes tracked over all keys (about 145 bytes each)                           |
 | `listen_addr`                      | 127.0.0.1:8080 | IP and port of the REST API and the WebSocket; or `HERGMES_LISTEN_ADDR`           |
+| `allow_origins`                    | `["*"]`        | Browser pages and extensions that may use the API: origins and `"scheme://*"`     |
 | `max_subscriptions_per_connection` | 100            | Most subscriptions one WebSocket connection holds                                 |
 | `metrics_addr`                     |                | IP and port of `/metrics`, omitted: none; or `HERGMES_METRICS_ADDR`               |
 
@@ -85,6 +86,11 @@ allow_addresses = ["p2pk", "p2sh", "<contract>"]
 # a general-purpose instance, without busy contracts no client needs
 deny_addresses = ["<miner-fee-contract>"]
 ```
+
+`allow_origins` limits which browser pages and extensions may use the relay, by their `Origin`
+header, on every REST route and on the WebSocket; a refused origin is `403 origin_not_allowed`.
+An entry is an exact origin (`https://app.example`) or a whole scheme (`chrome-extension://*`).
+A request without an `Origin` is always served.
 
 The API listens on loopback by default, so a fresh install is not exposed until you choose. Put
 it behind a reverse proxy for TLS and rate limiting, or set `HERGMES_LISTEN_ADDR=0.0.0.0:8080` in

@@ -20,6 +20,7 @@ use serde::Deserialize;
 use crate::{
     adapters::{follower, loader, mempool, tokens::SUPPLY_LIMIT},
     api::{
+        origins::OriginPolicy,
         policy::{AddressRule, KeyPolicy},
         ws,
     },
@@ -61,6 +62,7 @@ pub mod keys {
     pub const MAX_TRACKED_BOXES: &str = "max_tracked_boxes";
     pub const MAX_SUBSCRIPTIONS_PER_CONNECTION: &str = "max_subscriptions_per_connection";
     pub const LISTEN_ADDR: &str = "listen_addr";
+    pub const ALLOW_ORIGINS: &str = "allow_origins";
     pub const METRICS_ADDR: &str = "metrics_addr";
 }
 
@@ -98,6 +100,8 @@ struct File {
     max_boxes_per_key: Option<usize>,
     max_tracked_boxes: Option<usize>,
     listen_addr: Option<SocketAddr>,
+    /// Omitted, every origin is allowed, as with `["*"]`.
+    allow_origins: Option<Vec<String>>,
     max_subscriptions_per_connection: Option<usize>,
     metrics_addr: Option<SocketAddr>,
 }
@@ -120,6 +124,8 @@ pub struct Config {
     /// The box cache's budget in bytes, read in MiB; 0 disables the cache.
     pub box_cache_bytes: u64,
     pub listen_addr: SocketAddr,
+    /// The browser pages and extensions that may use the API and the WebSocket.
+    pub allow_origins: OriginPolicy,
     /// Where the metrics are served, apart from the public API; `None` serves none.
     pub metrics_addr: Option<SocketAddr>,
     pub ws: ws::Config,
@@ -289,6 +295,11 @@ impl Config {
             box_cache_bytes,
             listen_addr: either(keys::LISTEN_ADDR, file.listen_addr, vars::LISTEN_ADDR, &var)?
                 .unwrap_or(LISTEN_ADDR),
+            allow_origins: match file.allow_origins {
+                None => OriginPolicy::Any,
+                Some(entries) => OriginPolicy::parse(&entries)
+                    .map_err(|reason| invalid(keys::ALLOW_ORIGINS, &reason))?,
+            },
             metrics_addr: either(keys::METRICS_ADDR, file.metrics_addr, vars::METRICS_ADDR, &var)?,
             ws: ws::Config {
                 max_subscriptions: at_least_one(

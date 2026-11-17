@@ -26,7 +26,9 @@ use tower::ServiceExt;
 use super::*;
 use crate::{
     adapters::{BoxCache, BoxFetcher, Follower, HeaderReader, Loader, TokenChecker},
-    api::{Balances, Boxes, Headers, History, KeyPolicy, Pages, Tokens, Transactions},
+    api::{
+        Balances, Boxes, Headers, History, KeyPolicy, OriginPolicy, Pages, Tokens, Transactions,
+    },
     engine::{Config as EngineConfig, Engine},
     runtime::spawn,
     sim::{Chain, SimChain, SimConfig},
@@ -274,4 +276,39 @@ async fn a_request_without_an_upgrade_is_refused() {
     let request = Request::get("/v1/ws").body(Body::empty()).unwrap();
     let response = server.router.oneshot(request).await.unwrap();
     assert!(response.status().is_client_error(), "{}", response.status());
+}
+
+/// A browser's handshake carries its page's `Origin`, which CORS never checks on a
+/// WebSocket: the origin policy refuses the upgrade itself, over a real socket.
+#[tokio::test]
+async fn the_origin_policy_refuses_the_upgrade() {
+    use tungstenite::{client::IntoClientRequest, http::header::ORIGIN};
+
+    let server = server().await;
+    let policy = OriginPolicy::parse(&["chrome-extension://*".to_owned()]).unwrap();
+    let guarded = crate::api::origins::guard(server.router.clone(), policy, Default::default());
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(axum::serve(listener, guarded).into_future());
+
+    let handshake = |origin: Option<&'static str>| async move {
+        let mut request = format!("ws://{addr}/v1/ws").into_client_request().unwrap();
+        if let Some(origin) = origin {
+            request
+                .headers_mut()
+                .insert(ORIGIN, origin.parse().unwrap());
+        }
+        connect_async(request).await
+    };
+    match handshake(Some("https://a.com")).await {
+        Err(tungstenite::Error::Http(response)) => assert_eq!(response.status(), 403),
+        other => panic!("expected a 403, got {:?}", other.map(|_| ())),
+    }
+    for origin in [Some("chrome-extension://abc"), None] {
+        let (mut stream, _) = handshake(origin).await.unwrap();
+        let Some(tungstenite::Message::Text(text)) = next(&mut stream).await else {
+            panic!("the tip");
+        };
+        assert!(text.contains("\"tip\""), "{text}");
+    }
 }

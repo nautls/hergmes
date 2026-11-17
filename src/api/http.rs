@@ -3,8 +3,8 @@
 //!
 //! Errors are `{ "error": "<code>", "message": "..." }`, with a `reason` for a refused tx,
 //! and every 503 carries `Retry-After`.
-//! Any origin may read the responses. They are not compressed: that is the reverse proxy's
-//! job, like TLS.
+//! Any origin the origin policy admits may read the responses. They are not compressed:
+//! that is the reverse proxy's job, like TLS.
 
 use std::{sync::Arc, time::Duration};
 
@@ -84,9 +84,10 @@ where
     E: EngineHandle + 'static,
 {
     // A public API with no credentials, used by wallets and dapps on origins no one knows in
-    // advance. It reads, and sends txs the node validates. `Content-Type` is allowed so a tx
-    // sent with a type other than `text/plain` passes the preflight. `Retry-After` is exposed
-    // so a browser client can honour it.
+    // advance; an operator narrows them with the origin policy, which runs ahead of CORS
+    // (`origins::guard`). It reads, and sends txs the node validates. `Content-Type` is allowed
+    // so a tx sent with a type other than `text/plain` passes the preflight. `Retry-After` is
+    // exposed so a browser client can honour it.
     let cors = CorsLayer::new()
         .allow_origin(Any)
         .allow_methods([Method::GET, Method::POST])
@@ -306,7 +307,7 @@ impl ApiError {
             | Self::InvalidCursor(_)
             | Self::InvalidLimit { .. }
             | Self::TransactionRejected { .. } => StatusCode::BAD_REQUEST,
-            Self::KeyNotAllowed => StatusCode::FORBIDDEN,
+            Self::KeyNotAllowed | Self::OriginNotAllowed => StatusCode::FORBIDDEN,
             Self::UnknownToken | Self::BoxNotFound => StatusCode::NOT_FOUND,
             Self::CursorExpired => StatusCode::GONE,
             Self::SupplyTooLarge { .. } | Self::TooManyBoxes { .. } => {
@@ -338,6 +339,7 @@ impl ApiError {
             | Self::InvalidLimit { .. }
             | Self::TransactionRejected { .. }
             | Self::KeyNotAllowed
+            | Self::OriginNotAllowed
             | Self::UnknownToken
             | Self::BoxNotFound
             | Self::CursorExpired

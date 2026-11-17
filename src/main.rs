@@ -10,7 +10,7 @@ use hergmes::{
     api::{
         Balances, Boxes, Headers, History, Metrics, Pages, Tokens, Transactions,
         http::{self, Api},
-        metrics, ws,
+        metrics, origins, ws,
     },
     clients::NodeClient,
     config::{self, Config},
@@ -118,7 +118,9 @@ async fn run(flag: Option<PathBuf>) -> Result<(), AppError> {
         synced,
         metrics: counters.clone(),
     });
+    info!(origins = %config.allow_origins, "Origin policy");
     let routes = http::router(api.clone()).merge(ws::router(api, config.ws));
+    let routes = origins::guard(routes, config.allow_origins, counters.clone());
     let mut server = tokio::spawn(axum::serve(listener, routes).into_future());
     info!(%addr, max_subscriptions = config.ws.max_subscriptions, "Serving the REST API and the WebSocket");
     // On its own address, off unless set: operators read it, the public does not.

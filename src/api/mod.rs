@@ -29,6 +29,7 @@ pub mod history;
 pub mod http;
 pub mod keys;
 pub mod metrics;
+pub mod origins;
 pub mod pages;
 pub mod policy;
 pub mod protocol;
@@ -43,6 +44,7 @@ pub use cursor::Cursor;
 pub use headers::{Headers, HeadersPage};
 pub use history::{History, HistoryPage};
 pub use metrics::Metrics;
+pub use origins::OriginPolicy;
 pub use pages::{BoxPage, Pages, WithPoolBoxes};
 pub use policy::KeyPolicy;
 pub use tokens::Tokens;
@@ -76,6 +78,9 @@ pub enum ApiError {
     /// The operator's key policy refuses the key; permanent for the key.
     #[error("this relay does not serve this key")]
     KeyNotAllowed,
+    /// The operator's origin policy refuses the page or extension the request came from.
+    #[error("this relay does not serve this origin")]
+    OriginNotAllowed,
     #[error("the indexer does not know this token")]
     UnknownToken,
     /// Spent, by a block or a pool tx, or unknown: no tx can spend it now.
@@ -122,6 +127,7 @@ impl ApiError {
             Self::InvalidCursor(_) => "invalid_cursor",
             Self::InvalidLimit { .. } => "invalid_limit",
             Self::KeyNotAllowed => "key_not_allowed",
+            Self::OriginNotAllowed => "origin_not_allowed",
             Self::UnknownToken => "unknown_token",
             Self::BoxNotFound => "box_not_found",
             Self::TransactionRejected { .. } => "transaction_rejected",
