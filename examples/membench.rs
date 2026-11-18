@@ -4,7 +4,7 @@
 //! ```sh
 //! cargo run --release --example membench -- engine <keys> <boxes-per-key>
 //! cargo run --release --example membench -- cache <boxes>
-//! cargo run --release --features sim --example membench -- connections <connections>
+//! cargo run --release --features sim --example membench -- connections <connections> [<keys>]
 //! ```
 //!
 //! `engine` loads synthetic address keys straight into an [`Engine`], with no adapters and
@@ -15,9 +15,11 @@
 //! `engine` also prints what a load and a scrape's `Query::Stats` take on average, in
 //! microseconds: both must stay flat, or nearly, as the keys grow.
 //!
-//! `connections` opens idle WebSocket connections to the relay over a `SimChain`, served in
-//! this process, and reports what each one costs the relay. Its clients are blocking sockets
-//! with a handshake written by hand, so they hold no buffers of their own. Besides resident
+//! `connections` opens WebSocket connections to the relay over a `SimChain`, served in this
+//! process, and reports what each one costs the relay; with `<keys>`, each connection then
+//! subscribes that many keys with no boxes, and it reports what a subscription costs besides
+//! its boxes. Its clients are blocking sockets with WebSocket framing written by hand, so
+//! they hold no buffers of their own. Besides resident
 //! memory it reports glibc's live allocations: a buffer allocated whole but never written,
 //! such as a fresh connection's read buffer, is live without being resident, and becomes
 //! resident as the connection uses it or once it reuses memory freed earlier, as it does in a
@@ -55,7 +57,7 @@ fn main() {
     match args.first().map(String::as_str) {
         Some("engine") => engine(number(1), number(2)),
         Some("cache") => cache(number(1)),
-        Some("connections") => connections(number(1)),
+        Some("connections") => connections(number(1), args.get(2).map_or(0, |_| number(2))),
         _ => usage(),
     }
 }
@@ -63,7 +65,7 @@ fn main() {
 fn usage() -> ! {
     eprintln!(
         "usage: membench engine <keys> <boxes-per-key> | membench cache <boxes> \
-         | membench connections <connections> (with --features sim)"
+         | membench connections <connections> [keys-per-connection] (with --features sim)"
     );
     std::process::exit(2)
 }
@@ -205,14 +207,13 @@ fn cache(boxes: usize) {
 const WARM_UP: usize = 16;
 
 #[cfg(feature = "sim")]
-fn connections(count: usize) {
-    use std::{
-        io::{Read, Write},
-        net::{SocketAddr, TcpStream},
-        time::Duration,
-    };
+fn connections(count: usize, keys: usize) {
+    use std::{net::SocketAddr, time::Duration};
 
-    use hergmes::sim::relay::{self, SimRelay};
+    use hergmes::{
+        sim::relay::{self, SimRelay},
+        types::address::{Network, encode},
+    };
 
     // The relay's runtime, as `main` builds it: one worker per core, so the allocator has as
     // many arenas as it does in the relay.
@@ -232,11 +233,115 @@ fn connections(count: usize) {
         tokio::spawn(async move { axum::serve(listener, router).await });
         address
     });
+    // Long enough for the relay's tasks to finish what a step started (a connection's opening,
+    // a subscribe's catch-up) and to drop what a closed connection held.
+    let settle = || std::thread::sleep(Duration::from_millis(500));
+    let reading = || (resident(), glibc::in_use());
+    let started = std::time::Instant::now();
 
-    // A connection whose upgrade the relay answered. The relay's first `tip` and its pings
-    // are left unread: the kernel's socket buffers take them, which resident memory doesn't
-    // count, and a reader per client would be client memory in this process.
-    let open = || -> TcpStream {
+    // REST's client, made and used before the first reading so its pool is not counted.
+    let http = reqwest::Client::new();
+    let address_url = |a: &str| format!("http://{address}/v1/addresses/{a}/boxes");
+    let warm = encode(&tree(u64::MAX).0, Network::Mainnet);
+    runtime.block_on(snapshot(&http, address_url(&warm)));
+    drop(
+        (0..WARM_UP)
+            .map(|_| client::open(address))
+            .collect::<Vec<_>>(),
+    );
+    settle();
+
+    let before = reading();
+    let mut streams: Vec<_> = (0..count).map(|_| client::open(address)).collect();
+    settle();
+    let opened = reading();
+
+    // Every key a different P2PK address with no boxes: what a subscription costs besides its
+    // boxes, which `engine` measures. A key is subscribed as the SDK does it: its first page
+    // over REST, which loads it, then a subscribe from that page's block. Every answer must be
+    // `subscribed`.
+    for (c, stream) in streams.iter_mut().enumerate() {
+        for k in 0..keys {
+            let address = encode(&tree((c * keys + k) as u64).0, Network::Mainnet);
+            let from = runtime.block_on(snapshot(&http, address_url(&address)));
+            client::send_text(
+                stream,
+                &format!(
+                    r#"{{"op":"subscribe","key":{{"address":"{address}"}},"from":{from},"id":{k}}}"#
+                ),
+            );
+        }
+        client::await_subscribed(stream, keys);
+    }
+    settle();
+    let subscribed = reading();
+    let elapsed = started.elapsed();
+
+    let per = |from: u64, to: u64, n: usize| to.saturating_sub(from) as f64 / n.max(1) as f64;
+    let heap = |from: (u64, Option<u64>), to: (u64, Option<u64>), n: usize| match (from.1, to.1) {
+        (Some(a), Some(b)) => format!("{:.0}", per(a, b, n)),
+        _ => "unknown".into(),
+    };
+    println!(
+        "connections={count} keys_per_connection={keys} rss_before={} rss_after={} \
+         rss_per_connection={:.0} heap_per_connection={} rss_per_subscription={:.0} \
+         heap_per_subscription={} seconds={:.1}",
+        before.0,
+        subscribed.0,
+        per(before.0, opened.0, count),
+        heap(before, opened, count),
+        per(opened.0, subscribed.0, count * keys),
+        heap(opened, subscribed, count * keys),
+        elapsed.as_secs_f64(),
+    );
+    // The relay drops a connection that leaves two pings unanswered, 60 to 90 s after its
+    // last answer; a reading after that would miss connections.
+    assert!(elapsed < Duration::from_secs(55), "too slow to trust the readings: fewer keys");
+    drop(streams);
+    runtime.shutdown_background();
+}
+
+/// A key's first page of boxes, which loads it, and the block it is pinned to, as a
+/// subscribe's `from` spells it.
+#[cfg(feature = "sim")]
+async fn snapshot(http: &reqwest::Client, url: String) -> String {
+    let page: serde_json::Value = http
+        .get(url)
+        .send()
+        .await
+        .and_then(reqwest::Response::error_for_status)
+        .expect("the first page is served")
+        .json()
+        .await
+        .expect("a JSON page");
+    page["asOf"].to_string()
+}
+
+#[cfg(not(feature = "sim"))]
+fn connections(_: usize, _: usize) {
+    eprintln!("membench connections runs the relay over a SimChain: add --features sim");
+    std::process::exit(2)
+}
+
+/// A WebSocket client on a blocking socket, framed by hand: it holds no buffers of its own,
+/// so what the process grows by is the relay's. It speaks only what the benchmark needs.
+#[cfg(feature = "sim")]
+mod client {
+    use std::{
+        io::{Read, Write},
+        net::{SocketAddr, TcpStream},
+    };
+
+    use serde_json::Value;
+
+    const TEXT: u8 = 0x1;
+    const CLOSE: u8 = 0x8;
+    const PING: u8 = 0x9;
+    const PONG: u8 = 0xa;
+
+    /// A connection whose upgrade the relay answered. What the relay sends next is left in
+    /// the kernel's socket buffers until read, which resident memory doesn't count.
+    pub fn open(address: SocketAddr) -> TcpStream {
         let mut stream = TcpStream::connect(address).unwrap_or_else(|e| {
             panic!("connect: {e} (two sockets per connection: raise ulimit -n)")
         });
@@ -261,42 +366,70 @@ fn connections(count: usize) {
             String::from_utf8_lossy(&response)
         );
         stream
-    };
-    // Long enough for the relay's tasks to run their opening (the `tip` sent, the socket
-    // split) and to drop what a closed connection held; well inside a ping interval, so no
-    // connection is closed for missing pongs while the readings are taken.
-    let settle = || std::thread::sleep(Duration::from_millis(500));
+    }
 
-    drop((0..WARM_UP).map(|_| open()).collect::<Vec<_>>());
-    settle();
+    /// One frame from the client: masked, as RFC 6455 requires, with a zero key, which
+    /// leaves the payload as it is.
+    fn send(stream: &mut TcpStream, opcode: u8, payload: &[u8]) {
+        let mut frame = vec![0x80 | opcode];
+        match payload.len() {
+            n if n < 126 => frame.push(0x80 | n as u8),
+            n if n <= usize::from(u16::MAX) => {
+                frame.push(0x80 | 126);
+                frame.extend_from_slice(&(n as u16).to_be_bytes());
+            }
+            n => {
+                frame.push(0x80 | 127);
+                frame.extend_from_slice(&(n as u64).to_be_bytes());
+            }
+        }
+        frame.extend_from_slice(&[0; 4]);
+        frame.extend_from_slice(payload);
+        stream.write_all(&frame).expect("a frame is written");
+    }
 
-    let (rss_before, heap_before) = (resident(), glibc::in_use());
-    let streams: Vec<TcpStream> = (0..count).map(|_| open()).collect();
-    settle();
-    let (rss_after, heap_after) = (resident(), glibc::in_use());
-    assert_eq!(streams.len(), count, "every connection is open");
+    pub fn send_text(stream: &mut TcpStream, text: &str) {
+        send(stream, TEXT, text.as_bytes());
+    }
 
-    let per = |before: u64, after: u64| after.saturating_sub(before) as f64 / count as f64;
-    let heap = match (heap_before, heap_after) {
-        (Some(before), Some(after)) => format!(
-            "heap_before={before} heap_after={after} heap_per_connection={:.0}",
-            per(before, after)
-        ),
-        _ => "heap=unknown (not glibc)".into(),
-    };
-    println!(
-        "connections={count} rss_before={rss_before} rss_after={rss_after} \
-         rss_per_connection={:.0} {heap}",
-        per(rss_before, rss_after)
-    );
-    drop(streams);
-    runtime.shutdown_background();
-}
+    /// The next text message, answering pings on the way. The relay sends whole frames.
+    fn next_text(stream: &mut TcpStream) -> Value {
+        loop {
+            let mut head = [0; 2];
+            stream.read_exact(&mut head).expect("a frame's header");
+            let mut len = u64::from(head[1] & 0x7f);
+            if len == 126 {
+                let mut ext = [0; 2];
+                stream.read_exact(&mut ext).expect("a frame's length");
+                len = u64::from(u16::from_be_bytes(ext));
+            } else if len == 127 {
+                let mut ext = [0; 8];
+                stream.read_exact(&mut ext).expect("a frame's length");
+                len = u64::from_be_bytes(ext);
+            }
+            let mut payload = vec![0; usize::try_from(len).expect("a frame that fits")];
+            stream.read_exact(&mut payload).expect("a frame's payload");
+            match head[0] & 0x0f {
+                TEXT => return serde_json::from_slice(&payload).expect("a JSON message"),
+                PING => send(stream, PONG, &payload),
+                CLOSE => panic!("the relay closed: {}", String::from_utf8_lossy(&payload)),
+                _ => {}
+            }
+        }
+    }
 
-#[cfg(not(feature = "sim"))]
-fn connections(_: usize) {
-    eprintln!("membench connections runs the relay over a SimChain: add --features sim");
-    std::process::exit(2)
+    /// Reads until `keys` subscribes are answered, each with `subscribed`.
+    pub fn await_subscribed(stream: &mut TcpStream, keys: usize) {
+        let mut answered = 0;
+        while answered < keys {
+            let message = next_text(stream);
+            match message["type"].as_str() {
+                Some("subscribed") => answered += 1,
+                Some("resync_required" | "rejected") => panic!("not subscribed: {message}"),
+                _ => {}
+            }
+        }
+    }
 }
 
 /// glibc's count of live allocations, which resident memory doesn't show for memory
