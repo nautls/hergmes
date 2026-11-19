@@ -159,7 +159,8 @@ Usage: hergmes [--config <path>]
 Reads its settings from the file --config names, or else from hergmes.toml in the working
 directory if it is there; hergmes.example.toml documents each one. ERGO_NODE_URL,
 HERGMES_LISTEN_ADDR and HERGMES_METRICS_ADDR can set node_url, listen_addr and metrics_addr
-instead, but a setting can't be in both places. RUST_LOG sets the log filter.";
+instead, but a setting can't be in both places. RUST_LOG sets the log filter, and
+MALLOC_ARENA_MAX overrides the glibc malloc arena cap of 4.";
 
 /// What the command line asks for.
 #[derive(Debug, PartialEq, Eq)]

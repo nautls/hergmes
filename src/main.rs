@@ -7,6 +7,7 @@ use std::{
 
 use hergmes::{
     adapters::{BoxCache, BoxFetcher, Follower, HeaderReader, TokenChecker, loader::Loader},
+    allocator::{self, Arenas},
     api::{
         Balances, Boxes, Headers, History, Metrics, Pages, Tokens, Transactions,
         http::{self, Api},
@@ -20,10 +21,11 @@ use hergmes::{
     trace::{self, default_subscriber},
 };
 use tokio::{net::TcpListener, task::JoinSet};
-use tracing::{error, info};
+use tracing::{debug, error, info, warn};
 
-#[tokio::main]
-async fn main() -> Result<(), AppError> {
+fn main() -> Result<(), AppError> {
+    // First, before anything can start a thread, which is when glibc creates arenas.
+    let arenas = allocator::configure();
     trace::init(default_subscriber());
 
     let result = match config::args(std::env::args_os().skip(1)) {
@@ -31,7 +33,21 @@ async fn main() -> Result<(), AppError> {
             println!("{}", config::HELP);
             return Ok(());
         }
-        Ok(config::Args::Run { config }) => run(config).await,
+        Ok(config::Args::Run { config }) => {
+            match arenas {
+                Arenas::Capped(arenas) => debug!(arenas, "Capped glibc malloc arenas"),
+                Arenas::FromEnvironment => debug!("glibc malloc arenas set by the environment"),
+                Arenas::Refused => {
+                    warn!(arenas = allocator::ARENA_MAX, "glibc refused the arena cap")
+                }
+                Arenas::NotGlibc => {}
+            }
+            tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .expect("Failed to build the tokio runtime")
+                .block_on(run(config))
+        }
         Err(error) => Err(error.into()),
     };
     if let Err(error) = &result {

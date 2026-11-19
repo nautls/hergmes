@@ -717,6 +717,7 @@ dependencies = [
  "futures-util",
  "hex",
  "http-body-util",
+ "libc",
  "moka",
  "prometheus-client",
  "proptest",

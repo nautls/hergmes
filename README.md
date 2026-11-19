@@ -103,6 +103,11 @@ under nginx's default `client_max_body_size` of 1 MB.
 
 Logging uses `tracing`; set `RUST_LOG` (e.g. `RUST_LOG=hergmes=debug`) to adjust verbosity.
 
+On glibc the relay caps malloc arenas at 4 at startup, which held its memory about 30% lower at
+saturation for a small throughput cost under heavy bursts. `MALLOC_ARENA_MAX` (or
+`glibc.malloc.arena_max` in `GLIBC_TUNABLES`) overrides it. Under systemd, raise `LimitNOFILE`
+above the default 1,024: each WebSocket connection holds a file descriptor.
+
 Set `metrics_addr` (e.g. `"127.0.0.1:9100"`) to serve Prometheus metrics on `GET /metrics`,
 on an address of its own and never on the public one: tracked keys by kind, tracked boxes, the
 ring buffer's and the box cache's sizes, cache hits and misses, resident memory, and refusals and

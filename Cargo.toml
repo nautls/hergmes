@@ -39,6 +39,9 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter", "registry"]
 prometheus-client = "0.26.0"
 toml = { version = "1.2.1", default-features = false, features = ["std", "serde", "parse"] }
 
+[target.'cfg(all(target_os = "linux", target_env = "gnu"))'.dependencies]
+libc = "0.2.191"
+
 [features]
 # Exposes the `sim` module (SimChain + oracle) to integration tests and the `sim-relay` binary.
 sim = ["dep:proptest"]

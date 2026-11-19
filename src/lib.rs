@@ -1,4 +1,5 @@
 pub mod adapters;
+pub mod allocator;
 pub mod api;
 pub mod clients;
 pub mod config;
