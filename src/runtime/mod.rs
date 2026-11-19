@@ -6,5 +6,6 @@ pub mod task;
 
 pub use keeper::{Keeper, Pending, Settled, settling};
 pub use task::{
-    Clock, Handle, ManualClock, Routed, Sink, Subscription, SubscriptionId, spawn, spawn_with_clock,
+    Clock, Handle, ManualClock, MessageLabel, Routed, Sink, Subscription, SubscriptionId, Timings,
+    spawn, spawn_with_clock,
 };

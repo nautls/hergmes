@@ -30,6 +30,7 @@ use prometheus_client::{
 use crate::{
     adapters::{BoxCache, EngineGone, EngineHandle},
     engine::{Query, Reply, ResyncReason, Stats},
+    runtime::Timings,
 };
 
 /// What the text is, as the crate's encoder writes it.
@@ -78,8 +79,9 @@ struct Inner {
 }
 
 impl Metrics {
-    /// Metrics reporting `cache`'s size and reads next to the relay's own.
-    pub fn new(cache: BoxCache) -> Self {
+    /// Metrics reporting `cache`'s size and reads, and the engine task's `timings`, next to
+    /// the relay's own.
+    pub fn new(cache: BoxCache, timings: Timings) -> Self {
         let mut registry = Registry::default();
         let rejections = Family::<Rejection, Counter>::default();
         let resyncs = Family::<Resync, Counter>::default();
@@ -124,6 +126,16 @@ impl Metrics {
             "process_resident_memory_bytes",
             "Resident memory",
             resident_memory.clone(),
+        );
+        registry.register(
+            "hergmes_engine_inbox_wait_seconds",
+            "Time a message waited for the engine task, from its send to the task taking it",
+            timings.waited,
+        );
+        registry.register(
+            "hergmes_engine_message_seconds",
+            "Time the engine task spent on a message, by message kind",
+            timings.handled,
         );
         registry.register_collector(Box::new(CacheCollector(cache)));
         Self(Arc::new(Inner {
@@ -209,9 +221,9 @@ impl Metrics {
 }
 
 impl Default for Metrics {
-    /// Metrics with no cache to report, for tests.
+    /// Metrics with no cache and no engine task to report, for tests.
     fn default() -> Self {
-        Self::new(BoxCache::disabled())
+        Self::new(BoxCache::disabled(), Timings::default())
     }
 }
 

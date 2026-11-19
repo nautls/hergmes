@@ -115,7 +115,7 @@ async fn run(flag: Option<PathBuf>) -> Result<(), AppError> {
     let (engine, mut engine_task) = runtime::spawn(Engine::new(config.engine));
     // Seeded by every first load, and read by the box fetcher to fill in pages.
     let cache = BoxCache::new(config.box_cache_bytes);
-    let counters = Metrics::new(cache.clone());
+    let counters = Metrics::new(cache.clone(), engine.timings());
     info!(
         network = ?node.network(),
         window = config.engine.window,

@@ -16,6 +16,11 @@
 //! a monotonic clock, or from a [`ManualClock`] in tests and the simulator, so idle times
 //! are measured without the engine reading a clock.
 //!
+//! The task times itself: how long each message waited in the inbox and how long it held the
+//! engine, so an operator can see whether a reply was slow because of the engine or because
+//! of what was ahead of it. Those times are wall time from the monotonic clock, whatever the
+//! engine's clock: they are observed, never given to the engine.
+//!
 //! The task also keeps the engine's subscriber counts. It sends `Subscribed` and
 //! `Unsubscribed` itself, once per subscription it registers and ends, so the counts can't
 //! drift from the registry: a subscription the engine ended with `resync_required` was
@@ -31,6 +36,13 @@ use std::{
     time::{Duration, Instant},
 };
 
+use prometheus_client::{
+    encoding::EncodeLabelSet,
+    metrics::{
+        family::Family,
+        histogram::{Histogram, exponential_buckets},
+    },
+};
 use tokio::{
     sync::{mpsc, oneshot, watch},
     task::JoinHandle,
@@ -96,11 +108,77 @@ enum Message {
     Unsubscribe(SubscriptionId, oneshot::Sender<()>),
 }
 
+impl Message {
+    /// What the message is, as its timings are labelled: an event's, a query's or a
+    /// subscribe's kind, from a fixed set, so no label names a key.
+    fn label(&self) -> &'static str {
+        match self {
+            Self::Apply(event, _) => match event {
+                Event::BlockApplied(_) => "apply_block",
+                Event::BlockReverted(_) => "apply_revert",
+                Event::MempoolSnapshot { .. } => "apply_mempool",
+                Event::KeyLoaded { .. } => "apply_load",
+                Event::Subscribed(_) => "apply_subscribed",
+                Event::Unsubscribed(_) => "apply_unsubscribed",
+            },
+            Self::Query(query, _) => match query {
+                Query::Page { .. } => "query_page",
+                Query::WithPool { .. } => "query_with_pool",
+                Query::Overlay(_) => "query_overlay",
+                Query::Pending(_) => "query_pending",
+                Query::PendingTxs(_) => "query_pending_txs",
+                Query::Balance(_) => "query_balance",
+                Query::Tip => "query_tip",
+                Query::Capacity { .. } => "query_capacity",
+                Query::Chain => "query_chain",
+                Query::Boxes(_) => "query_boxes",
+                Query::PoolBox(_) => "query_pool_box",
+                Query::MempoolSnapshot => "query_mempool",
+                Query::CatchUp { .. } => "query_catch_up",
+                Query::Stats => "query_stats",
+            },
+            Self::Subscribe { from: Some(_), .. } => "subscribe_boxes",
+            Self::Subscribe { from: None, .. } => "subscribe_balance",
+            Self::Unsubscribe(..) => "unsubscribe",
+        }
+    }
+}
+
+/// A message's label in [`Timings`].
+#[derive(Debug, Clone, PartialEq, Eq, Hash, EncodeLabelSet)]
+pub struct MessageLabel {
+    message: &'static str,
+}
+
+/// How long the task's messages wait and run. Cloning shares them.
+#[derive(Debug, Clone)]
+pub struct Timings {
+    /// From a caller's send, its wait for room in a full inbox included, to the task taking
+    /// the message. What a reply was delayed by the messages ahead of it.
+    pub waited: Histogram,
+    /// The time the task spent on a message, routing an event's outputs included: how long
+    /// it kept every message behind it waiting.
+    pub handled: Family<MessageLabel, Histogram, fn() -> Histogram>,
+}
+
+impl Default for Timings {
+    fn default() -> Self {
+        Self { waited: seconds(), handled: Family::new_with_constructor(seconds) }
+    }
+}
+
+/// Buckets from 10 µs, a cheap query, to 42 s, quadrupling: a long event shows apart from a
+/// queue of short ones, and a relay seconds behind apart from one that hangs.
+fn seconds() -> Histogram {
+    Histogram::new(exponential_buckets(1e-5, 4.0, 12))
+}
+
 /// A handle to the engine task. Cheap to clone; the task runs until every handle is dropped.
 #[derive(Debug, Clone)]
 pub struct Handle {
-    inbox: mpsc::Sender<Message>,
+    inbox: mpsc::Sender<(Instant, Message)>,
     tip: watch::Receiver<Option<BlockRef>>,
+    timings: Timings,
 }
 
 /// Where the engine's time comes from.
@@ -151,8 +229,15 @@ pub fn spawn(engine: Engine) -> (Handle, JoinHandle<()>) {
 pub fn spawn_with_clock(engine: Engine, clock: Clock) -> (Handle, JoinHandle<()>) {
     let (inbox, messages) = mpsc::channel(INBOX);
     let (tip_sender, tip) = watch::channel(engine.tip());
-    let task = EngineTask { engine, clock, router: Router::default(), tip: tip_sender };
-    (Handle { inbox, tip }, tokio::spawn(task.run(messages)))
+    let timings = Timings::default();
+    let task = EngineTask {
+        engine,
+        clock,
+        router: Router::default(),
+        tip: tip_sender,
+        timings: timings.clone(),
+    };
+    (Handle { inbox, tip, timings }, tokio::spawn(task.run(messages)))
 }
 
 impl Handle {
@@ -160,6 +245,11 @@ impl Handle {
     /// outputs are routed. `None` until the first block.
     pub fn tip(&self) -> watch::Receiver<Option<BlockRef>> {
         self.tip.clone()
+    }
+
+    /// The task's timings, for the metrics.
+    pub fn timings(&self) -> Timings {
+        self.timings.clone()
     }
 
     /// Subscribes `sink` to `key`'s outputs, atomically with the catch-up from `from`: no
@@ -196,7 +286,7 @@ impl Handle {
     ) -> Result<T, EngineGone> {
         let (reply, answer) = oneshot::channel();
         self.inbox
-            .send(message(reply))
+            .send((Instant::now(), message(reply)))
             .await
             .map_err(|_| EngineGone)?;
         answer.await.map_err(|_| EngineGone)
@@ -218,12 +308,20 @@ struct EngineTask {
     clock: Clock,
     router: Router,
     tip: watch::Sender<Option<BlockRef>>,
+    timings: Timings,
 }
 
 impl EngineTask {
-    async fn run(mut self, mut messages: mpsc::Receiver<Message>) {
-        while let Some(message) = messages.recv().await {
+    async fn run(mut self, mut messages: mpsc::Receiver<(Instant, Message)>) {
+        while let Some((sent, message)) = messages.recv().await {
+            let taken = Instant::now();
+            self.timings.waited.observe((taken - sent).as_secs_f64());
+            let label = MessageLabel { message: message.label() };
             self.handle(message);
+            self.timings
+                .handled
+                .get_or_create(&label)
+                .observe(taken.elapsed().as_secs_f64());
         }
     }
 

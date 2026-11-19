@@ -41,14 +41,18 @@ fn every_series_is_written_with_the_engines_sizes() {
     assert!(cache.get(&digest(9)).is_none() && cache.get(&digest(8)).is_none());
     let weight = crate::adapters::cache::weight(&b);
 
-    let metrics = Metrics::new(cache);
+    let metrics = Metrics::new(cache, Timings::default());
     metrics.rejected(Transport::Rest, "invalid_limit");
     metrics.rejected(Transport::Ws, "too_many_boxes");
     metrics.rejected(Transport::Ws, "too_many_boxes");
     metrics.resync(ResyncReason::SlowConsumer);
     let text = metrics.encode(&sizes(), Some(4096));
 
-    let mut lines = lines(&text);
+    // The engine task's timings have a test of their own.
+    let mut lines: Vec<_> = lines(&text)
+        .into_iter()
+        .filter(|l| !l.starts_with("hergmes_engine_"))
+        .collect();
     lines.sort_unstable();
     let weighted = format!("hergmes_box_cache_weighted_bytes {weight}");
     let mut expected = vec![
@@ -89,6 +93,42 @@ fn gauges_are_replaced_and_counters_kept_between_scrapes() {
     ] {
         assert!(lines(&text).contains(&line), "{line} in {text}");
     }
+}
+
+/// Every message the task takes is counted once in the inbox wait, and once under its kind.
+/// The runtime is single-threaded, so the task has timed a message before its caller resumes.
+#[tokio::test]
+async fn the_engine_tasks_messages_are_timed_by_kind() {
+    let (engine, _task) = crate::runtime::spawn(Engine::new(Default::default()));
+    let metrics = Metrics::new(BoxCache::disabled(), engine.timings());
+    engine.query(Query::Tip).await.unwrap();
+    engine.query(Query::Tip).await.unwrap();
+    metrics.render(&engine).await.unwrap();
+    let text = metrics.encode(&Stats::default(), None);
+    for line in [
+        // The scrape's own `Stats` is in the second encode.
+        "hergmes_engine_inbox_wait_seconds_count 3",
+        "hergmes_engine_message_seconds_count{message=\"query_tip\"} 2",
+        "hergmes_engine_message_seconds_count{message=\"query_stats\"} 1",
+    ] {
+        assert!(lines(&text).contains(&line), "{line} in {text}");
+    }
+    // Times, not only counts: a message takes some time to wait for and to answer.
+    for sum in [
+        "hergmes_engine_inbox_wait_seconds_sum ",
+        "hergmes_engine_message_seconds_sum{message=\"query_tip\"} ",
+    ] {
+        let seconds: f64 = lines(&text)
+            .into_iter()
+            .find_map(|l| l.strip_prefix(sum)?.parse().ok())
+            .unwrap_or_else(|| panic!("{sum} in {text}"));
+        assert!(seconds > 0.0, "{sum}{seconds}");
+    }
+    let buckets = lines(&text)
+        .into_iter()
+        .filter(|l| l.starts_with("hergmes_engine_inbox_wait_seconds_bucket"))
+        .count();
+    assert_eq!(buckets, 13, "twelve bounds and +Inf: {text}");
 }
 
 #[test]

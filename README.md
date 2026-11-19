@@ -116,6 +116,12 @@ ring buffer's and the box cache's sizes, cache hits and misses, the boxes idle k
 keys evicted, resident memory, and refusals and resyncs by reason. They are counts only and
 name no address or token.
 
+Every read and event goes through one engine task, one message at a time. Two histograms show
+whether that task keeps up: `hergmes_engine_inbox_wait_seconds`, how long messages wait for it,
+and `hergmes_engine_message_seconds`, how long it spends on each, by kind (`apply_block`,
+`apply_load`, `query_page`, `subscribe_boxes`, …). A long wait comes from the slow kinds ahead
+of it.
+
 ## Sizing
 
 The defaults fit a relay that shares a machine with its node. Full at the default
