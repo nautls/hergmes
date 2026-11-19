@@ -60,7 +60,7 @@ variables instead, without a file: `ERGO_NODE_URL`, `HERGMES_LISTEN_ADDR` and
 | `allow_tokens`                     | omitted: any   | Token ids clients may name                                                        |
 | `box_cache_mb`                     | 128            | Memory for full boxes kept to serve pages, in MiB; 0 disables it                  |
 | `max_boxes_per_key`                | 50000          | Most boxes an address or token can have to be tracked                             |
-| `max_tracked_boxes`                | 2000000        | Most boxes tracked over all keys (about 145 bytes each)                           |
+| `max_tracked_boxes`                | 2000000        | Most boxes tracked over all keys; about 860 MiB resident when full                |
 | `listen_addr`                      | 127.0.0.1:8080 | IP and port of the REST API and the WebSocket; or `HERGMES_LISTEN_ADDR`           |
 | `allow_origins`                    | `["*"]`        | Browser pages and extensions that may use the API: origins and `"scheme://*"`     |
 | `max_subscriptions_per_connection` | 100            | Most subscriptions one WebSocket connection holds                                 |
@@ -114,6 +114,30 @@ Set `metrics_addr` (e.g. `"127.0.0.1:9100"`) to serve Prometheus metrics on `GET
 on an address of its own and never on the public one: tracked keys by kind, tracked boxes, the
 ring buffer's and the box cache's sizes, cache hits and misses, resident memory, and refusals and
 resyncs by reason. They are counts only and name no address or token.
+
+## Sizing
+
+The defaults fit a relay that shares a machine with its node. Full at the default
+`max_tracked_boxes`, with about 100k keys on 1,000 connections, a mainnet relay held 855 to 861
+MiB resident over 30 hours, about 450 B per tracked box all told. Memory grows about linearly
+with what is tracked and connected:
+
+| What                         | Live memory   | Bounded by                                               |
+| ---------------------------- | ------------- | -------------------------------------------------------- |
+| A tracked box, with its key  | about 170 B   | `max_tracked_boxes`, and `max_boxes_per_key` for one key |
+| The box cache                | its budget    | `box_cache_mb`                                           |
+| A subscription               | about 2.5 KiB | `max_subscriptions_per_connection`, per connection       |
+| An idle WebSocket connection | about 8 KiB   | the open-file limit                                      |
+
+Resident memory sits above these live figures, by what the allocator keeps.
+
+To track more, raise `max_tracked_boxes` and `box_cache_mb` together. At the defaults the cache
+holds about a tenth of the tracked boxes and answers about 99% of lookups. A larger cap with the
+same cache means more misses, and each miss is a call to the node. Keep the cache at about the
+same share of tracked boxes, then watch `hergmes_box_cache_hits_total` and
+`hergmes_box_cache_misses_total` and adjust.
+
+The relay has not been run above the default cap, so a higher one is not yet tested.
 
 ## REST API
 
