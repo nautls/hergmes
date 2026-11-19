@@ -105,8 +105,10 @@ Logging uses `tracing`; set `RUST_LOG` (e.g. `RUST_LOG=hergmes=debug`) to adjust
 
 On glibc the relay caps malloc arenas at 4 at startup, which held its memory about 30% lower at
 saturation for a small throughput cost under heavy bursts. `MALLOC_ARENA_MAX` (or
-`glibc.malloc.arena_max` in `GLIBC_TUNABLES`) overrides it. Under systemd, raise `LimitNOFILE`
-above the default 1,024: each WebSocket connection holds a file descriptor.
+`glibc.malloc.arena_max` in `GLIBC_TUNABLES`) overrides it. Each WebSocket connection holds a
+file descriptor, so the relay raises its soft open-file limit to the hard one at startup (under
+systemd, from 1,024 to 524,288 by default) and warns if that is below 4,096; set `LimitNOFILE` then.
+An unlimited hard limit leaves the soft one as it is.
 
 Set `metrics_addr` (e.g. `"127.0.0.1:9100"`) to serve Prometheus metrics on `GET /metrics`,
 on an address of its own and never on the public one: tracked keys by kind, tracked boxes, the

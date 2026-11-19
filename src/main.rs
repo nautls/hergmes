@@ -17,6 +17,7 @@ use hergmes::{
     config::{self, Config},
     engine::Engine,
     error::AppError,
+    limits,
     runtime::{self, Keeper},
     trace::{self, default_subscriber},
 };
@@ -42,6 +43,25 @@ fn main() -> Result<(), AppError> {
                 }
                 Arenas::NotGlibc => {}
             }
+
+            match limits::raise_open_files() {
+                Ok(files) => {
+                    if let Some(error) = &files.refused {
+                        warn!(%error, limit = files.now, "Could not raise the open-file limit");
+                    } else if files.now != files.before {
+                        debug!(from = files.before, to = files.now, "Raised the open-file limit");
+                    }
+                    if files.now < limits::LOW {
+                        warn!(
+                            limit = files.now,
+                            "The open-file limit is low, and each WebSocket connection holds a \
+                             file: raise it (LimitNOFILE under systemd)"
+                        );
+                    }
+                }
+                Err(error) => warn!(%error, "Could not read the open-file limit"),
+            }
+
             tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
                 .build()

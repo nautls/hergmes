@@ -7,6 +7,7 @@ pub mod engine;
 pub mod error;
 #[cfg(test)]
 mod fixtures;
+pub mod limits;
 pub mod runtime;
 #[cfg(any(test, feature = "sim"))]
 pub mod sim;
