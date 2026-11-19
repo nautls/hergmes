@@ -49,7 +49,7 @@ variables instead, without a file: `ERGO_NODE_URL`, `HERGMES_LISTEN_ADDR` and
 | ---------------------------------- | -------------- | --------------------------------------------------------------------------------- |
 | `node_url`                         |                | URL of an indexed Ergo node (required); or `ERGO_NODE_URL`                        |
 | `window_blocks`                    | 720            | Blocks of deltas kept for replays, rollbacks and pinned pages                     |
-| `grace_secs`                       | 600            | Seconds a key with no subscribers stays tracked after its last read               |
+| `grace_secs`                       | 600            | Seconds a key with no subscribers stays tracked after its last read (at least 60) |
 | `poll_interval_ms`                 | 1000           | How often the node's status is read to spot a new block or mempool change         |
 | `mempool_refresh_ms`               | 10000          | Most time between full mempool fetches, even if the node's status shows no change |
 | `token_supply_limit`               | 100            | Largest token emission that can be tracked                                        |
@@ -113,7 +113,8 @@ An unlimited hard limit leaves the soft one as it is.
 Set `metrics_addr` (e.g. `"127.0.0.1:9100"`) to serve Prometheus metrics on `GET /metrics`,
 on an address of its own and never on the public one: tracked keys by kind, tracked boxes, the
 ring buffer's and the box cache's sizes, cache hits and misses, the boxes idle keys hold and the
-keys evicted, resident memory, and refusals and resyncs by reason. They are counts only and name no address or token.
+keys evicted, resident memory, and refusals and resyncs by reason. They are counts only and
+name no address or token.
 
 ## Sizing
 

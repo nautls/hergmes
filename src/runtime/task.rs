@@ -235,7 +235,9 @@ impl EngineTask {
             Message::Apply(event, reply) => {
                 if matches!(event, Event::BlockApplied(_)) {
                     // Idle keys are untracked on a block, so the subscribers gone since count
-                    // off first.
+                    // off first. A closing connection ends its own subscriptions; this catches
+                    // the ones nobody ended (an aborted or panicked handler), which a load at
+                    // the cap can't evict until then.
                     self.router.sweep(&mut self.engine);
                 }
                 let result = match self.engine.apply(event) {

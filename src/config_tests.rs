@@ -113,7 +113,7 @@ fn every_setting_is_read() {
     let config = config(&format!(
         r#"
         window_blocks = 30
-        grace_secs = 0
+        grace_secs = 60
         poll_interval_ms = 250
         mempool_refresh_ms = 5000
         token_supply_limit = 7
@@ -133,7 +133,7 @@ fn every_setting_is_read() {
     .unwrap();
     let engine = engine::Config {
         window: 30,
-        grace: Duration::ZERO,
+        grace: Duration::from_secs(60),
         max_tracked_boxes: 900,
         ..engine::Config::DEFAULT
     };
@@ -196,6 +196,7 @@ fn bad_values_name_their_key() {
     let bad_address = "9fRusAarL1KkrWQVsxSRVYnvWxaAT2A96cKtNn9tvPh5XUyCisR";
     for (key, value) in [
         (keys::WINDOW_BLOCKS, "0"),
+        (keys::GRACE_SECS, "59"),
         (keys::POLL_INTERVAL_MS, "0"),
         (keys::MEMPOOL_REFRESH_MS, "0"),
         (keys::TRACK_ADDRESSES, &format!("[\"{bad_address}\"]")),

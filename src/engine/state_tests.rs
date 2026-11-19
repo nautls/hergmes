@@ -1057,6 +1057,63 @@ impl Harness {
         }
         assert_eq!(self.engine.reverse, reverse, "reverse index");
 
+        // The idle index holds exactly the model's keys with no subscribers, at their last
+        // activity, with the oracle's box counts.
+        let idle: BTreeMap<(u64, KeyId), usize> = self
+            .keys
+            .iter()
+            .filter(|(_, m)| m.subscribers == 0)
+            .map(|(key, m)| {
+                let boxes = oracle.unspent(key, tip.height).len();
+                ((m.last_seen, self.engine.ids[key]), boxes)
+            })
+            .collect();
+        assert_eq!(self.engine.idle, idle, "idle index");
+
+        // Nothing is kept for a key no longer tracked: the mempool sends overlays for the
+        // tracked keys alone, and each ring or orphaned block holds shares of tracked keys
+        // only, with just the boxes those shares name.
+        let sent: Vec<&TrackingKey> = self.engine.mempool.tracked().collect();
+        assert_eq!(sent, self.keys.keys().collect::<Vec<_>>(), "keys the mempool sends for");
+        for delta in self.engine.ring.iter().chain(self.engine.orphans.values()) {
+            for key_id in delta.keys.keys() {
+                assert!(self.engine.keys.contains_key(key_id), "a share of an untracked key");
+            }
+            let named: HashSet<BoxId> = delta
+                .keys
+                .values()
+                .flat_map(|d| {
+                    d.created
+                        .iter()
+                        .copied()
+                        .chain(d.spent.iter().map(|s| s.box_id))
+                })
+                .collect();
+            let held: HashSet<BoxId> = delta.boxes.keys().copied().collect();
+            assert_eq!(held, named, "the boxes of block {:?}", delta.block);
+        }
+
+        // The room read for any load size gives the model's answer, and the whole idle room
+        // when the load can't fit. Counting stops once it would, so the room is then at
+        // least what the load needs.
+        let untracked = TrackingKey::Token(Digest([0xff; 32]));
+        let max = CONFIG.max_tracked_boxes;
+        for up_to in 0..=2 * max {
+            let query = Query::Capacity { key: untracked.clone(), up_to };
+            let Reply::Capacity(Some(capacity)) = self.engine.query(query) else {
+                panic!("room for an untracked key");
+            };
+            assert_eq!((capacity.tracked, capacity.max), (boxes, max));
+            let fits = boxes - evictable_boxes + up_to <= max;
+            assert_eq!(capacity.fits(up_to), fits, "room for {up_to}");
+            if fits {
+                assert!(capacity.evictable <= evictable_boxes);
+                assert!(boxes - capacity.evictable + up_to <= max);
+            } else {
+                assert_eq!(capacity.evictable, evictable_boxes, "the whole room, for {up_to}");
+            }
+        }
+
         // Every key's overlay, tracked or not, is the oracle's over the snapshot in use.
         for key in self.chain.keys() {
             let reference = self.reference_overlay(&key, &ids);
@@ -2047,7 +2104,8 @@ fn a_load_past_the_cap_evicts_idle_keys_least_recently_active_first() {
     assert_eq!(f.load(&three), [refused]);
 
     // Key 0 read a block later, key 2 subscribed two blocks later: only key 1, idle since its
-    // load, and key 0 are evictable, key 1 first.
+    // load, and key 0 are evictable, key 1 first. The room is counted only until the load
+    // fits, and key 1 alone makes it.
     f.mine(vec![]);
     let _ = f.engine.query(Query::Balance(zero.clone()));
     f.mine(vec![]);
@@ -2055,7 +2113,7 @@ fn a_load_past_the_cap_evicts_idle_keys_least_recently_active_first() {
         .apply(Event::Subscribed(two.clone()))
         .expect("tracked");
     let capacity = room(&mut f, &three);
-    assert_eq!(capacity, Capacity { tracked: cap, evictable: s0 + s1, max: cap });
+    assert_eq!(capacity, Capacity { tracked: cap, evictable: s1, max: cap });
     assert!(capacity.fits(s3));
     let outputs = f.load(&three);
     assert!(f.engine.is_tracked(&three), "{outputs:?}");
@@ -2080,7 +2138,8 @@ fn a_load_past_the_cap_evicts_idle_keys_least_recently_active_first() {
 }
 
 /// The room a loader reads counts idle keys only when a load of the size it asks about could
-/// pass the cap: below that, their room changes no answer and counting it walks every key.
+/// pass the cap, and only until that load would fit: past either, their room changes no
+/// answer. A load that can't fit gets the whole room, for its refusal.
 #[test]
 fn the_room_counts_idle_keys_only_when_a_load_could_need_them() {
     let probe = Fixture::new(Config::default());
@@ -2102,8 +2161,11 @@ fn the_room_counts_idle_keys_only_when_a_load_could_need_them() {
     };
     let tracked = s0 + s1;
     assert_eq!(room(&mut f, s2), Capacity { tracked, evictable: 0, max: cap }, "fits as it is");
-    let near = Capacity { tracked, evictable: s0 + s1, max: cap };
-    assert_eq!(room(&mut f, s2 + 1), near, "both keys idle since the block");
+    assert!(s0 > 0, "key 0 makes room");
+    let near = Capacity { tracked, evictable: s0, max: cap };
+    assert_eq!(room(&mut f, s2 + 1), near, "key 0, loaded first, makes the one box of room");
+    let past = Capacity { tracked, evictable: s0 + s1, max: cap };
+    assert_eq!(room(&mut f, cap + 1), past, "both keys, and still no room");
 }
 
 /// The engine's clock never goes back: an earlier time leaves it where it was, so a key read

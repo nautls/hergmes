@@ -33,7 +33,9 @@ pub struct Config {
     /// rollbacks, and pages pinned to an earlier block.
     pub window: u32,
     /// How long a key with no subscribers is kept after its last activity. Checked at each
-    /// block, so a key can stay up to a block longer.
+    /// block, so a key can stay up to a block longer. At least `evict_after` in a running
+    /// relay (the config file refuses less), or a key could go between two requests that
+    /// belong together; tests set less to see the grace period alone.
     pub grace: Duration,
     /// How long a key with no subscribers must be idle before a load may evict it, so a
     /// client between two requests that belong together (the pages of one walk) keeps its
@@ -96,6 +98,10 @@ pub struct Engine {
     /// Tracked keys, in the order messages go out in.
     ids: BTreeMap<TrackingKey, KeyId>,
     keys: HashMap<KeyId, KeyState>,
+    /// The keys with no subscribers, least recently active first, with their box counts:
+    /// the ones the idle sweep and eviction look at, in the order they go. Kept apart, counts
+    /// included, so each walks only the idle keys it takes, not every key.
+    idle: BTreeMap<(u64, KeyId), usize>,
     /// Every box a tracked key holds, once per key, with its inclusion height.
     reverse: BTreeMap<(BoxId, KeyId), u32>,
     /// The last blocks of the main chain, oldest first, ending at the tip.
@@ -121,6 +127,7 @@ impl Engine {
             next_id: 0,
             ids: BTreeMap::new(),
             keys: HashMap::new(),
+            idle: BTreeMap::new(),
             reverse: BTreeMap::new(),
             ring: VecDeque::new(),
             orphans: HashMap::new(),
@@ -166,17 +173,13 @@ impl Engine {
                 outputs
             }
             Event::KeyLoaded { key, as_of, boxes } => self.key_loaded(key, as_of, boxes),
-            Event::Subscribed(key) => match self.touch(&key) {
-                Some(state) => {
-                    state.subscribers += 1;
-                    Vec::new()
-                }
+            Event::Subscribed(key) => match self.seen(&key, |n| n + 1) {
+                Some(_) => Vec::new(),
                 None => vec![Output::ResyncRequired { key, reason: ResyncReason::NotTracked }],
             },
             Event::Unsubscribed(key) => {
-                match self.touch(&key) {
-                    Some(state) => state.subscribers = state.subscribers.saturating_sub(1),
-                    None => debug!(?key, "Unsubscribe from an untracked key ignored"),
+                if self.seen(&key, |n| n.saturating_sub(1)).is_none() {
+                    debug!(?key, "Unsubscribe from an untracked key ignored");
                 }
                 Vec::new()
             }
@@ -320,6 +323,9 @@ impl Engine {
         }
         // Boxes created and spent within the block are in no delta.
         delta.keys.retain(|_, d| !d.is_empty());
+        for &key_id in delta.keys.keys() {
+            self.recount(key_id);
+        }
         let referenced: HashSet<BoxId> = delta
             .keys
             .values()
@@ -356,17 +362,17 @@ impl Engine {
         // Untrack idle keys before deciding the overlays: their boxes are no longer checked.
         let grace = millis(self.config.grace);
         let idle: Vec<TrackingKey> = self
-            .keys
-            .values()
-            .filter(|s| s.subscribers == 0 && self.now_ms.saturating_sub(s.last_seen_ms) > grace)
-            .map(|s| s.key.clone())
+            .idle
+            .keys()
+            .take_while(|&&(last_seen_ms, _)| self.now_ms.saturating_sub(last_seen_ms) > grace)
+            .map(|(_, id)| self.keys[id].key.clone())
             .collect();
-        for key in idle {
-            let idle_ms = self.now_ms - self.keys[&self.ids[&key]].last_seen_ms;
+        for key in &idle {
+            let idle_ms = self.now_ms - self.keys[&self.ids[key]].last_seen_ms;
             debug!(?key, idle_ms, height = block_ref.height, "Untracking idle key");
-            self.untrack(&key);
-            before.retain(|id, _| self.keys.contains_key(id));
         }
+        self.untrack(&idle);
+        before.retain(|id, _| self.keys.contains_key(id));
 
         let confirmed = Confirmed::new(&self.ids, &self.reverse);
         outputs.extend(
@@ -391,9 +397,7 @@ impl Engine {
                 outputs.push(Output::ResyncRequired { key: key.clone(), reason });
             }
             let keys: Vec<TrackingKey> = self.ids.keys().cloned().collect();
-            for key in keys {
-                self.untrack(&key);
-            }
+            self.untrack(&keys);
             self.tip = None;
             self.mempool.reset();
             self.orphans.clear();
@@ -402,7 +406,7 @@ impl Engine {
         debug_assert_eq!(delta.block, block);
 
         let mut outputs = Vec::new();
-        let mut dropped = Vec::new();
+        let (mut dropped, mut changed) = (Vec::new(), Vec::new());
         let mut before: BTreeMap<KeyId, Totals> = BTreeMap::new();
         for (key, &key_id) in &self.ids {
             let state = self.keys.get_mut(&key_id).expect("an id is tracked");
@@ -416,6 +420,7 @@ impl Engine {
             }
             let key_delta = delta.keys.get(&key_id);
             if let Some(d) = key_delta {
+                changed.push(key_id);
                 if let Some(totals) = &state.totals {
                     before.insert(key_id, totals.clone());
                 }
@@ -443,9 +448,10 @@ impl Engine {
             }
             outputs.push(rollback(key, &delta, key_delta));
         }
-        for key in &dropped {
-            self.untrack(key);
+        for key_id in changed {
+            self.recount(key_id);
         }
+        self.untrack(&dropped);
 
         let parent = delta.parent();
         self.tip = Some(parent);
@@ -487,26 +493,35 @@ impl Engine {
             return Vec::new();
         }
         // The reverse index holds one entry per tracked box and key: the total. Idle keys are
-        // looked for only past the cap, so a load that fits costs no walk of every key.
+        // looked for only past the cap, and only until there is room. The loader reads every
+        // page at one tip, so a box should come once; one that came twice would be counted
+        // twice here, at most a refusal or an eviction too many.
         let (tracked, max) = (self.reverse.len(), self.config.max_tracked_boxes);
-        if tracked.saturating_add(boxes.len()) > max {
-            let mut idle: Vec<(u64, KeyId, usize)> = self.evictable().collect();
-            let evictable = idle.iter().map(|&(_, _, boxes)| boxes).sum();
-            if !(Capacity { tracked, evictable, max }).fits(boxes.len()) {
+        let needed = tracked.saturating_add(boxes.len()).saturating_sub(max);
+        if needed > 0 {
+            let (mut evictable, mut chosen) = (0, Vec::new());
+            for (last_seen_ms, key_id, boxes) in self.evictable() {
+                if evictable >= needed {
+                    break;
+                }
+                evictable += boxes;
+                chosen.push((last_seen_ms, key_id));
+            }
+            if evictable < needed {
                 let boxes = boxes.len();
                 return vec![Output::CapacityExceeded { key, tracked, evictable, boxes }];
             }
-            idle.sort_unstable();
-            for (last_seen_ms, key_id, _) in idle {
-                if self.reverse.len() + boxes.len() <= max {
-                    break;
-                }
-                let evicted = self.keys[&key_id].key.clone();
-                let idle_ms = self.now_ms - last_seen_ms;
-                debug!(?evicted, idle_ms, for_key = ?key, "Evicting idle key for a load");
-                self.untrack(&evicted);
-                self.evicted_keys += 1;
-            }
+            let evicted: Vec<TrackingKey> = chosen
+                .into_iter()
+                .map(|(last_seen_ms, key_id)| {
+                    let evicted = self.keys[&key_id].key.clone();
+                    let idle_ms = self.now_ms - last_seen_ms;
+                    debug!(?evicted, idle_ms, for_key = ?key, "Evicting idle key for a load");
+                    evicted
+                })
+                .collect();
+            self.untrack(&evicted);
+            self.evicted_keys += evicted.len() as u64;
         }
         debug!(?key, height = as_of.height, boxes = boxes.len(), "Tracking key");
         let key_id = KeyId(self.next_id);
@@ -531,6 +546,7 @@ impl Engine {
                 self.reverse.insert((b.utxo.id, key_id), b.inclusion_height);
             }
         }
+        self.idle.insert((self.now_ms, key_id), state.boxes.len());
         self.ids.insert(key.clone(), key_id);
         self.keys.insert(key_id, state);
 
@@ -559,51 +575,104 @@ impl Engine {
     }
 
     /// The room for a load of at most `up_to` boxes. Idle keys' room is counted only if such
-    /// a load could pass the cap: below that it changes no answer, and counting it walks
-    /// every key. With the defaults, that is only past 1.95M tracked boxes.
+    /// a load could pass the cap, and only until it would fit: past that it changes no
+    /// answer. So `evictable` is exact only when the load does not fit; otherwise it is at
+    /// least the room the load needs. With the defaults, idle keys are counted only past
+    /// 1.95M tracked boxes.
     fn capacity(&self, up_to: usize) -> Capacity {
         let (tracked, max) = (self.reverse.len(), self.config.max_tracked_boxes);
-        let evictable = if tracked.saturating_add(up_to) > max {
-            self.evictable().map(|(_, _, boxes)| boxes).sum()
-        } else {
-            0
-        };
+        let needed = tracked.saturating_add(up_to).saturating_sub(max);
+        let mut evictable = 0;
+        if needed > 0 {
+            for (_, _, boxes) in self.evictable() {
+                if evictable >= needed {
+                    break;
+                }
+                evictable += boxes;
+            }
+        }
         Capacity { tracked, evictable, max }
     }
 
-    /// The keys a load may evict, with their last activity and box counts: no subscribers,
-    /// so no stream breaks, and idle for `evict_after`, so a client between two requests
-    /// that belong together keeps its key. Configured keys always have their keeper's
-    /// subscription. Evicted least recently active first, then oldest load first.
+    /// The keys a load may evict, in the order it evicts them, with their last activity and
+    /// box counts: no subscribers, so no stream breaks, and idle for `evict_after`, so a
+    /// client between two requests that belong together keeps its key. Configured keys
+    /// always have their keeper's subscription. Least recently active first, then oldest
+    /// load first.
     fn evictable(&self) -> impl Iterator<Item = (u64, KeyId, usize)> {
         let after = millis(self.config.evict_after);
-        self.keys
+        self.idle
             .iter()
-            .filter(move |(_, s)| {
-                s.subscribers == 0 && self.now_ms.saturating_sub(s.last_seen_ms) >= after
+            .take_while(move |&(&(last_seen_ms, _), _)| {
+                self.now_ms.saturating_sub(last_seen_ms) >= after
             })
-            .map(|(&id, s)| (s.last_seen_ms, id, s.boxes.len()))
+            .map(|(&(last_seen_ms, id), &boxes)| (last_seen_ms, id, boxes))
     }
 
     /// Records activity on a tracked key, and returns its state.
     fn touch(&mut self, key: &TrackingKey) -> Option<&mut KeyState> {
-        let now = self.now_ms;
-        let state = self.keys.get_mut(self.ids.get(key)?)?;
-        state.last_seen_ms = now;
+        self.seen(key, |n| n)
+    }
+
+    /// Records activity on a tracked key that changes its subscriber count to
+    /// `subscribers(count)`, keeping the idle index in step, and returns its state.
+    fn seen(
+        &mut self,
+        key: &TrackingKey,
+        subscribers: impl FnOnce(u32) -> u32,
+    ) -> Option<&mut KeyState> {
+        let key_id = *self.ids.get(key)?;
+        let state = self.keys.get_mut(&key_id).expect("an id is tracked");
+        if state.subscribers == 0 {
+            self.idle.remove(&(state.last_seen_ms, key_id));
+        }
+        state.subscribers = subscribers(state.subscribers);
+        state.last_seen_ms = self.now_ms;
+        if state.subscribers == 0 {
+            self.idle.insert((self.now_ms, key_id), state.boxes.len());
+        }
         Some(state)
     }
 
-    /// Stops tracking `key`, with its boxes and its deltas.
-    fn untrack(&mut self, key: &TrackingKey) {
-        let Some(key_id) = self.ids.remove(key) else {
+    /// Brings an idle key's box count in the idle index up to its set, after a block or a
+    /// rollback changed it.
+    fn recount(&mut self, key_id: KeyId) {
+        let state = &self.keys[&key_id];
+        if let Some(boxes) = self.idle.get_mut(&(state.last_seen_ms, key_id)) {
+            *boxes = state.boxes.len();
+        }
+    }
+
+    /// Stops tracking `keys`, with their boxes and their deltas. All at once, so the ring is
+    /// walked once however many keys go: an eviction or an idle sweep can drop thousands.
+    fn untrack(&mut self, keys: &[TrackingKey]) {
+        let mut gone = HashSet::new();
+        for key in keys {
+            let Some(key_id) = self.ids.remove(key) else {
+                continue;
+            };
+            let state = self.keys.remove(&key_id).expect("an id is tracked");
+            self.idle.remove(&(state.last_seen_ms, key_id));
+            for b in &state.boxes {
+                self.reverse.remove(&(b.box_id, key_id));
+            }
+            self.mempool.untrack(key);
+            gone.insert(key_id);
+        }
+        if gone.is_empty() {
             return;
-        };
-        let state = self.keys.remove(&key_id).expect("an id is tracked");
-        for b in &state.boxes {
-            self.reverse.remove(&(b.box_id, key_id));
         }
         for delta in self.ring.iter_mut().chain(self.orphans.values_mut()) {
-            if delta.keys.remove(&key_id).is_some() {
+            let held = delta.keys.len();
+            // Looked up from the smaller side: a block touches few keys, a sweep may drop few.
+            if gone.len() < held {
+                for key_id in &gone {
+                    delta.keys.remove(key_id);
+                }
+            } else {
+                delta.keys.retain(|key_id, _| !gone.contains(key_id));
+            }
+            if delta.keys.len() < held {
                 let referenced: HashSet<BoxId> = delta
                     .keys
                     .values()
@@ -617,7 +686,6 @@ impl Engine {
                 delta.boxes.retain(|id, _| referenced.contains(id));
             }
         }
-        self.mempool.untrack(key);
     }
 
     /// Removes and returns the keys holding box `id`, with its inclusion height.

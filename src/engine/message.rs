@@ -156,7 +156,9 @@ pub struct Stats {
 
 /// The boxes tracked, one per box and key, the part of them held by keys a load may evict,
 /// and the cap on them. A load of `n` boxes fits while `tracked - evictable + n <= max`: it
-/// takes the room it needs from idle keys, or is refused and evicts none.
+/// takes the room it needs from idle keys, or is refused and evicts none. Idle keys are
+/// counted only until the load asked about would fit, so `evictable` is all of their boxes
+/// only when it does not; otherwise it is at least what the load needs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Capacity {
     pub tracked: usize,

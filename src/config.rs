@@ -256,9 +256,7 @@ impl Config {
             node_url,
             engine: engine::Config {
                 window,
-                grace: file
-                    .grace_secs
-                    .map_or(engine_defaults.grace, Duration::from_secs),
+                grace: grace(file.grace_secs, engine_defaults)?,
                 // Not a setting: it protects requests that belong together, not a policy.
                 evict_after: engine_defaults.evict_after,
                 max_tracked_boxes: at_least_one(
@@ -416,6 +414,18 @@ where
             .map(Some)
             .map_err(|e: T::Err| invalid(name, &format!("{v:?}: {e}"))),
     }
+}
+
+/// The grace period, at least the engine's wait before eviction: a shorter one would untrack
+/// a key between two requests that belong together (the pages of one walk), which that wait
+/// is there to protect.
+fn grace(secs: Option<u64>, defaults: engine::Config) -> Result<Duration, ConfigError> {
+    let grace = secs.map_or(defaults.grace, Duration::from_secs);
+    if grace < defaults.evict_after {
+        let least = defaults.evict_after.as_secs();
+        return Err(invalid(keys::GRACE_SECS, &format!("must be at least {least}")));
+    }
+    Ok(grace)
 }
 
 /// A count of at least 1: a cap of 0 would refuse every key that has a box, or every

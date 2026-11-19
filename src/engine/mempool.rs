@@ -282,6 +282,12 @@ impl Mempool {
         self.sent.contains_key(key)
     }
 
+    /// The keys whose overlays are sent, in key order.
+    #[cfg(test)]
+    pub fn tracked(&self) -> impl Iterator<Item = &TrackingKey> {
+        self.sent.keys()
+    }
+
     /// A message for each tracked key whose overlay hash differs from the one sent.
     fn emit(&mut self, tip_height: u32) -> Vec<Output> {
         let mut overlays = self.tracked_overlays();

@@ -81,8 +81,9 @@ pub const ENGINE: engine::Config = engine::Config {
 };
 
 /// How far a follower tick moves the engine's clock. Ticks come only when a test asks, so
-/// idle times follow what the test does, not how fast it runs: a replayed seed untracks the
-/// same keys.
+/// idle times follow what the test does, not how fast it runs. A request sent while a tick
+/// runs may land on either side of it, so a replayed seed untracks the same keys only if the
+/// test waits for its requests before ticking.
 pub const TICK_TIME: Duration = Duration::from_secs(120);
 
 /// The relay's waits for a follower tick (a load's, a balance's, a history page's retries).
