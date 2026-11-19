@@ -31,7 +31,7 @@ use crate::{
 pub const MAX_BOXES: usize = 50_000;
 
 /// How long a key over the per-key cap is answered `TooManyBoxes` without paging it again:
-/// about the grace period in blocks. A key gets under the cap only by many consolidation txs,
+/// the default grace period. A key gets under the cap only by many consolidation txs,
 /// so a wallet that just did waits at most this long, while a hot address over the cap costs
 /// one reload per this long rather than one per request.
 pub const REFUSAL_TTL: Duration = Duration::from_secs(10 * 60);
@@ -103,10 +103,14 @@ pub enum LoadError {
     #[error("the key has more than {max} boxes")]
     TooManyBoxes { max: usize },
     /// The key's boxes would pass the cap on tracked boxes: the engine refused them, or the
-    /// loader stopped paging at the first page past the room the engine had left. It frees up
-    /// as idle keys leave.
-    #[error("{boxes} more boxes would pass the cap on tracked boxes, with {tracked} tracked")]
-    CapacityExceeded { tracked: usize, boxes: usize },
+    /// loader stopped paging at the first page past the room the engine had left, idle keys'
+    /// room counted. It frees up as keys go idle: once a key with no subscribers has gone
+    /// unread for the engine's `evict_after`.
+    #[error(
+        "{boxes} more boxes would pass the cap on tracked boxes, with {tracked} tracked, \
+         {evictable} of them by idle keys"
+    )]
+    CapacityExceeded { tracked: usize, evictable: usize, boxes: usize },
     #[error(transparent)]
     EngineGone(#[from] EngineGone),
 }
@@ -133,7 +137,7 @@ pub struct Loader<S> {
     /// the whole invalidation: the count changes only through blocks, and following it for
     /// untracked keys would mean engine state, rollbacks and a race at the refusal, to save a
     /// wallet a few minutes once after a long consolidation. The total cap is not
-    /// remembered: it frees up as idle keys leave.
+    /// remembered: it frees up as keys go idle.
     refused: Cache<TrackingKey, usize>,
 }
 
@@ -251,7 +255,9 @@ impl<S: NodeSource> Loader<S> {
         // `KeyLoaded` is still the one that counts: the room can change while the pages are
         // read. A stop on room that grows meanwhile only costs a retry; a key another loader
         // tracks meanwhile is refused too, which a shared loader never does.
-        let capacity = engine_capacity(engine, key).await?;
+        // A load past `max_boxes` is refused before the room is looked at, so the engine
+        // counts idle keys' room only when a load that large could need it.
+        let capacity = engine_capacity(engine, key, self.config.max_boxes).await?;
         let boxes = self.pages(key, capacity).await?;
         if best_full_block(&self.source.info().await?) != Some(tip) {
             debug!(?key, ?tip, "Load dropped: the tip moved during it");
@@ -270,8 +276,8 @@ impl<S: NodeSource> Loader<S> {
         for output in outputs.iter().filter(|o| o.key() == key) {
             match output {
                 Output::LoadRejected { .. } => return Ok(Attempt::Rejected),
-                &Output::CapacityExceeded { tracked, boxes, .. } => {
-                    return Err(LoadError::CapacityExceeded { tracked, boxes });
+                &Output::CapacityExceeded { tracked, evictable, boxes, .. } => {
+                    return Err(LoadError::CapacityExceeded { tracked, evictable, boxes });
                 }
                 _ => {}
             }
@@ -306,8 +312,9 @@ impl<S: NodeSource> Loader<S> {
             if let Some(capacity) = capacity
                 && !capacity.fits(boxes.len())
             {
-                let (tracked, boxes) = (capacity.tracked, boxes.len());
-                return Err(LoadError::CapacityExceeded { tracked, boxes });
+                let Capacity { tracked, evictable, .. } = capacity;
+                let boxes = boxes.len();
+                return Err(LoadError::CapacityExceeded { tracked, evictable, boxes });
             }
             if !full {
                 return Ok(boxes);

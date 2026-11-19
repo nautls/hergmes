@@ -68,10 +68,7 @@ where
     };
     let end = connection.run().await;
     debug!(?end, "WebSocket connection ended");
-    // Dropping the connection aborts its pending subscribes and drops its sinks' receivers.
-    // The engine task ends a subscription with a closed sink when it next sends to it, and
-    // sweeps closed sinks before every block, the only event that untracks idle keys, so an
-    // unsubscribe per subscription here would change nothing.
+    connection.close().await;
 }
 
 /// Why a connection ended.
@@ -153,6 +150,35 @@ struct Connection<S, K> {
 }
 
 impl<S: NodeSource + 'static, K: Socket> Connection<S, K> {
+    /// Ends every subscription the connection still holds, once it has ended. The engine
+    /// task would end them anyway, with their closed sinks, but only at the next block's
+    /// sweep: until then their keys count as subscribed, so a load at the cap can't evict
+    /// them, and their idle time starts only then. Unfinished subscribes are aborted, and
+    /// one the engine answered before its abort is ended too. The sweep still catches one
+    /// whose answer was lost in the abort.
+    async fn close(self) {
+        let Self { api, keys, mut pending, socket, feeds, .. } = self;
+        drop((socket, feeds));
+        pending.abort_all();
+        let mut ids: Vec<SubscriptionId> = keys
+            .values()
+            .filter_map(|entry| match &entry.state {
+                State::Live(id) => Some(*id),
+                State::Pending { replaced, .. } => replaced.as_ref().map(|r| r.id),
+            })
+            .collect();
+        while let Some(joined) = pending.join_next().await {
+            if let Ok((_, _, Opened::Live { id, .. })) = joined {
+                ids.push(id);
+            }
+        }
+        for id in ids {
+            if api.engine.unsubscribe(id).await.is_err() {
+                return; // The engine is gone, and its subscriptions with it.
+            }
+        }
+    }
+
     async fn run(&mut self) -> End {
         let mut ping = interval_at(Instant::now() + PING_INTERVAL, PING_INTERVAL);
         ping.set_missed_tick_behavior(MissedTickBehavior::Delay);

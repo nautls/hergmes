@@ -21,7 +21,8 @@ use crate::{
 };
 
 /// Small, so reorgs reach past it and the consumer resets.
-const CONFIG: Config = Config { window: 4, grace: 100, ..Config::DEFAULT };
+const CONFIG: Config =
+    Config { window: 4, grace: crate::sim::testing::blocks(100), ..Config::DEFAULT };
 const MAX_REORG: u8 = 6;
 const CASES: u32 = 1_000;
 

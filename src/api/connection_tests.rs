@@ -15,20 +15,31 @@ use crate::{
     adapters::{BoxCache, BoxFetcher, EngineHandle, Follower, HeaderReader, Loader, TokenChecker},
     api::{Balances, Boxes, Headers, History, KeyPolicy, Pages, Tokens, Transactions, ws::Closed},
     engine::{self, Engine, Event, Query, Reply},
-    runtime::{Settled, settling, spawn},
-    sim::{Chain, Endpoint, SimChain, SimConfig, token_id},
+    runtime::{Clock, ManualClock, Settled, settling, spawn_with_clock},
+    sim::{
+        Chain, Endpoint, SimChain, SimConfig,
+        testing::{BLOCK_TIME, blocks},
+        token_id,
+    },
     types::{
         address::{self, Network},
         ergo::{BoxId, HeaderId},
     },
 };
 
-const CONFIG: engine::Config = engine::Config { window: 8, grace: 3, ..engine::Config::DEFAULT };
+/// The grace period, in blocks of [`BLOCK_TIME`]: each mined block moves the clock by one.
+/// It counts from when the engine sees a client go. A hang-up is seen at once, but a
+/// client's own unsubscribe can reach the engine after the next block moved the clock, so a
+/// test waiting that out mines one block more than the grace period.
+const GRACE_BLOCKS: u32 = 3;
+const CONFIG: engine::Config =
+    engine::Config { window: 8, grace: blocks(GRACE_BLOCKS as u64), ..engine::Config::DEFAULT };
 /// How long a client waits for the next message before it takes the connection as quiet.
 const QUIET: Duration = Duration::from_millis(100);
 
 struct Fixture {
     sim: SimChain,
+    clock: ManualClock,
     engine: Handle,
     _task: JoinHandle<()>,
     follower: Follower<SimChain>,
@@ -49,7 +60,8 @@ impl Fixture {
         let mut chain = Chain::new(SimConfig { recovery_reads: 0, ..SimConfig::default() });
         chain.mine(0, 2, 1);
         let sim = SimChain::new(chain);
-        let (engine, task) = spawn(Engine::new(config));
+        let clock = ManualClock::default();
+        let (engine, task) = spawn_with_clock(Engine::new(config), Clock::Manual(clock.clone()));
         let cache = BoxCache::new(1 << 20);
         let follower = Follower::new(sim.clone(), Default::default());
         let api = Arc::new(Api {
@@ -71,7 +83,7 @@ impl Fixture {
             synced: follower.synced(),
             metrics: Default::default(),
         });
-        let mut f = Self { sim, engine, _task: task, follower, api };
+        let mut f = Self { sim, clock, engine, _task: task, follower, api };
         f.tick().await;
         f
     }
@@ -84,8 +96,9 @@ impl Fixture {
             .unwrap();
     }
 
-    /// Mines a block with a few fresh txs and follows it.
+    /// Mines a block with a few fresh txs and follows it, a block's time later.
     async fn mine(&mut self, seed: u64) {
+        self.clock.advance(BLOCK_TIME);
         self.sim.lock().mine(0, 3, seed);
         self.tick().await;
     }
@@ -147,7 +160,7 @@ impl Fixture {
     async fn tracked(&self, key: &TrackingKey) -> bool {
         match self
             .engine
-            .query(Query::Capacity(key.clone()))
+            .query(Query::Capacity { key: key.clone(), up_to: 0 })
             .await
             .unwrap()
         {
@@ -649,8 +662,8 @@ async fn reconnect_after(blocks: u32) -> (Fixture, View, Vec<Value>, Vec<Endpoin
 
 #[tokio::test(start_paused = true)]
 async fn a_reconnect_within_the_grace_period_replays_without_a_reload() {
-    let (f, mut view, messages, calls) = reconnect_after(CONFIG.grace - 1).await;
-    let replayed = CONFIG.grace as usize - 1;
+    let (f, mut view, messages, calls) = reconnect_after(GRACE_BLOCKS - 1).await;
+    let replayed = GRACE_BLOCKS as usize - 1;
     assert_eq!(types(&messages)[0], "subscribed");
     assert_eq!(types(&messages)[1..=replayed], vec!["block"; replayed][..]);
     for m in &messages {
@@ -660,9 +673,36 @@ async fn a_reconnect_within_the_grace_period_replays_without_a_reload() {
     assert!(calls.is_empty(), "no node call: {calls:?}");
 }
 
+/// A hang-up ends the connection's subscriptions at once, not at the next block's sweep of
+/// closed sinks: its key is idle from then, so a load at the cap can evict it before any
+/// block comes.
+#[tokio::test(start_paused = true)]
+async fn a_hang_up_leaves_its_keys_evictable_before_the_next_block() {
+    let f = Fixture::new().await;
+    let (key, echo) = token_key();
+    let view = f.snapshot(&key).await;
+    let mut client = f.connect();
+    client.subscribe(echo, view.tip).await;
+    client.texts().await;
+    let stats = || async {
+        match f.engine.query(Query::Stats).await.unwrap() {
+            Reply::Stats(stats) => stats,
+            other => panic!("{other:?}"),
+        }
+    };
+    f.clock.advance(CONFIG.evict_after);
+    assert_eq!(stats().await.evictable_boxes, 0, "subscribed");
+
+    client.hang_up().await;
+    f.clock.advance(CONFIG.evict_after);
+    let stats = stats().await;
+    assert!(stats.tracked_boxes > 0);
+    assert_eq!(stats.evictable_boxes, stats.tracked_boxes, "idle since the hang-up");
+}
+
 #[tokio::test(start_paused = true)]
 async fn a_reconnect_after_the_grace_period_gets_resync_required() {
-    let (f, _, messages, _) = reconnect_after(CONFIG.grace + 1).await;
+    let (f, _, messages, _) = reconnect_after(GRACE_BLOCKS + 1).await;
     assert_eq!(types(&messages), ["resync_required"]);
     assert_eq!(messages[0]["reason"], "not_tracked");
     assert_eq!(resyncs(&f, "not_tracked"), 1, "a subscribe's answer");
@@ -823,7 +863,7 @@ async fn subscribing_again_replaces_the_subscription() {
     f.check(&key, &view);
 
     client.hang_up().await;
-    for seed in 3..3 + u64::from(CONFIG.grace) + 1 {
+    for seed in 3..3 + u64::from(GRACE_BLOCKS) + 1 {
         f.mine(seed).await;
     }
     assert!(!f.tracked(&key).await, "no count left behind");
@@ -889,7 +929,7 @@ async fn a_refused_replace_ends_the_old_subscription() {
     );
     f.mine(0).await;
     assert!(client.texts().await.is_empty(), "the old subscription sends nothing");
-    for seed in 1..=u64::from(CONFIG.grace) {
+    for seed in 1..=u64::from(GRACE_BLOCKS) {
         f.mine(seed).await;
     }
     assert!(!f.tracked(&key).await, "and no longer counts");
@@ -928,7 +968,7 @@ fn idle_socket() -> (TestSocket, mpsc::Sender<Message>, mpsc::Receiver<Message>)
 /// never running the new subscribe.
 #[tokio::test(start_paused = true)]
 async fn a_replace_keeps_the_key_tracked_until_the_new_subscribe_is_answered() {
-    let config = engine::Config { grace: 0, ..CONFIG };
+    let config = engine::Config { grace: Duration::ZERO, ..CONFIG };
     let mut f = Fixture::with(config, Settled::now()).await;
     let key = f.tree_key(0);
     let echo = protocol::ClientKey::Address(f.address(0));
@@ -957,6 +997,42 @@ async fn a_replace_keeps_the_key_tracked_until_the_new_subscribe_is_answered() {
         .unwrap();
     f.mine(2).await;
     assert!(!f.tracked(&key).await, "ended by the unsubscribe");
+}
+
+/// Closing a connection ends what the engine still has registered for it, not only its live
+/// subscriptions: a replaced one held while its replacement runs, and a subscribe the
+/// engine answered that the connection never joined. Every key is then idle from the close.
+#[tokio::test(start_paused = true)]
+async fn a_closed_connection_ends_held_and_unjoined_subscriptions() {
+    let f = Fixture::new().await;
+    let (replaced, unjoined) = (f.tree_key(0), f.tree_key(1));
+    let echo = |i| protocol::ClientKey::Address(f.address(i));
+    let (socket, _to_server, _from_server) = idle_socket();
+    let mut connection = connection(&f, socket);
+    let subscribe = |i, from| ClientMessage::Subscribe { key: echo(i), from, id: None };
+
+    // Key 0: live, then replaced by a subscribe that never runs.
+    connection.on_message(subscribe(0, None)).await.unwrap();
+    let joined = connection.pending.join_next().await.unwrap();
+    connection.on_opened(joined).await.unwrap();
+    let tip = f.sim.lock().tip();
+    connection
+        .on_message(subscribe(0, Some(tip)))
+        .await
+        .unwrap();
+    connection.pending.abort_all();
+    while connection.pending.join_next().await.is_some() {}
+    // Key 1: subscribed by the engine, its answer never joined.
+    connection.on_message(subscribe(1, None)).await.unwrap();
+    sleep(QUIET).await;
+    assert!(f.tracked(&replaced).await && f.tracked(&unjoined).await);
+
+    connection.close().await;
+    f.clock.advance(CONFIG.evict_after);
+    let Reply::Stats(stats) = f.engine.query(Query::Stats).await.unwrap() else {
+        panic!("a stats reply");
+    };
+    assert_eq!(stats.evictable_boxes, stats.tracked_boxes, "no subscription left behind");
 }
 
 /// A socket that records the order of its reads and writes, with `reads` pongs ready to read
@@ -1176,7 +1252,7 @@ async fn an_unsubscribe_stops_the_messages_at_once() {
     client.unsubscribe(echo).await;
     f.mine(0).await;
     assert!(client.texts().await.is_empty());
-    for seed in 1..=u64::from(CONFIG.grace) {
+    for seed in 1..=u64::from(GRACE_BLOCKS) + 1 {
         f.mine(seed).await;
     }
     assert!(!f.tracked(&key).await, "idle once unsubscribed, while the client stays");
@@ -1195,7 +1271,7 @@ async fn an_unsubscribe_discards_a_pending_subscribe() {
     client.subscribe(echo.clone(), None).await;
     client.unsubscribe(echo).await;
     assert!(client.texts().await.is_empty());
-    for seed in 0..=u64::from(CONFIG.grace) {
+    for seed in 0..=u64::from(GRACE_BLOCKS) {
         f.mine(seed).await;
     }
     assert!(!f.tracked(&key).await);
@@ -1365,7 +1441,7 @@ async fn a_client_that_never_reads_is_dropped_after_the_write_timeout() {
     assert!(!client.server.is_finished(), "still waiting on the write");
     sleep(Duration::from_secs(2)).await;
     assert!(client.server.is_finished(), "dropped");
-    for seed in 3..4 + u64::from(CONFIG.grace) {
+    for seed in 3..4 + u64::from(GRACE_BLOCKS) {
         f.mine(seed).await;
     }
     assert!(!f.tracked(&key).await, "its subscription ended with it");

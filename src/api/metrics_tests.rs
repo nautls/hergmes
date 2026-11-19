@@ -22,6 +22,8 @@ fn sizes() -> Stats {
         tracked_boxes: 40,
         ring_blocks: 5,
         ring_boxes: 11,
+        evictable_boxes: 6,
+        evicted_keys: 9,
     }
 }
 
@@ -57,6 +59,8 @@ fn every_series_is_written_with_the_engines_sizes() {
         "hergmes_rejections_total{transport=\"rest\",code=\"invalid_limit\"} 1",
         "hergmes_rejections_total{transport=\"ws\",code=\"too_many_boxes\"} 2",
         "hergmes_resyncs_total{reason=\"slow_consumer\"} 1",
+        "hergmes_evictable_boxes 6",
+        "hergmes_evicted_keys_total 9",
         "hergmes_ring_blocks 5",
         "hergmes_ring_boxes 11",
         "hergmes_tracked_boxes 40",

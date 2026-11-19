@@ -47,8 +47,8 @@ pub struct Config {
     /// The wait after a load returned a box that does not match the key. That is a node
     /// fault; each retry is a full reload, so it is spaced well apart.
     pub mismatch_retry: Duration,
-    /// The wait after the total cap refused the key. Room is made only as idle keys are
-    /// untracked, a block at a time, and a retry reads pages until it is past the room.
+    /// The wait after the total cap refused the key. Room is made only as keys go idle past
+    /// the engine's `evict_after`, and a retry reads pages until it is past the room.
     pub capacity_retry: Duration,
 }
 
@@ -215,8 +215,8 @@ impl<S: NodeSource> Keeper<S> {
                     return Ok(false);
                 }
                 error @ LoadError::CapacityExceeded { .. } => {
-                    // Room is made as idle keys are untracked. An exemption from the cap would
-                    // need a second path in the engine.
+                    // Room is made as keys go idle and can be evicted. An exemption from the
+                    // cap would need a second path in the engine.
                     let wait = self.config.capacity_retry;
                     warn!(?key, %error, ?wait, "Configured key refused by the cap, trying again");
                     wait

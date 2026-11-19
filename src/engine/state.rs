@@ -5,6 +5,7 @@ use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque},
     ops::Bound,
     sync::Arc,
+    time::Duration,
 };
 
 use tracing::debug;
@@ -21,22 +22,40 @@ use crate::{
 
 /// How far back the engine can serve, how long it keeps idle keys, and how many boxes it
 /// tracks.
+///
+/// The window is counted in blocks, since what it bounds (replays, rollbacks, pinned pages)
+/// is counted in blocks. The idle times are counted on the engine's clock, since what they
+/// protect is a client's gap between requests, and block intervals vary too much for that:
+/// two blocks can come seconds apart, or ten minutes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Config {
     /// How many blocks of deltas the ring buffer keeps. It bounds replay on reconnect,
     /// rollbacks, and pages pinned to an earlier block.
     pub window: u32,
-    /// How many blocks a key with no subscribers is kept after its last activity.
-    pub grace: u32,
+    /// How long a key with no subscribers is kept after its last activity. Checked at each
+    /// block, so a key can stay up to a block longer.
+    pub grace: Duration,
+    /// How long a key with no subscribers must be idle before a load may evict it, so a
+    /// client between two requests that belong together (the pages of one walk) keeps its
+    /// key.
+    pub evict_after: Duration,
     /// The most boxes tracked over all keys, a box held by two keys counted twice (each is
     /// an entry of the reverse index). Checked when a key is loaded, never afterwards: a
-    /// tracked key grows from blocks, and dropping it would break its subscribers.
+    /// tracked key grows from blocks, and dropping it would break its subscribers. A load
+    /// past it first evicts idle keys (see `Engine::evictable`), which would leave after
+    /// the grace period anyway, so idle keys never stand in the way of active ones.
     pub max_tracked_boxes: usize,
 }
 
 impl Config {
-    /// About a day of blocks, ten minutes of grace, and about 290 MB of ids.
-    pub const DEFAULT: Self = Self { window: 720, grace: 5, max_tracked_boxes: 2_000_000 };
+    /// About a day of blocks, ten minutes of grace, a minute before eviction, and about
+    /// 290 MB of ids.
+    pub const DEFAULT: Self = Self {
+        window: 720,
+        grace: Duration::from_secs(10 * 60),
+        evict_after: Duration::from_secs(60),
+        max_tracked_boxes: 2_000_000,
+    };
 }
 
 impl Default for Config {
@@ -59,9 +78,9 @@ struct KeyState {
     /// The engine's block count when the key was loaded (see [`BlockDelta::seq`]).
     loaded_seq: u64,
     subscribers: u32,
-    /// The tip height at the key's last activity: its load, a subscribe or unsubscribe, or a
-    /// read.
-    last_activity: u32,
+    /// The engine's clock at the key's last activity, in ms: its load, a subscribe or
+    /// unsubscribe, or a read.
+    last_seen_ms: u64,
     /// The pending delta of the last `balance` sent. The confirmed half is `totals`. Always
     /// empty for a token key.
     pending_sent: PendingDelta,
@@ -84,6 +103,12 @@ pub struct Engine {
     /// Reverted blocks, kept to roll a client on their branch back to the fork point.
     orphans: HashMap<HeaderId, BlockDelta>,
     mempool: Mempool,
+    /// Keys evicted to make room for a load, for the metrics.
+    evicted_keys: u64,
+    /// The engine's clock, in ms from an origin only the caller knows. The engine never reads
+    /// a clock: the engine task sets it before each message (see [`Engine::set_now`]), so a
+    /// run fed the same messages at the same times is replayed exactly.
+    now_ms: u64,
 }
 
 impl Engine {
@@ -100,7 +125,15 @@ impl Engine {
             ring: VecDeque::new(),
             orphans: HashMap::new(),
             mempool: Mempool::default(),
+            evicted_keys: 0,
+            now_ms: 0,
         }
+    }
+
+    /// Sets the engine's clock, as time since an origin the caller keeps fixed. It never goes
+    /// back: an earlier time is ignored, so a key is never seen as more recent than it was.
+    pub fn set_now(&mut self, now: Duration) {
+        self.now_ms = self.now_ms.max(millis(now));
     }
 
     pub fn tip(&self) -> Option<BlockRef> {
@@ -172,10 +205,8 @@ impl Engine {
                 Reply::Balance(self.balance(&key))
             }
             Query::Tip => Reply::Tip(self.tip),
-            Query::Capacity(key) => {
-                let capacity =
-                    Capacity { tracked: self.reverse.len(), max: self.config.max_tracked_boxes };
-                Reply::Capacity((!self.is_tracked(&key)).then_some(capacity))
+            Query::Capacity { key, up_to } => {
+                Reply::Capacity((!self.is_tracked(&key)).then(|| self.capacity(up_to)))
             }
             Query::Chain => Reply::Chain(
                 self.ring
@@ -204,6 +235,8 @@ impl Engine {
             tracked_boxes: self.reverse.len(),
             ring_blocks: self.ring.len(),
             ring_boxes: self.ring.iter().map(|d| d.boxes.len()).sum(),
+            evictable_boxes: self.evictable().map(|(_, _, boxes)| boxes).sum(),
+            evicted_keys: self.evicted_keys,
         }
     }
 
@@ -321,18 +354,16 @@ impl Engine {
         self.orphans.retain(|_, o| o.block.height > floor);
 
         // Untrack idle keys before deciding the overlays: their boxes are no longer checked.
+        let grace = millis(self.config.grace);
         let idle: Vec<TrackingKey> = self
             .keys
             .values()
-            .filter(|s| {
-                s.subscribers == 0
-                    && block_ref.height.saturating_sub(s.last_activity) > self.config.grace
-            })
+            .filter(|s| s.subscribers == 0 && self.now_ms.saturating_sub(s.last_seen_ms) > grace)
             .map(|s| s.key.clone())
             .collect();
         for key in idle {
-            let last_activity = self.keys[&self.ids[&key]].last_activity;
-            debug!(?key, last_activity, height = block_ref.height, "Untracking idle key");
+            let idle_ms = self.now_ms - self.keys[&self.ids[&key]].last_seen_ms;
+            debug!(?key, idle_ms, height = block_ref.height, "Untracking idle key");
             self.untrack(&key);
             before.retain(|id, _| self.keys.contains_key(id));
         }
@@ -455,11 +486,27 @@ impl Engine {
             debug!(?key, ?as_of, "Load of an already tracked key ignored");
             return Vec::new();
         }
-        // The reverse index holds one entry per tracked box and key: the total.
-        let capacity = Capacity { tracked: self.reverse.len(), max: self.config.max_tracked_boxes };
-        if !capacity.fits(boxes.len()) {
-            let tracked = capacity.tracked;
-            return vec![Output::CapacityExceeded { key, tracked, boxes: boxes.len() }];
+        // The reverse index holds one entry per tracked box and key: the total. Idle keys are
+        // looked for only past the cap, so a load that fits costs no walk of every key.
+        let (tracked, max) = (self.reverse.len(), self.config.max_tracked_boxes);
+        if tracked.saturating_add(boxes.len()) > max {
+            let mut idle: Vec<(u64, KeyId, usize)> = self.evictable().collect();
+            let evictable = idle.iter().map(|&(_, _, boxes)| boxes).sum();
+            if !(Capacity { tracked, evictable, max }).fits(boxes.len()) {
+                let boxes = boxes.len();
+                return vec![Output::CapacityExceeded { key, tracked, evictable, boxes }];
+            }
+            idle.sort_unstable();
+            for (last_seen_ms, key_id, _) in idle {
+                if self.reverse.len() + boxes.len() <= max {
+                    break;
+                }
+                let evicted = self.keys[&key_id].key.clone();
+                let idle_ms = self.now_ms - last_seen_ms;
+                debug!(?evicted, idle_ms, for_key = ?key, "Evicting idle key for a load");
+                self.untrack(&evicted);
+                self.evicted_keys += 1;
+            }
         }
         debug!(?key, height = as_of.height, boxes = boxes.len(), "Tracking key");
         let key_id = KeyId(self.next_id);
@@ -471,7 +518,7 @@ impl Engine {
             since: as_of,
             loaded_seq: self.seq,
             subscribers: 0,
-            last_activity: as_of.height,
+            last_seen_ms: self.now_ms,
             pending_sent: PendingDelta::default(),
         };
         for b in &boxes {
@@ -511,11 +558,38 @@ impl Engine {
         outputs
     }
 
+    /// The room for a load of at most `up_to` boxes. Idle keys' room is counted only if such
+    /// a load could pass the cap: below that it changes no answer, and counting it walks
+    /// every key. With the defaults, that is only past 1.95M tracked boxes.
+    fn capacity(&self, up_to: usize) -> Capacity {
+        let (tracked, max) = (self.reverse.len(), self.config.max_tracked_boxes);
+        let evictable = if tracked.saturating_add(up_to) > max {
+            self.evictable().map(|(_, _, boxes)| boxes).sum()
+        } else {
+            0
+        };
+        Capacity { tracked, evictable, max }
+    }
+
+    /// The keys a load may evict, with their last activity and box counts: no subscribers,
+    /// so no stream breaks, and idle for `evict_after`, so a client between two requests
+    /// that belong together keeps its key. Configured keys always have their keeper's
+    /// subscription. Evicted least recently active first, then oldest load first.
+    fn evictable(&self) -> impl Iterator<Item = (u64, KeyId, usize)> {
+        let after = millis(self.config.evict_after);
+        self.keys
+            .iter()
+            .filter(move |(_, s)| {
+                s.subscribers == 0 && self.now_ms.saturating_sub(s.last_seen_ms) >= after
+            })
+            .map(|(&id, s)| (s.last_seen_ms, id, s.boxes.len()))
+    }
+
     /// Records activity on a tracked key, and returns its state.
     fn touch(&mut self, key: &TrackingKey) -> Option<&mut KeyState> {
-        let height = self.tip.map_or(0, |t| t.height);
+        let now = self.now_ms;
         let state = self.keys.get_mut(self.ids.get(key)?)?;
-        state.last_activity = height;
+        state.last_seen_ms = now;
         Some(state)
     }
 
@@ -848,6 +922,12 @@ fn changed_balance(
     }
     state.pending_sent = pending.clone();
     Some(Balance { as_of: tip, confirmed: totals.clone(), pending })
+}
+
+/// A duration in whole ms, the unit of the engine's clock. Past `u64::MAX` ms (584 million
+/// years) it saturates.
+fn millis(d: Duration) -> u64 {
+    u64::try_from(d.as_millis()).unwrap_or(u64::MAX)
 }
 
 #[cfg(test)]

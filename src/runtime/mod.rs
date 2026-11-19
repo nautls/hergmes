@@ -5,4 +5,6 @@ pub mod keeper;
 pub mod task;
 
 pub use keeper::{Keeper, Pending, Settled, settling};
-pub use task::{Handle, Routed, Sink, Subscription, SubscriptionId, spawn};
+pub use task::{
+    Clock, Handle, ManualClock, Routed, Sink, Subscription, SubscriptionId, spawn, spawn_with_clock,
+};

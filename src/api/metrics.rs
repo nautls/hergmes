@@ -7,7 +7,7 @@
 //! Counters are counted where a refusal or a resync goes out to a client. Sizes are read
 //! when the route is scraped, so nothing is kept up to date between scrapes.
 
-use std::sync::Arc;
+use std::sync::{Arc, atomic::Ordering};
 
 use axum::{
     Router,
@@ -72,6 +72,8 @@ struct Inner {
     tracked_boxes: Gauge,
     ring_blocks: Gauge,
     ring_boxes: Gauge,
+    evictable_boxes: Gauge,
+    evicted_keys: Counter,
     resident_memory: Gauge,
 }
 
@@ -82,8 +84,9 @@ impl Metrics {
         let rejections = Family::<Rejection, Counter>::default();
         let resyncs = Family::<Resync, Counter>::default();
         let tracked_keys = Family::<KeyKind, Gauge>::default();
-        let [tracked_boxes, ring_blocks, ring_boxes, resident_memory] =
-            [(); 4].map(|()| Gauge::default());
+        let [tracked_boxes, ring_blocks, ring_boxes, evictable_boxes, resident_memory] =
+            [(); 5].map(|()| Gauge::default());
+        let evicted_keys = Counter::default();
         // The encoder adds a counter's `_total`.
         registry.register(
             "hergmes_rejections",
@@ -108,6 +111,16 @@ impl Metrics {
             ring_boxes.clone(),
         );
         registry.register(
+            "hergmes_evictable_boxes",
+            "Tracked boxes held by idle keys, which a load may evict",
+            evictable_boxes.clone(),
+        );
+        registry.register(
+            "hergmes_evicted_keys",
+            "Idle keys evicted to make room for a load",
+            evicted_keys.clone(),
+        );
+        registry.register(
             "process_resident_memory_bytes",
             "Resident memory",
             resident_memory.clone(),
@@ -121,6 +134,8 @@ impl Metrics {
             tracked_boxes,
             ring_blocks,
             ring_boxes,
+            evictable_boxes,
+            evicted_keys,
             resident_memory,
         }))
     }
@@ -165,6 +180,13 @@ impl Metrics {
         inner.tracked_boxes.set(gauge(stats.tracked_boxes));
         inner.ring_blocks.set(gauge(stats.ring_blocks));
         inner.ring_boxes.set(gauge(stats.ring_boxes));
+        inner.evictable_boxes.set(gauge(stats.evictable_boxes));
+        // The engine keeps the count; the largest seen is kept, so a scrape that read the
+        // engine before another one encoded never moves the counter back.
+        inner
+            .evicted_keys
+            .inner()
+            .fetch_max(stats.evicted_keys, Ordering::Relaxed);
         // 0 where the platform has no `/proc`: an absent series would need a second registry.
         inner
             .resident_memory

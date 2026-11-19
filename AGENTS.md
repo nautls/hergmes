@@ -57,9 +57,11 @@ NodeSource (trait)  ──►  Engine (pure state machine)  ──►  Transport
  test: SimChain           Engine::query(Query) -> Reply
 ```
 
-- `src/engine/` has no I/O and no clock: no async, no time, no randomness. Anything time-like is
-  counted in blocks (e.g. the untracking grace period), so the engine is deterministic and
-  replayable in the simulator.
+- `src/engine/` has no I/O and never reads a clock: no async, no randomness. Time comes in as
+  data: the engine task sets a monotonic time on the engine before each message
+  (`Engine::set_now`), and tests and the simulator drive a `ManualClock`, so the engine stays
+  deterministic and replayable. Idle times (the grace period, the wait before eviction) are on
+  that clock; what the chain bounds (the ring window) is counted in blocks.
 - Adapters (`src/adapters/`) do all I/O. They stay thin: fetch, stamp with the observed tip, and
   send events to the engine.
 - The engine refuses events that are not about its tip (`EngineError`) and changes nothing; the

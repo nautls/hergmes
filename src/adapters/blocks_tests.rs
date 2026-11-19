@@ -25,7 +25,11 @@ impl Fixture {
         let sim = SimChain::new(chain);
         Self {
             consumer: BlockConsumer::new(sim.clone()),
-            engine: Mutex::new(Engine::new(Config { window, grace: 100, ..Config::DEFAULT })),
+            engine: Mutex::new(Engine::new(Config {
+                window,
+                grace: crate::sim::testing::blocks(100),
+                ..Config::DEFAULT
+            })),
             sim,
         }
     }

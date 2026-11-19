@@ -49,7 +49,7 @@ variables instead, without a file: `ERGO_NODE_URL`, `HERGMES_LISTEN_ADDR` and
 | ---------------------------------- | -------------- | --------------------------------------------------------------------------------- |
 | `node_url`                         |                | URL of an indexed Ergo node (required); or `ERGO_NODE_URL`                        |
 | `window_blocks`                    | 720            | Blocks of deltas kept for replays, rollbacks and pinned pages                     |
-| `grace_blocks`                     | 5              | Blocks a key with no subscribers stays tracked                                    |
+| `grace_secs`                       | 600            | Seconds a key with no subscribers stays tracked after its last read               |
 | `poll_interval_ms`                 | 1000           | How often the node's status is read to spot a new block or mempool change         |
 | `mempool_refresh_ms`               | 10000          | Most time between full mempool fetches, even if the node's status shows no change |
 | `token_supply_limit`               | 100            | Largest token emission that can be tracked                                        |
@@ -112,8 +112,8 @@ An unlimited hard limit leaves the soft one as it is.
 
 Set `metrics_addr` (e.g. `"127.0.0.1:9100"`) to serve Prometheus metrics on `GET /metrics`,
 on an address of its own and never on the public one: tracked keys by kind, tracked boxes, the
-ring buffer's and the box cache's sizes, cache hits and misses, resident memory, and refusals and
-resyncs by reason. They are counts only and name no address or token.
+ring buffer's and the box cache's sizes, cache hits and misses, the boxes idle keys hold and the
+keys evicted, resident memory, and refusals and resyncs by reason. They are counts only and name no address or token.
 
 ## Sizing
 
@@ -130,6 +130,13 @@ with what is tracked and connected:
 | An idle WebSocket connection | about 8 KiB   | the open-file limit                                      |
 
 Resident memory sits above these live figures, by what the allocator keeps.
+
+At the cap, a load first evicts keys with no subscribers that have been idle for a minute, least
+recently active first, and is refused with `capacity_exceeded` only if all of them together
+can't make room. Idle keys would leave after `grace_secs` anyway, so they never stand in the way
+of active ones, and the minute keeps a client's key between requests that belong together, such
+as the pages of one walk. `hergmes_evictable_boxes` shows the room they hold, and
+`hergmes_evicted_keys_total` how many went.
 
 To track more, raise `max_tracked_boxes` and `box_cache_mb` together. At the defaults the cache
 holds about a tenth of the tracked boxes and answers about 99% of lookups. A larger cap with the

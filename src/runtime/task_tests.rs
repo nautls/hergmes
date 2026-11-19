@@ -29,8 +29,14 @@ use crate::{
     sim::{Chain, SimChain, SimConfig, SimOp, strategy, testing::new_chain},
 };
 
+/// The engine's clock moves a second per follower tick, and per block in the hand-driven
+/// tests.
+const STEP: Duration = Duration::from_secs(1);
+/// The grace period, in [`STEP`]s.
+const GRACE_STEPS: u32 = 2;
 /// Small enough that reorgs reach past the window and keys go idle.
-const CONFIG: Config = Config { window: 4, grace: 2, ..Config::DEFAULT };
+const CONFIG: Config =
+    Config { window: 4, grace: Duration::from_secs(GRACE_STEPS as u64), ..Config::DEFAULT };
 const MAX_REORG: u8 = 5;
 const CASES: u32 = 1_000;
 
@@ -227,12 +233,22 @@ impl Reference {
 struct Mirror<'a> {
     task: &'a Handle,
     reference: &'a Mutex<Reference>,
+    clock: &'a ManualClock,
+}
+
+impl Mirror<'_> {
+    /// The reference, on the task's clock.
+    fn reference(&self) -> std::sync::MutexGuard<'_, Reference> {
+        let mut reference = self.reference.lock().unwrap();
+        reference.engine.set_now(self.clock.now());
+        reference
+    }
 }
 
 impl EngineHandle for Mirror<'_> {
     async fn apply(&self, event: Event) -> Result<Result<Vec<Output>, EngineError>, EngineGone> {
         let got = self.task.apply(event.clone()).await?;
-        let mut reference = self.reference.lock().unwrap();
+        let mut reference = self.reference();
         if matches!(event, Event::BlockApplied(_)) {
             reference.sweep();
         }
@@ -248,7 +264,7 @@ impl EngineHandle for Mirror<'_> {
 
     async fn query(&self, query: Query) -> Result<Reply, EngineGone> {
         let got = self.task.query(query.clone()).await?;
-        let want = self.reference.lock().unwrap().engine.query(query);
+        let want = self.reference().engine.query(query);
         assert_eq!(got, want, "the task's reply differs from the engine's");
         Ok(got)
     }
@@ -266,18 +282,20 @@ struct Harness {
     follower: Follower<SimChain>,
     loader: Loader<SimChain>,
     now: Instant,
+    clock: ManualClock,
 }
 
 impl Harness {
     fn new() -> Self {
         let sim = SimChain::new(Chain::new(SimConfig::default()));
+        let clock = ManualClock::default();
         Self {
             follower: Follower::new(sim.clone(), follower::Config::default()),
             loader: Loader::new(
                 sim.clone(),
                 loader::Config { page_limit: 2, ..Default::default() },
             ),
-            task: spawn(Engine::new(CONFIG)).0,
+            task: spawn_with_clock(Engine::new(CONFIG), Clock::Manual(clock.clone())).0,
             reference: Mutex::new(Reference {
                 engine: Engine::new(CONFIG),
                 next: 0,
@@ -288,24 +306,27 @@ impl Harness {
             ids: Vec::new(),
             tips: Vec::new(),
             now: Instant::now(),
+            clock,
             sim,
         }
     }
 
     fn mirror(&self) -> Mirror<'_> {
-        Mirror { task: &self.task, reference: &self.reference }
+        Mirror { task: &self.task, reference: &self.reference, clock: &self.clock }
     }
 
     async fn run(&mut self, op: &Op) {
         match op {
             Op::Chain(op) => self.sim.lock().apply(op),
             Op::Tick => {
-                let mirror = Mirror { task: &self.task, reference: &self.reference };
+                let mirror =
+                    Mirror { task: &self.task, reference: &self.reference, clock: &self.clock };
                 match self.follower.tick(&mirror, self.now).await {
                     Ok(_) | Err(AdapterError::Node(NodeError::Unavailable { .. })) => {}
                     Err(error) => panic!("unexpected tick error: {error}"),
                 }
-                self.now += Duration::from_secs(1);
+                self.now += STEP;
+                self.clock.advance(STEP);
                 if let Reply::Tip(Some(tip)) = self.mirror().query(Query::Tip).await.unwrap()
                     && self.tips.last() != Some(&tip)
                 {
@@ -329,11 +350,7 @@ impl Harness {
                     .map(|i| *i.get(&self.tips));
                 let (sink, receiver) = mpsc::channel(*capacity);
                 let got = self.task.subscribe(key.clone(), from, sink).await.unwrap();
-                let want = self
-                    .reference
-                    .lock()
-                    .unwrap()
-                    .subscribe(key, from, *capacity);
+                let want = self.mirror().reference().subscribe(key, from, *capacity);
                 assert_eq!(got, want);
                 if let Subscription::Live { id, .. } = got {
                     self.receivers.insert(id.0, receiver);
@@ -344,7 +361,7 @@ impl Harness {
                 if !self.ids.is_empty() {
                     let id = *index.get(&self.ids);
                     self.task.unsubscribe(SubscriptionId(id)).await.unwrap();
-                    self.reference.lock().unwrap().unsubscribe(id);
+                    self.mirror().reference().unsubscribe(id);
                 }
             }
             Op::Drain(index) => {
@@ -461,24 +478,27 @@ fn random_histories_reach_the_routing_cases() {
     }
 }
 
-/// A chain mined a little, and an engine task synced to its tip.
-async fn synced() -> (SimChain, Handle, JoinHandle<()>) {
+/// A chain mined a little, and an engine task synced to its tip, on a clock the blocks move.
+async fn synced() -> (SimChain, Handle, JoinHandle<()>, ManualClock) {
     let mut chain = new_chain();
     chain.mine(0, 2, 1);
     let sim = SimChain::new(chain);
-    let (handle, task) = spawn(Engine::new(CONFIG));
+    let clock = ManualClock::default();
+    let (handle, task) = spawn_with_clock(Engine::new(CONFIG), Clock::Manual(clock.clone()));
     let tip = sim.lock().tip();
     BlockConsumer::new(sim.clone())
         .sync(&handle, tip)
         .await
         .unwrap();
-    (sim, handle, task)
+    (sim, handle, task, clock)
 }
 
-async fn mine_and_sync(sim: &SimChain, engine: &Handle, blocks: usize) {
+/// Mines `blocks` blocks, each a [`STEP`] after the last, and syncs the engine to them.
+async fn mine_and_sync(sim: &SimChain, engine: &Handle, clock: &ManualClock, blocks: u32) {
     let consumer = BlockConsumer::new(sim.clone());
     for seed in 0..blocks {
-        let tip = sim.lock().mine(0, 1, seed as u64);
+        clock.advance(STEP);
+        let tip = sim.lock().mine(0, 1, seed.into());
         consumer.sync(engine, tip).await.unwrap();
     }
 }
@@ -489,7 +509,7 @@ async fn is_tracked(engine: &Handle, key: &TrackingKey) -> bool {
 
 #[tokio::test]
 async fn a_stopped_task_answers_engine_gone() {
-    let (sim, engine, task) = synced().await;
+    let (sim, engine, task, _clock) = synced().await;
     task.abort();
     assert!(task.await.unwrap_err().is_cancelled());
 
@@ -511,7 +531,7 @@ async fn a_stopped_task_answers_engine_gone() {
 
 #[tokio::test]
 async fn a_subscriber_that_leaves_before_its_reply_is_unsubscribed() {
-    let (sim, engine, _task) = synced().await;
+    let (sim, engine, _task, clock) = synced().await;
     let keys = sim.lock().keys();
     let loader = Loader::new(sim.clone(), loader::Config::default());
     for key in &keys[..2] {
@@ -528,14 +548,14 @@ async fn a_subscriber_that_leaves_before_its_reply_is_unsubscribed() {
     let live = engine.subscribe(keys[1].clone(), None, sink).await.unwrap();
     assert!(matches!(live, Subscription::Live { .. }));
 
-    mine_and_sync(&sim, &engine, CONFIG.grace as usize + 1).await;
+    mine_and_sync(&sim, &engine, &clock, GRACE_STEPS + 1).await;
     assert!(!is_tracked(&engine, &keys[0]).await, "the abandoned subscribe left no count");
     assert!(is_tracked(&engine, &keys[1]).await);
 }
 
 #[tokio::test]
 async fn outputs_reach_subscribers_before_the_apply_returns() {
-    let (sim, engine, _task) = synced().await;
+    let (sim, engine, _task, _clock) = synced().await;
     let key = sim.lock().keys()[0].clone();
     Loader::new(sim.clone(), loader::Config::default())
         .load(&engine, &key)
@@ -571,7 +591,7 @@ async fn outputs_reach_subscribers_before_the_apply_returns() {
 
 #[tokio::test]
 async fn a_subscriber_that_leaves_a_quiet_key_lets_it_go_idle() {
-    let (sim, engine, _task) = synced().await;
+    let (sim, engine, _task, clock) = synced().await;
     let key = sim.lock().keys()[0].clone();
     Loader::new(sim.clone(), loader::Config::default())
         .load(&engine, &key)
@@ -583,8 +603,10 @@ async fn a_subscriber_that_leaves_a_quiet_key_lets_it_go_idle() {
     drop(receiver);
 
     // Empty blocks: the key's balance never changes, so nothing is ever sent to the sink.
+    // The closed sink is swept at the first block, and the grace period counts from there.
     let consumer = BlockConsumer::new(sim.clone());
-    for _ in 0..=CONFIG.grace {
+    for _ in 0..=GRACE_STEPS + 1 {
+        clock.advance(STEP);
         let tip = sim.lock().mine_txs(Vec::new());
         consumer.sync(&engine, tip).await.unwrap();
     }
@@ -593,7 +615,7 @@ async fn a_subscriber_that_leaves_a_quiet_key_lets_it_go_idle() {
 
 #[tokio::test]
 async fn a_rejected_load_goes_only_to_its_caller() {
-    let (sim, engine, _task) = synced().await;
+    let (sim, engine, _task, _clock) = synced().await;
     let key = sim.lock().keys()[0].clone();
     Loader::new(sim.clone(), loader::Config::default())
         .load(&engine, &key)
@@ -642,9 +664,9 @@ async fn a_load_past_the_cap_goes_back_to_its_caller() {
         .load(&engine, &key)
         .await
         .unwrap_err();
-    assert!(
-        matches!(*error, LoadError::CapacityExceeded { tracked: 0, boxes: b } if b == boxes),
-        "{error:?}"
-    );
+    let LoadError::CapacityExceeded { tracked, evictable, boxes: refused } = *error else {
+        panic!("{error:?}");
+    };
+    assert_eq!((tracked, evictable, refused), (0, 0, boxes));
     assert!(!is_tracked(&engine, &key).await);
 }

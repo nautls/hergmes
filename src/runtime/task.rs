@@ -12,6 +12,10 @@
 //! anything else never sends a key's output before the tip it came with. It is not a key's
 //! output: every connection gets it, subscribed or not, and only the latest matters.
 //!
+//! The task is also the engine's clock: it sets the engine's time before each message, from
+//! a monotonic clock, or from a [`ManualClock`] in tests and the simulator, so idle times
+//! are measured without the engine reading a clock.
+//!
 //! The task also keeps the engine's subscriber counts. It sends `Subscribed` and
 //! `Unsubscribed` itself, once per subscription it registers and ends, so the counts can't
 //! drift from the registry: a subscription the engine ended with `resync_required` was
@@ -20,7 +24,11 @@
 
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
-    sync::{Arc, OnceLock},
+    sync::{
+        Arc, OnceLock,
+        atomic::{AtomicU64, Ordering},
+    },
+    time::{Duration, Instant},
 };
 
 use tokio::{
@@ -95,14 +103,55 @@ pub struct Handle {
     tip: watch::Receiver<Option<BlockRef>>,
 }
 
-/// Starts the engine task on the current runtime.
+/// Where the engine's time comes from.
+#[derive(Debug, Clone)]
+pub enum Clock {
+    /// Time since the task started, from the OS's monotonic clock: never tokio's, whose
+    /// paused clock jumps ahead whenever the runtime is idle.
+    Monotonic(Instant),
+    /// Time moved only by hand.
+    Manual(ManualClock),
+}
+
+impl Clock {
+    fn now(&self) -> Duration {
+        match self {
+            Self::Monotonic(start) => start.elapsed(),
+            Self::Manual(clock) => clock.now(),
+        }
+    }
+}
+
+/// A clock that stands still until moved, for tests and the simulator: idle times then
+/// depend on what a run does, not on how fast it runs. Clones share the time.
+#[derive(Debug, Clone, Default)]
+pub struct ManualClock(Arc<AtomicU64>);
+
+impl ManualClock {
+    /// Moves the clock forward by `by`, whole ms.
+    pub fn advance(&self, by: Duration) {
+        let ms = u64::try_from(by.as_millis()).unwrap_or(u64::MAX);
+        self.0.fetch_add(ms, Ordering::Relaxed);
+    }
+
+    pub fn now(&self) -> Duration {
+        Duration::from_millis(self.0.load(Ordering::Relaxed))
+    }
+}
+
+/// Starts the engine task on the current runtime, on the monotonic clock.
 ///
 /// The join handle ends with a panic if the engine panics. `main` watches it and exits: a
 /// panic can leave the engine half-changed, so it is never restarted in place.
 pub fn spawn(engine: Engine) -> (Handle, JoinHandle<()>) {
+    spawn_with_clock(engine, Clock::Monotonic(Instant::now()))
+}
+
+/// Starts the engine task with its time from `clock`.
+pub fn spawn_with_clock(engine: Engine, clock: Clock) -> (Handle, JoinHandle<()>) {
     let (inbox, messages) = mpsc::channel(INBOX);
     let (tip_sender, tip) = watch::channel(engine.tip());
-    let task = EngineTask { engine, router: Router::default(), tip: tip_sender };
+    let task = EngineTask { engine, clock, router: Router::default(), tip: tip_sender };
     (Handle { inbox, tip }, tokio::spawn(task.run(messages)))
 }
 
@@ -166,6 +215,7 @@ impl EngineHandle for Handle {
 
 struct EngineTask {
     engine: Engine,
+    clock: Clock,
     router: Router,
     tip: watch::Sender<Option<BlockRef>>,
 }
@@ -180,6 +230,7 @@ impl EngineTask {
     /// A reply whose caller has gone is dropped: the work is done either way, except for a
     /// subscribe, which is undone.
     fn handle(&mut self, message: Message) {
+        self.engine.set_now(self.clock.now());
         match message {
             Message::Apply(event, reply) => {
                 if matches!(event, Event::BlockApplied(_)) {
@@ -414,8 +465,11 @@ fn log(outputs: &[Output]) {
             }
             Output::ResyncRequired { key, reason } => info!(?key, ?reason, "Resync required"),
             Output::LoadRejected { key, as_of } => debug!(?key, ?as_of, "Load rejected"),
-            Output::CapacityExceeded { key, tracked, boxes } => {
-                info!(?key, tracked, boxes, "Load refused: the cap on tracked boxes is reached");
+            Output::CapacityExceeded { key, tracked, evictable, boxes } => {
+                info!(
+                    ?key,
+                    tracked, evictable, boxes, "Load refused: the cap on tracked boxes is reached"
+                );
             }
             Output::Mempool { key, pending, .. } => {
                 debug!(?key, txs = pending.len(), "Mempool overlay");

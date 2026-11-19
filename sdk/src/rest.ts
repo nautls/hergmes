@@ -59,7 +59,7 @@ const DEFAULT_RETRY_SECONDS = 1;
  * The relay's REST API. Each method answers the route's JSON as it came, and throws a
  * {@link RelayError} for any other status. A `503` is retried after its `Retry-After`, however
  * long, up to `maxAttempts` in all; the last error is thrown. `capacity_exceeded` is not: it
- * frees up only as idle keys leave, about a block, too long to hold a call.
+ * frees up only as keys go idle, a minute at the soonest, too long to hold a call.
  */
 export class RestClient {
   readonly #base: URL;

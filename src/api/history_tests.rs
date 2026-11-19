@@ -15,7 +15,8 @@ use crate::{
     types::{Digest, ergo::BoxId},
 };
 
-const ENGINE: EngineConfig = EngineConfig { window: 4, grace: 2, ..EngineConfig::DEFAULT };
+const ENGINE: EngineConfig =
+    EngineConfig { window: 4, grace: crate::sim::testing::blocks(2), ..EngineConfig::DEFAULT };
 const MAX_REORG: u8 = 5;
 const CASES: u32 = 3_000;
 const CONFIG: Config = Config { attempts: 3, retry: Duration::from_secs(1) };

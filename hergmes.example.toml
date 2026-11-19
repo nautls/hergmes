@@ -59,8 +59,10 @@
 # Blocks of deltas kept for replays, rollbacks and pinned pages.
 # window_blocks = 720
 
-# Blocks a key with no subscribers stays tracked.
-# grace_blocks = 5
+# Seconds a key with no subscribers stays tracked after its last read or unsubscribe, checked
+# at each block. A load past max_tracked_boxes can evict it sooner, once it has been idle for a
+# minute.
+# grace_secs = 600
 
 # Memory for full boxes kept to serve pages, in MiB; 0 disables it.
 # box_cache_mb = 128
@@ -68,6 +70,8 @@
 # Most boxes an address or token can have to be tracked.
 # max_boxes_per_key = 50000
 
-# Most boxes tracked over all keys. Memory grows about linearly with it: full at the default,
-# with about 100k keys on 1,000 connections, the relay held about 860 MiB resident.
+# Most boxes tracked over all keys. A load past it first evicts keys with no subscribers that
+# have been idle for a minute, least recently active first, and is refused only if they can't
+# make room. Memory grows about linearly with it: full at the default, with about 100k
+# keys on 1,000 connections, the relay held about 860 MiB resident.
 # max_tracked_boxes = 2000000

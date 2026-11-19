@@ -31,8 +31,9 @@ use crate::{
     types::ergo::{TokenId, UTxO},
 };
 
-/// Small enough that reorgs reach past the window and keys go idle between pages.
-const CONFIG: Config = Config { window: 4, grace: 2, ..Config::DEFAULT };
+/// Small enough that reorgs reach past the window and keys go idle between pages: the
+/// engine's clock moves a second per tick.
+const CONFIG: Config = Config { window: 4, grace: Duration::from_secs(2), ..Config::DEFAULT };
 const MAX_REORG: u8 = 5;
 const CASES: u32 = 1_000;
 const SUPPLY_LIMIT: u64 = 100;
@@ -109,6 +110,8 @@ struct Harness {
     follower: Follower<SimChain>,
     pages: Pages<SimChain>,
     now: tokio::time::Instant,
+    /// The engine's clock: a second per tick.
+    elapsed: Duration,
     snapshot: Option<Snapshot>,
     spend_during_fetch: Option<u64>,
     seen: Seen,
@@ -130,6 +133,7 @@ impl Harness {
             ),
             engine: Mutex::new(Engine::new(CONFIG)),
             now: tokio::time::Instant::now(),
+            elapsed: Duration::ZERO,
             snapshot: None,
             spend_during_fetch: None,
             seen: Seen::default(),
@@ -172,6 +176,8 @@ impl Harness {
     }
 
     fn tick(&mut self) {
+        self.elapsed += Duration::from_secs(1);
+        self.engine.lock().unwrap().set_now(self.elapsed);
         let tick =
             ready(self.follower.tick(&self.engine, self.now)).expect("SimChain serves /info");
         self.now += Duration::from_secs(1);
@@ -606,19 +612,20 @@ fn a_cursor_for_a_key_gone_idle_expires_without_a_load() {
     let key = tree_key(&sim, 0);
     let page = ready(pages.page(&engine, &key, None, Some(1))).unwrap();
     let cursor = page.next_cursor.expect("more than one box");
-    for seed in 0..=u64::from(Config::default().grace) {
-        let height = {
-            let mut chain = sim.lock();
-            chain.mine(0, 1, seed);
-            chain.height()
-        };
-        let block = sim.lock().oracle().indexed_block(height);
-        engine
-            .lock()
-            .unwrap()
-            .apply(Event::BlockApplied(block))
-            .unwrap();
-    }
+    // Idle past the grace period when the next block comes.
+    let idle = Config::default().grace + Duration::from_millis(1);
+    engine.lock().unwrap().set_now(idle);
+    let height = {
+        let mut chain = sim.lock();
+        chain.mine(0, 1, 0);
+        chain.height()
+    };
+    let block = sim.lock().oracle().indexed_block(height);
+    engine
+        .lock()
+        .unwrap()
+        .apply(Event::BlockApplied(block))
+        .unwrap();
     assert!(!engine.lock().unwrap().is_tracked(&key), "gone idle");
     let loads = count(&sim, Endpoint::UnspentByErgoTree);
     let error = ready(pages.page(&engine, &key, Some(&cursor), Some(1))).unwrap_err();

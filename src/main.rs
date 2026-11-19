@@ -119,7 +119,7 @@ async fn run(flag: Option<PathBuf>) -> Result<(), AppError> {
     info!(
         network = ?node.network(),
         window = config.engine.window,
-        grace = config.engine.grace,
+        grace = ?config.engine.grace,
         tracked = keys.len(),
         "Following the node"
     );

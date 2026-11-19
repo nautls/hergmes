@@ -312,8 +312,8 @@ fn a_key_over_the_per_key_cap_is_refused_without_paging_it_all() {
 }
 
 /// A key over the per-key cap is refused again with no node call until the refusal expires,
-/// then paged again. A refusal for the total cap is not remembered: it frees up as idle keys
-/// leave.
+/// then paged again. A refusal for the total cap is not remembered: it frees up as keys go
+/// idle.
 #[test]
 fn a_key_over_the_per_key_cap_is_remembered_for_a_while() {
     let ttl = Duration::from_millis(200);
@@ -366,7 +366,10 @@ fn a_load_past_the_cap_on_tracked_boxes_is_refused_and_seeds_nothing() {
     let cache = BoxCache::new(1 << 20);
     let loader = Loader::new(sim.clone(), Config::default()).seeding(cache.clone());
     let error = ready(loader.load(&engine, &key)).unwrap_err();
-    assert!(matches!(*error, LoadError::CapacityExceeded { tracked: 0, boxes: 4 }), "{error:?}");
+    assert!(
+        matches!(*error, LoadError::CapacityExceeded { tracked: 0, evictable: 0, boxes: 4 }),
+        "{error:?}"
+    );
     assert_eq!(count(&sim, Endpoint::Info), 1, "one attempt, stopped at its page, not retried");
     assert!(!engine.lock().unwrap().is_tracked(&key));
     assert!(cache.boxes().is_empty(), "nothing from a refused load");
@@ -392,10 +395,10 @@ fn a_load_past_the_room_left_stops_paging() {
         let sim = SimChain::new(chain);
         let loader = Loader::new(sim.clone(), Config { page_limit: 1, ..Config::default() });
         let error = ready(loader.load(&engine, &key)).unwrap_err();
-        assert!(
-            matches!(*error, LoadError::CapacityExceeded { tracked: 0, boxes } if boxes == room + 1),
-            "{error:?}"
-        );
+        let LoadError::CapacityExceeded { tracked, evictable, boxes } = *error else {
+            panic!("{error:?}");
+        };
+        assert_eq!((tracked, evictable, boxes), (0, 0, room + 1));
         assert_eq!(count(&sim, Endpoint::UnspentByToken), reads, "room for {room}");
         assert_eq!(count(&sim, Endpoint::Info), 1, "stopped before the second tip read");
         assert!(!engine.lock().unwrap().is_tracked(&key));
@@ -420,7 +423,10 @@ fn a_tracked_key_is_not_refused_for_room() {
     let sim = SimChain::new(chain);
     let loader = || Loader::new(sim.clone(), Config { page_limit: 1, ..Config::default() });
     assert!(matches!(ready(loader().load(&engine, &key)), Ok((_, 4))));
-    let reply = engine.lock().unwrap().query(Query::Capacity(key.clone()));
+    let reply = engine
+        .lock()
+        .unwrap()
+        .query(Query::Capacity { key: key.clone(), up_to: 4 });
     assert_eq!(reply, Reply::Capacity(None));
     assert!(matches!(ready(loader().load(&engine, &key)), Ok((_, 4))), "a duplicate");
 }

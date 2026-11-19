@@ -48,7 +48,7 @@ pub mod vars {
 pub mod keys {
     pub const NODE_URL: &str = "node_url";
     pub const WINDOW_BLOCKS: &str = "window_blocks";
-    pub const GRACE_BLOCKS: &str = "grace_blocks";
+    pub const GRACE_SECS: &str = "grace_secs";
     pub const POLL_INTERVAL_MS: &str = "poll_interval_ms";
     pub const MEMPOOL_REFRESH_MS: &str = "mempool_refresh_ms";
     pub const TOKEN_SUPPLY_LIMIT: &str = "token_supply_limit";
@@ -82,7 +82,7 @@ pub const BOX_CACHE_MB: u64 = 128;
 struct File {
     node_url: Option<String>,
     window_blocks: Option<u32>,
-    grace_blocks: Option<u32>,
+    grace_secs: Option<u64>,
     poll_interval_ms: Option<u64>,
     mempool_refresh_ms: Option<u64>,
     token_supply_limit: Option<u64>,
@@ -256,7 +256,11 @@ impl Config {
             node_url,
             engine: engine::Config {
                 window,
-                grace: file.grace_blocks.unwrap_or(engine_defaults.grace),
+                grace: file
+                    .grace_secs
+                    .map_or(engine_defaults.grace, Duration::from_secs),
+                // Not a setting: it protects requests that belong together, not a policy.
+                evict_after: engine_defaults.evict_after,
                 max_tracked_boxes: at_least_one(
                     keys::MAX_TRACKED_BOXES,
                     file.max_tracked_boxes,

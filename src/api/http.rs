@@ -49,7 +49,9 @@ use crate::{
 /// the service leaves out. A longer body is refused as `too_large` unread.
 const MAX_TX_BODY: usize = MAX_HEX_CHARS + 1024;
 
-/// `Retry-After` for `capacity_exceeded`: about one block, which is when idle keys leave.
+/// `Retry-After` for `capacity_exceeded`. Room frees only as keys go idle past the engine's
+/// `evict_after` (a minute by default), so a sooner retry finds none; twice that leaves time
+/// for more keys to go idle.
 pub const CAPACITY_RETRY: Duration = Duration::from_secs(120);
 /// `Retry-After` for a `503` that carries no wait of its own: a node `503` without the
 /// header, or a box no source had. About one follower tick, after which the engine has

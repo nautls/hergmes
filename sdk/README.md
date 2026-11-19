@@ -125,7 +125,7 @@ const { transactionId } = await relay.rest.submitTransaction(signedTx);
 Every method takes a `signal` to cancel it. A response other than 2xx throws a `RelayError`
 with its `status`, `code`, `reason` (why the node refused a tx) and `retryAfter`. A `503` is
 retried after its `Retry-After`, up to `maxAttempts` in all, except
-`capacity_exceeded`, which frees up only as idle keys leave.
+`capacity_exceeded`, which frees up only as keys go idle.
 
 ```ts
 try {

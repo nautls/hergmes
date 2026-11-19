@@ -54,7 +54,7 @@ use crate::{
         ws,
     },
     engine::{self, BlockRef, Engine, TrackingKey},
-    runtime::{Handle, Settled, spawn},
+    runtime::{Clock, Handle, ManualClock, Settled, spawn_with_clock},
     sim::{
         Chain, HistoryEntry, SimChain, SimConfig, SimOp, reference_delta, strategy, timestamp,
         totals,
@@ -71,9 +71,19 @@ pub fn chain() -> Chain {
 }
 
 /// The engine's settings: a window and grace period small enough that a few ops reach a fork
-/// beyond the window and an idle key untracked.
-pub const ENGINE: engine::Config =
-    engine::Config { window: 8, grace: 3, ..engine::Config::DEFAULT };
+/// beyond the window and an idle key untracked. The engine's clock moves [`TICK_TIME`] per
+/// follower tick, so the grace period is three ticks and eviction waits for one.
+pub const ENGINE: engine::Config = engine::Config {
+    window: 8,
+    grace: Duration::from_secs(3 * TICK_TIME.as_secs()),
+    evict_after: TICK_TIME,
+    ..engine::Config::DEFAULT
+};
+
+/// How far a follower tick moves the engine's clock. Ticks come only when a test asks, so
+/// idle times follow what the test does, not how fast it runs: a replayed seed untracks the
+/// same keys.
+pub const TICK_TIME: Duration = Duration::from_secs(120);
 
 /// The relay's waits for a follower tick (a load's, a balance's, a history page's retries).
 /// Ticks come only when a test asks, so waiting longer would only make a request that can't
@@ -92,6 +102,7 @@ const NETWORK: Network = Network::Mainnet;
 /// The chain, the engine and the follower behind the API, driven by the control routes.
 pub struct SimRelay {
     sim: SimChain,
+    clock: ManualClock,
     engine: Handle,
     /// Locked for a whole tick, so ticks never overlap.
     follower: tokio::sync::Mutex<Follower<SimChain>>,
@@ -112,7 +123,8 @@ impl SimRelay {
     /// router serves the relay's API and the control routes.
     pub async fn start(chain: Chain) -> (Router, Arc<Self>, JoinHandle<()>) {
         let sim = SimChain::new(chain);
-        let (engine, task) = spawn(Engine::new(ENGINE));
+        let clock = ManualClock::default();
+        let (engine, task) = spawn_with_clock(Engine::new(ENGINE), Clock::Manual(clock.clone()));
         let cache = BoxCache::new(1 << 20);
         let follower = Follower::new(
             sim.clone(),
@@ -145,6 +157,7 @@ impl SimRelay {
         });
         let relay = Arc::new(Self {
             sim,
+            clock,
             engine,
             follower: tokio::sync::Mutex::new(follower),
             checkpoint: Mutex::default(),
@@ -190,6 +203,7 @@ impl SimRelay {
     /// node's tip and took its mempool.
     pub async fn tick(&self) -> Result<(Option<BlockRef>, bool), Gone> {
         let mut follower = self.follower.lock().await;
+        self.clock.advance(TICK_TIME);
         let ops = self.checkpoint().ops;
         let synced = match follower.tick(&self.engine, Instant::now()).await {
             Ok(tick) => {

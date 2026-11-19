@@ -19,7 +19,8 @@ use crate::{
 };
 
 /// Small enough that reorgs reach past the window and keys go idle.
-const CONFIG: Config = Config { window: 4, grace: 2, ..Config::DEFAULT };
+const CONFIG: Config =
+    Config { window: 4, grace: crate::sim::testing::blocks(2), ..Config::DEFAULT };
 const MAX_REORG: u8 = 5;
 const CASES: u32 = 2_000;
 

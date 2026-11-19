@@ -109,12 +109,15 @@ pub(crate) async fn engine_tip(engine: &impl EngineHandle) -> Result<Option<Bloc
     }
 }
 
-/// The room a load of `key` may take, or `None` if the key is tracked.
+/// The room a load of `key`, of at most `up_to` boxes, may take, or `None` if the key is
+/// tracked.
 pub(crate) async fn engine_capacity(
     engine: &impl EngineHandle,
     key: &TrackingKey,
+    up_to: usize,
 ) -> Result<Option<Capacity>, EngineGone> {
-    match engine.query(Query::Capacity(key.clone())).await? {
+    let query = Query::Capacity { key: key.clone(), up_to };
+    match engine.query(query).await? {
         Reply::Capacity(capacity) => Ok(capacity),
         other => unreachable!("`Query::Capacity` answered {other:?}"),
     }

@@ -5,6 +5,7 @@ use std::{
     pin::{Pin, pin},
     sync::Mutex,
     task::{Context, Poll, Waker},
+    time::Duration,
 };
 
 use proptest::{
@@ -25,6 +26,15 @@ use crate::{
 
 /// A page holding every box.
 pub const ALL: Page = Page { offset: 0, limit: MAX_PAGE_LIMIT };
+
+/// The time a test's block stands for, mainnet's target: a test that mines `n` blocks
+/// moves its engine's clock by `blocks(n)`, so idle times read as a count of blocks.
+pub const BLOCK_TIME: Duration = Duration::from_secs(120);
+
+/// `n` blocks of [`BLOCK_TIME`].
+pub const fn blocks(n: u64) -> Duration {
+    Duration::from_secs(BLOCK_TIME.as_secs() * n)
+}
 
 pub fn new_chain() -> Chain {
     Chain::new(SimConfig::default())

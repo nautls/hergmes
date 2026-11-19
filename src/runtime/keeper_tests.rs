@@ -8,22 +8,39 @@ use super::*;
 use crate::{
     adapters::{BlockConsumer, EngineGone, EngineHandle, loader},
     engine::{self, Engine, PageIds, Query, Reply},
-    runtime::spawn,
-    sim::{Chain, Endpoint, SimChain, SimConfig, token_id},
+    runtime::{Clock, ManualClock, spawn, spawn_with_clock},
+    sim::{
+        Chain, Endpoint, SimChain, SimConfig,
+        testing::{BLOCK_TIME, blocks},
+        token_id,
+    },
 };
 
-const CONFIG: engine::Config = engine::Config { window: 4, grace: 2, ..engine::Config::DEFAULT };
+/// The grace period, in blocks of [`BLOCK_TIME`]: [`mine`] moves the clock by one per block.
+const GRACE_BLOCKS: u32 = 2;
+const CONFIG: engine::Config =
+    engine::Config { window: 4, grace: blocks(GRACE_BLOCKS as u64), ..engine::Config::DEFAULT };
 const RETRY: Duration = Duration::from_secs(5);
 
 /// A chain mined a little, with an indexer that recovers from a reorg at once, and an engine
-/// task synced to its tip.
-async fn synced() -> (SimChain, Handle, JoinHandle<()>) {
+/// task synced to its tip, on a clock that [`mine`] moves.
+async fn synced() -> (SimChain, Handle, JoinHandle<()>, ManualClock) {
     let mut chain = Chain::new(SimConfig { recovery_reads: 0, ..SimConfig::default() });
     chain.mine(0, 2, 1);
     let sim = SimChain::new(chain);
-    let (engine, task) = spawn(Engine::new(CONFIG));
+    let clock = ManualClock::default();
+    let (engine, task) = spawn_with_clock(Engine::new(CONFIG), Clock::Manual(clock.clone()));
     sync(&sim, &engine).await;
-    (sim, engine, task)
+    (sim, engine, task, clock)
+}
+
+/// Mines `count` blocks, each a block's time after the last, and syncs the engine to them.
+async fn mine(sim: &SimChain, engine: &Handle, clock: &ManualClock, count: u32) {
+    for seed in 0..count {
+        clock.advance(BLOCK_TIME);
+        sim.lock().mine(0, 1, seed.into());
+        sync(sim, engine).await;
+    }
 }
 
 async fn sync(sim: &SimChain, engine: &Handle) {
@@ -90,7 +107,7 @@ async fn tracked_at_tip(sim: &SimChain, engine: &Handle, key: &TrackingKey) {
 
 #[tokio::test(start_paused = true)]
 async fn a_configured_key_outlives_the_grace_period() {
-    let (sim, engine, _task) = synced().await;
+    let (sim, engine, _task, clock) = synced().await;
     let keys = sim.lock().keys();
     let (kept, loaded) = (&keys[0], &keys[1]);
     let _keeper = keep(&keeper(&sim, &engine), kept);
@@ -100,17 +117,14 @@ async fn a_configured_key_outlives_the_grace_period() {
         .await
         .unwrap();
 
-    for seed in 0..CONFIG.grace + 2 {
-        sim.lock().mine(0, 1, seed.into());
-        sync(&sim, &engine).await;
-    }
+    mine(&sim, &engine, &clock, GRACE_BLOCKS + 2).await;
     assert!(tracked(&engine, kept).await.is_some(), "the keeper's subscription holds it");
     assert!(tracked(&engine, loaded).await.is_none(), "a key no one holds goes idle");
 }
 
 #[tokio::test(start_paused = true)]
 async fn a_key_dropped_with_its_load_block_is_loaded_again() {
-    let (sim, engine, _task) = synced().await;
+    let (sim, engine, _task, _clock) = synced().await;
     let key = TrackingKey::Token(token_id("small-100"));
     let keeper = keep(&keeper(&sim, &engine), &key);
     tracked_at_tip(&sim, &engine, &key).await;
@@ -132,7 +146,7 @@ async fn a_key_dropped_with_its_load_block_is_loaded_again() {
 
 #[tokio::test(start_paused = true)]
 async fn a_token_above_the_supply_limit_is_given_up_alone() {
-    let (sim, engine, _task) = synced().await;
+    let (sim, engine, _task, _clock) = synced().await;
     let keeper = keeper(&sim, &engine);
     let large = keep(&keeper, &TrackingKey::Token(token_id("over-101")));
     let small = TrackingKey::Token(token_id("small-100"));
@@ -147,7 +161,7 @@ async fn a_token_above_the_supply_limit_is_given_up_alone() {
 
 /// A chain mined a little, and an engine task synced to it that has room for the small
 /// token's boxes and nothing more.
-async fn room_for_the_small_token() -> (SimChain, Handle, JoinHandle<()>) {
+async fn room_for_the_small_token() -> (SimChain, Handle, JoinHandle<()>, ManualClock) {
     let mut chain = Chain::new(SimConfig { recovery_reads: 0, ..SimConfig::default() });
     chain.mine(0, 2, 1);
     let sim = SimChain::new(chain);
@@ -156,16 +170,17 @@ async fn room_for_the_small_token() -> (SimChain, Handle, JoinHandle<()>) {
     let token_boxes = sim.lock().oracle().load(&small, tip.height).len();
     assert!(token_boxes > 3);
     let config = engine::Config { max_tracked_boxes: token_boxes, ..CONFIG };
-    let (engine, task) = spawn(Engine::new(config));
+    let clock = ManualClock::default();
+    let (engine, task) = spawn_with_clock(Engine::new(config), Clock::Manual(clock.clone()));
     sync(&sim, &engine).await;
-    (sim, engine, task)
+    (sim, engine, task, clock)
 }
 
 /// A key over the per-key cap is given up alone, and settles; the key that fits stays
 /// tracked.
 #[tokio::test(start_paused = true)]
 async fn a_key_over_the_per_key_cap_is_given_up_alone() {
-    let (sim, engine, _task) = room_for_the_small_token().await;
+    let (sim, engine, _task, _clock) = room_for_the_small_token().await;
     let small = TrackingKey::Token(token_id("small-100"));
     let keeper = |max_boxes| {
         Arc::new(Keeper::new(
@@ -192,7 +207,7 @@ async fn a_key_over_the_per_key_cap_is_given_up_alone() {
 /// no one goes idle and makes room.
 #[tokio::test(start_paused = true)]
 async fn a_key_refused_by_the_total_cap_is_tracked_once_there_is_room() {
-    let (sim, engine, _task) = room_for_the_small_token().await;
+    let (sim, engine, _task, clock) = room_for_the_small_token().await;
     let small = TrackingKey::Token(token_id("small-100"));
     let tree = sim.lock().keys()[0].clone();
     assert!(matches!(tree, TrackingKey::Tree(_)));
@@ -212,10 +227,7 @@ async fn a_key_refused_by_the_total_cap_is_tracked_once_there_is_room() {
     assert!(tracked(&engine, &tree).await.is_none(), "refused while the cap is full");
     assert!(!kept.is_finished(), "a full cap is a wait, not a give-up");
 
-    for seed in 0..CONFIG.grace + 2 {
-        sim.lock().mine(0, 1, seed.into());
-        sync(&sim, &engine).await;
-    }
+    mine(&sim, &engine, &clock, GRACE_BLOCKS + 2).await;
     sleep(Config::default().capacity_retry).await;
     tracked_at_tip(&sim, &engine, &tree).await;
     assert!(tracked(&engine, &small).await.is_none(), "the client's key went idle");
@@ -225,7 +237,7 @@ async fn a_key_refused_by_the_total_cap_is_tracked_once_there_is_room() {
 /// does not, so the clients' loads wait with it.
 #[tokio::test(start_paused = true)]
 async fn a_key_settles_on_its_first_answer_and_not_while_the_engine_is_behind() {
-    let (sim, engine, _task) = synced().await;
+    let (sim, engine, _task, _clock) = synced().await;
     let key = sim.lock().keys()[0].clone();
     sim.lock().mine(0, 1, 9);
     let keeper = keeper(&sim, &engine);
@@ -265,7 +277,7 @@ fn settled_once_every_key_is() {
 
 #[tokio::test(start_paused = true)]
 async fn an_unknown_token_is_asked_again_and_kept_once_minted() {
-    let (sim, engine, _task) = synced().await;
+    let (sim, engine, _task, _clock) = synced().await;
     let owner = sim.lock().trees()[0].clone();
     let input = crate::sim::testing::box_of(&sim.lock(), 0);
     let key = TrackingKey::Token(input);
@@ -287,7 +299,7 @@ async fn an_unknown_token_is_asked_again_and_kept_once_minted() {
 async fn a_load_that_gave_up_is_tried_again_after_its_wait() {
     // The node is a block ahead of an engine that never catches up: every attempt reads
     // `/info` once and finds the engine behind.
-    let (sim, engine, _task) = synced().await;
+    let (sim, engine, _task, _clock) = synced().await;
     sim.lock().mine(0, 1, 9);
     let key = sim.lock().keys()[0].clone();
     let loader = loader::Config::default();
@@ -302,7 +314,7 @@ async fn a_load_that_gave_up_is_tried_again_after_its_wait() {
 
 #[tokio::test(start_paused = true)]
 async fn the_keeper_stops_when_the_engine_is_gone() {
-    let (sim, engine, task) = synced().await;
+    let (sim, engine, task, _clock) = synced().await;
     task.abort();
     let key = sim.lock().keys()[0].clone();
     assert_eq!(keep(&keeper(&sim, &engine), &key).await.unwrap(), Err(EngineGone));

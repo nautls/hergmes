@@ -27,7 +27,7 @@ pub enum Event {
     /// transport loads it first.
     Subscribed(TrackingKey),
     /// A client unsubscribed from a key or disconnected. A key with no subscribers is
-    /// untracked once it has been idle for the grace period, counted in blocks.
+    /// untracked once it has been idle for the grace period, on the engine's clock.
     Unsubscribed(TrackingKey),
 }
 
@@ -76,9 +76,13 @@ pub enum Query {
     /// A tracked address's balance at the tip, as the stream sends it. A token key has none.
     Balance(TrackingKey),
     Tip,
-    /// The room a load of the key may take under the cap on tracked boxes, or `None` if the
-    /// key is tracked: a duplicate load is never refused. Not activity for the key.
-    Capacity(TrackingKey),
+    /// The room a load of the key, of at most `up_to` boxes, may take under the cap on
+    /// tracked boxes, or `None` if the key is tracked: a duplicate load is never refused. Not
+    /// activity for the key.
+    Capacity {
+        key: TrackingKey,
+        up_to: usize,
+    },
     /// The blocks the engine can revert, oldest first, ending at the tip. The block consumer
     /// finds the fork point in it.
     Chain,
@@ -144,19 +148,28 @@ pub struct Stats {
     pub ring_blocks: usize,
     /// Full boxes the ring buffer's blocks hold.
     pub ring_boxes: usize,
+    /// Boxes held by the keys a load may evict, one per box and key.
+    pub evictable_boxes: usize,
+    /// Keys evicted to make room for a load, since the engine started.
+    pub evicted_keys: u64,
 }
 
-/// The boxes tracked, one per box and key, and the cap on them. A load of `n` boxes fits
-/// while `tracked + n <= max`.
+/// The boxes tracked, one per box and key, the part of them held by keys a load may evict,
+/// and the cap on them. A load of `n` boxes fits while `tracked - evictable + n <= max`: it
+/// takes the room it needs from idle keys, or is refused and evicts none.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Capacity {
     pub tracked: usize,
+    pub evictable: usize,
     pub max: usize,
 }
 
 impl Capacity {
     pub fn fits(&self, boxes: usize) -> bool {
-        self.tracked.saturating_add(boxes) <= self.max
+        self.tracked
+            .saturating_sub(self.evictable)
+            .saturating_add(boxes)
+            <= self.max
     }
 }
 
@@ -258,8 +271,10 @@ pub enum Output {
     /// A first load pinned to a block other than the tip; the loader retries.
     LoadRejected { key: TrackingKey, as_of: BlockRef },
     /// A first load refused because its `boxes` on top of the `tracked` ones would pass the
-    /// cap on tracked boxes. Nothing changed. It frees up as idle keys leave.
-    CapacityExceeded { key: TrackingKey, tracked: usize, boxes: usize },
+    /// cap on tracked boxes, even with the `evictable` ones (held by idle keys, counted in
+    /// `tracked`) gone. Nothing changed, no key was evicted. It frees up as subscribers leave
+    /// and their keys go idle.
+    CapacityExceeded { key: TrackingKey, tracked: usize, evictable: usize, boxes: usize },
 }
 
 impl Output {

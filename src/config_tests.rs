@@ -113,7 +113,7 @@ fn every_setting_is_read() {
     let config = config(&format!(
         r#"
         window_blocks = 30
-        grace_blocks = 0
+        grace_secs = 0
         poll_interval_ms = 250
         mempool_refresh_ms = 5000
         token_supply_limit = 7
@@ -131,7 +131,13 @@ fn every_setting_is_read() {
         "#
     ))
     .unwrap();
-    assert_eq!(config.engine, engine::Config { window: 30, grace: 0, max_tracked_boxes: 900 });
+    let engine = engine::Config {
+        window: 30,
+        grace: Duration::ZERO,
+        max_tracked_boxes: 900,
+        ..engine::Config::DEFAULT
+    };
+    assert_eq!(config.engine, engine);
     assert_eq!(config.loader.max_boxes, 40);
     assert_eq!(config.follower.interval, Duration::from_millis(250));
     assert_eq!(config.follower.mempool.refresh, Duration::from_secs(5));
@@ -213,7 +219,7 @@ fn bad_values_name_their_key() {
 fn mistyped_values_name_their_key() {
     for (key, value) in [
         ("window_blocks", "-1"),
-        ("grace_blocks", "\"five\""),
+        ("grace_secs", "\"five\""),
         ("mempool_refresh_ms", "1.5"),
         ("token_supply_limit", "\"lots\""),
         ("track_addresses", &format!("\"{MAINNET}\"")),
@@ -445,7 +451,7 @@ fn the_named_keys_are_the_file_keys() {
     let mut named = vec![
         keys::NODE_URL,
         keys::WINDOW_BLOCKS,
-        keys::GRACE_BLOCKS,
+        keys::GRACE_SECS,
         keys::POLL_INTERVAL_MS,
         keys::MEMPOOL_REFRESH_MS,
         keys::TOKEN_SUPPLY_LIMIT,

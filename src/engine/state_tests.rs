@@ -15,9 +15,16 @@ use crate::{
     },
 };
 
-/// Small enough that random histories reach the window and grace edges: reorgs go up to 5
-/// blocks deep.
-const CONFIG: Config = Config { window: 4, grace: 2, ..Config::DEFAULT };
+/// Small enough that random histories reach the window, idle and cap edges: reorgs go up to
+/// 5 blocks deep, `Advance` moves the clock up to [`MAX_ADVANCE_SECS`] at a time, and the
+/// simulator's keys hold about twice the cap.
+const CONFIG: Config = Config {
+    window: 4,
+    grace: Duration::from_secs(3),
+    evict_after: Duration::from_secs(2),
+    max_tracked_boxes: 12,
+};
+const MAX_ADVANCE_SECS: u8 = 2;
 const MAX_REORG: u8 = 5;
 const CASES: u32 = 5_000;
 
@@ -55,6 +62,8 @@ enum Op {
         key: Index,
         limit: u8,
     },
+    /// The engine's clock moves this many seconds.
+    Advance(u8),
 }
 
 fn op() -> impl Strategy<Value = Op> {
@@ -72,6 +81,7 @@ fn op() -> impl Strategy<Value = Op> {
         2 => (any::<Index>(), any::<Index>(), 1..5u8)
             .prop_map(|(key, at, limit)| Op::Page { key, at, limit }),
         2 => (any::<Index>(), 0..6u8).prop_map(|(key, limit)| Op::WithPool { key, limit }),
+        4 => (0..=MAX_ADVANCE_SECS).prop_map(Op::Advance),
     ]
 }
 
@@ -81,7 +91,8 @@ struct KeyModel {
     /// Counts loads, so a client can tell whether the key stayed tracked since its snapshot.
     epoch: u64,
     since: BlockRef,
-    activity: u32,
+    /// The clock at the key's last activity, in ms.
+    last_seen: u64,
     subscribers: u32,
     /// The last balance sent (or delivered with a catch-up), and the last overlay. A token
     /// key has no balance.
@@ -180,6 +191,10 @@ struct Harness {
     ring_len: u32,
     keys: BTreeMap<TrackingKey, KeyModel>,
     next_epoch: u64,
+    /// The engine's clock, in ms.
+    now: u64,
+    /// Keys evicted for a load so far.
+    evicted: u64,
     /// The snapshot the engine uses, as received, and the one it holds for a later block.
     held: Option<Arc<[UnconfirmedTransaction]>>,
     ahead: Option<(Arc<[UnconfirmedTransaction]>, BlockRef)>,
@@ -197,6 +212,8 @@ impl Harness {
             ring_len: 0,
             keys: BTreeMap::new(),
             next_epoch: 0,
+            now: 0,
+            evicted: 0,
             held: None,
             ahead: None,
             clients: Vec::new(),
@@ -259,6 +276,10 @@ impl Harness {
             Op::WithPool { key, limit } => {
                 let key = self.pick_key(key);
                 self.with_pool(&key, usize::from(*limit));
+            }
+            Op::Advance(secs) => {
+                self.now += u64::from(*secs) * 1000;
+                self.engine.set_now(Duration::from_millis(self.now));
             }
         }
         self.check();
@@ -352,23 +373,19 @@ impl Harness {
         }
 
         // Idle keys go; keys with subscribers or recent activity stay.
+        let grace = CONFIG.grace.as_millis() as u64;
+        let now = self.now;
         let idle: Vec<TrackingKey> = self
             .keys
             .iter()
-            .filter(|(_, m)| {
-                m.subscribers == 0 && block.height.saturating_sub(m.activity) > CONFIG.grace
-            })
+            .filter(|(_, m)| m.subscribers == 0 && now - m.last_seen > grace)
             .map(|(k, _)| k.clone())
             .collect();
         for key in idle {
             self.keys.remove(&key);
             self.seen.insert("idle key untracked");
         }
-        if self
-            .keys
-            .values()
-            .any(|m| block.height.saturating_sub(m.activity) > CONFIG.grace)
-        {
+        if self.keys.values().any(|m| now - m.last_seen > grace) {
             self.seen.insert("key kept by a subscriber");
         }
         self.check_emissions(&outputs, &before);
@@ -470,7 +487,8 @@ impl Harness {
             .load(key, as_of.height)
             .into_iter()
             .map(crate::engine::LoadedBox::from)
-            .collect();
+            .collect::<Vec<_>>();
+        let count = boxes.len();
         let before = self.expected_states();
         let tracked = self.keys.contains_key(key);
         let outputs = self.feed(Event::KeyLoaded { key: key.clone(), as_of, boxes });
@@ -480,14 +498,18 @@ impl Harness {
             return;
         }
         if tracked {
-            self.keys.get_mut(key).expect("tracked").activity = as_of.height;
+            self.keys.get_mut(key).expect("tracked").last_seen = self.now;
         } else {
+            if !self.make_room(key, count, as_of.height, &outputs) {
+                self.check_emissions(&outputs, &before);
+                return;
+            }
             let (balance, overlay) = self.expected(key);
             self.next_epoch += 1;
             let model = KeyModel {
                 epoch: self.next_epoch,
                 since: as_of,
-                activity: as_of.height,
+                last_seen: self.now,
                 subscribers: 0,
                 balance,
                 overlay,
@@ -495,6 +517,60 @@ impl Harness {
             self.keys.insert(key.clone(), model);
         }
         self.check_emissions(&outputs, &before);
+    }
+
+    /// The cap on tracked boxes, for a load of `count` boxes at `height`: past it, the idle
+    /// keys (no subscribers, idle for `evict_after`) go, least recently active and then
+    /// oldest load first, until the load fits. If even all of them would not make room, the
+    /// load is refused and none goes. Returns whether the load is taken.
+    fn make_room(
+        &mut self,
+        key: &TrackingKey,
+        count: usize,
+        height: u32,
+        outputs: &[Output],
+    ) -> bool {
+        let oracle = self.oracle();
+        let held = |k: &TrackingKey| oracle.unspent(k, height).len();
+        let tracked: usize = self.keys.keys().map(held).sum();
+        if tracked + count <= CONFIG.max_tracked_boxes {
+            return true;
+        }
+        let evict_after = CONFIG.evict_after.as_millis() as u64;
+        let mut idle: Vec<(u64, u64, TrackingKey, usize)> = self
+            .keys
+            .iter()
+            .filter(|(_, m)| m.subscribers == 0 && self.now - m.last_seen >= evict_after)
+            .map(|(k, m)| (m.last_seen, m.epoch, k.clone(), held(k)))
+            .collect();
+        let room: usize = idle.iter().map(|i| i.3).sum();
+        if tracked - room + count > CONFIG.max_tracked_boxes {
+            let refused = Output::CapacityExceeded {
+                key: key.clone(),
+                tracked,
+                evictable: room,
+                boxes: count,
+            };
+            assert_eq!(outputs, [refused], "refused, and nothing else changed");
+            self.seen.insert("load refused at the cap");
+            if room > 0 {
+                self.seen.insert("load refused though some keys were idle");
+            }
+            return false;
+        }
+        idle.sort();
+        let mut left = tracked;
+        for (_, _, evicted, boxes) in idle {
+            if left + count <= CONFIG.max_tracked_boxes {
+                self.seen.insert("idle key kept: the load fit without it");
+                break;
+            }
+            self.keys.remove(&evicted);
+            self.evicted += 1;
+            left -= boxes;
+            self.seen.insert("idle key evicted for a load");
+        }
+        true
     }
 
     /// Feeds an event, checks the order of its messages and delivers them.
@@ -572,7 +648,7 @@ impl Harness {
         assert!(outputs.is_empty());
         let model = self.keys.get_mut(&key).expect("tracked");
         model.subscribers += 1;
-        model.activity = tip.height;
+        model.last_seen = self.now;
 
         let from = (!balance_only).then_some(tip);
         let query = Query::CatchUp { key: key.clone(), from };
@@ -594,13 +670,13 @@ impl Harness {
         self.clients[i].live = false;
         self.clients[i].resumable = keep;
         assert!(self.feed(Event::Unsubscribed(key.clone())).is_empty());
-        let height = self.tip().height;
+        let now = self.now;
         let model = self
             .keys
             .get_mut(&key)
             .expect("a key with a subscriber is tracked");
         model.subscribers -= 1;
-        model.activity = height;
+        model.last_seen = now;
     }
 
     fn resume(&mut self, i: usize) {
@@ -619,15 +695,27 @@ impl Harness {
         let tip = self.tip();
         let model = self.keys.get_mut(&key).expect("tracked");
         model.subscribers += 1;
-        model.activity = tip.height;
+        model.last_seen = self.now;
 
         let client = &self.clients[i];
         let from = (!client.balance_only).then_some(client.tip);
+        // A key tracked again since the client left replays too, if the client's block is
+        // on the main chain at or above the new load: the key's boxes there are the same
+        // whichever load found them. Eviction can untrack and reload a key within a block.
+        let model = &self.keys[&key];
+        let reloaded_below = client.epoch != model.epoch
+            && self.fed.contains(&client.tip)
+            && client.tip.height >= model.since.height.max(self.floor());
         let expect_replay = client.balance_only
-            || (client.epoch == self.keys[&key].epoch
+            || reloaded_below
+            || (client.epoch == model.epoch
                 && self
                     .fork_point(client.tip)
                     .is_some_and(|f| f.height >= self.floor()));
+        if reloaded_below && !client.balance_only {
+            self.seen
+                .insert("replay to a client across a reload at or below its block");
+        }
         let Reply::CatchUp(outputs) = self.engine.query(Query::CatchUp { key: key.clone(), from })
         else {
             panic!("a catch-up reply");
@@ -707,7 +795,7 @@ impl Harness {
             assert_eq!(result, Err(PageError::NotTracked));
             return;
         };
-        model.activity = self.engine.tip().expect("a tracked key has a tip").height;
+        model.last_seen = self.now;
         let since = model.since;
         let on_main = self.fed.contains(&at);
         if !on_main || at.height < self.floor() || at.height < since.height {
@@ -733,12 +821,12 @@ impl Harness {
         let Reply::WithPool(reply) = self.engine.query(query) else {
             panic!("a with-pool reply");
         };
-        let tip = self.tip();
+        let (tip, now) = (self.tip(), self.now);
         let Some(model) = self.keys.get_mut(key) else {
             assert_eq!(reply, None);
             return;
         };
-        model.activity = tip.height;
+        model.last_seen = now;
         let (mut confirmed, pending) = self.reference_with_pool(key);
         let total = confirmed.len() + pending.len();
         let held = self.engine.keys[&self.engine.ids[key]].boxes.len();
@@ -914,6 +1002,15 @@ impl Harness {
             .map(|key| oracle.unspent(key, tip.height).len())
             .sum();
         let ring_boxes: usize = self.engine.ring.iter().map(|d| d.boxes.len()).sum();
+        let evictable_boxes: usize = self
+            .keys
+            .iter()
+            .filter(|(_, m)| {
+                m.subscribers == 0
+                    && self.now - m.last_seen >= CONFIG.evict_after.as_millis() as u64
+            })
+            .map(|(key, _)| oracle.unspent(key, tip.height).len())
+            .sum();
         let expected = Stats {
             tip: Some(tip),
             address_keys: addresses,
@@ -921,6 +1018,8 @@ impl Harness {
             tracked_boxes: boxes,
             ring_blocks: self.ring_len as usize,
             ring_boxes,
+            evictable_boxes,
+            evicted_keys: self.evicted,
         };
         assert_eq!(stats, expected, "stats");
         let ids: HashSet<BoxId> = utxo.values().map(|b| b.id).collect();
@@ -1224,6 +1323,10 @@ fn random_histories_reach_the_hard_engine_cases() {
         "tracked box created and spent within a block",
         "snapshot held for a block used",
         "idle key untracked",
+        "idle key evicted for a load",
+        "idle key kept: the load fit without it",
+        "load refused at the cap",
+        "load refused though some keys were idle",
         "ring ran out",
         "key dropped with its load block",
         "load rejected",
@@ -1231,6 +1334,7 @@ fn random_histories_reach_the_hard_engine_cases() {
         "resync: outside window",
         "resync: fork beyond window",
         "catch-up rolls back an orphaned branch",
+        "replay to a client across a reload at or below its block",
         "page cursor expired",
         "page at an earlier block restores spent boxes",
         "box held by two tracked keys",
@@ -1260,6 +1364,8 @@ fn random_histories_reach_the_hard_engine_cases() {
 struct Fixture {
     chain: Chain,
     engine: Engine,
+    /// The engine's clock: [`Fixture::mine`] moves it a block's time.
+    now: Duration,
 }
 
 impl Fixture {
@@ -1270,14 +1376,17 @@ impl Fixture {
         engine
             .apply(Event::BlockApplied(genesis))
             .expect("the first block");
-        Self { chain, engine }
+        Self { chain, engine, now: Duration::ZERO }
     }
 
     fn key(&self, tree: usize) -> TrackingKey {
         TrackingKey::Tree(self.chain.trees()[tree].clone())
     }
 
+    /// Mines a block of `txs`, a block's time after the last, and applies it.
     fn mine(&mut self, txs: Vec<Arc<sim::SimTx>>) -> Vec<Output> {
+        self.now += sim::testing::BLOCK_TIME;
+        self.engine.set_now(self.now);
         let block = self.chain.mine_txs(txs);
         let indexed = self.chain.oracle().indexed_block(block.height);
         self.engine
@@ -1455,7 +1564,14 @@ fn stats_count_keys_by_kind_boxes_and_the_ring() {
     let source = sim::testing::box_of(&f.chain, 0);
     let tx = f.chain.transfer(&[source], &f.chain.trees()[1].clone());
     f.mine(vec![tx]);
-    let moved = Stats { tip: f.engine.tip(), ring_blocks: 2, ring_boxes: 2, ..loaded };
+    // Neither key has been active since: a load may evict either.
+    let moved = Stats {
+        tip: f.engine.tip(),
+        ring_blocks: 2,
+        ring_boxes: 2,
+        evictable_boxes: boxes,
+        ..loaded
+    };
     assert_eq!(stats(&mut f), moved);
 }
 
@@ -1669,7 +1785,7 @@ fn a_token_key_has_no_balance() {
 /// even though the key is tracked again from the fork point.
 #[test]
 fn a_client_from_an_earlier_tracking_period_resyncs() {
-    let mut f = Fixture::new(Config { window: 10, grace: 0, ..Config::DEFAULT });
+    let mut f = Fixture::new(Config { window: 10, grace: Duration::ZERO, ..Config::DEFAULT });
     let zero = f.key(0);
     f.load(&zero);
     f.engine
@@ -1781,7 +1897,8 @@ fn a_pending_spend_of_a_box_a_block_spent_is_left_out() {
 
 #[test]
 fn the_chain_query_lists_the_ring_oldest_first() {
-    let mut f = Fixture::new(Config { window: 2, grace: 5, ..Config::DEFAULT });
+    let mut f =
+        Fixture::new(Config { window: 2, grace: sim::testing::blocks(5), ..Config::DEFAULT });
     let genesis = f.engine.tip().expect("a tip");
     let chain = |f: &mut Fixture| match f.engine.query(Query::Chain) {
         Reply::Chain(links) => links,
@@ -1805,7 +1922,8 @@ fn the_chain_query_lists_the_ring_oldest_first() {
 
 #[test]
 fn the_boxes_query_answers_from_the_ring_only() {
-    let mut f = Fixture::new(Config { window: 2, grace: 5, ..Config::DEFAULT });
+    let mut f =
+        Fixture::new(Config { window: 2, grace: sim::testing::blocks(5), ..Config::DEFAULT });
     let (zero, one) = (f.key(0), f.key(1));
     f.load(&zero);
     f.load(&one);
@@ -1854,7 +1972,12 @@ fn a_load_past_the_cap_on_tracked_boxes_is_refused() {
     let mut f = Fixture::new(Config { max_tracked_boxes: cap - 1, ..Config::default() });
     let [zero, one] = [0, 1].map(|t| f.key(t));
     f.load(&zero);
-    let refused = Output::CapacityExceeded { key: one.clone(), tracked: sizes[0], boxes: sizes[1] };
+    let refused = Output::CapacityExceeded {
+        key: one.clone(),
+        tracked: sizes[0],
+        evictable: 0,
+        boxes: sizes[1],
+    };
     assert_eq!(f.load(&one), [refused]);
     assert!(!f.engine.is_tracked(&one));
     assert_eq!(f.engine.reverse.len(), sizes[0], "nothing changed");
@@ -1866,16 +1989,138 @@ fn a_load_past_the_cap_on_tracked_boxes_is_refused() {
     assert!(f.engine.is_tracked(&one), "exactly at the cap: {outputs:?}");
     assert_eq!(f.load(&zero), [], "a duplicate is ignored");
     // The room a loader reads before paging: none for a tracked key, which is never refused.
-    let full = Capacity { tracked: cap, max: cap };
-    assert_eq!(f.engine.query(Query::Capacity(two.clone())), Reply::Capacity(Some(full)));
-    assert_eq!(f.engine.query(Query::Capacity(zero.clone())), Reply::Capacity(None));
+    let full = Capacity { tracked: cap, evictable: 0, max: cap };
+    let room = |key: &TrackingKey| Query::Capacity { key: key.clone(), up_to: sizes[2] };
+    assert_eq!(f.engine.query(room(&two)), Reply::Capacity(Some(full)));
+    assert_eq!(f.engine.query(room(&zero)), Reply::Capacity(None));
     assert!(full.fits(0) && !full.fits(1));
-    let refused = Output::CapacityExceeded { key: two.clone(), tracked: cap, boxes: sizes[2] };
+    let refused =
+        Output::CapacityExceeded { key: two.clone(), tracked: cap, evictable: 0, boxes: sizes[2] };
     assert_eq!(f.load(&two), [refused]);
 
     f.chain.mine(1, 1, 3);
     let as_of = f.chain.tip();
     assert_eq!(f.load(&two), [Output::LoadRejected { key: two, as_of }]);
+}
+
+/// Past the cap, a load evicts idle keys, least recently active first, and only as many as
+/// it needs. A key with a subscriber or idle for less than `evict_after` is never evicted
+/// (each block here is two minutes, past the default minute), and a load
+/// that all the idle keys together can't make room for is refused with none evicted. The
+/// room a loader reads before paging agrees with the load each time.
+#[test]
+fn a_load_past_the_cap_evicts_idle_keys_least_recently_active_first() {
+    let probe = Fixture::new(Config::default());
+    let height = probe.chain.height();
+    let size = |key: &TrackingKey| probe.chain.oracle().load(key, height).len();
+    let [zero, one, two, three] = [0, 1, 2, 3].map(|t| probe.key(t));
+    let [s0, s1, s2, s3] = [&zero, &one, &two, &three].map(size);
+    assert!(s3 <= s1, "key 3 fits in key 1's room");
+    let big = probe
+        .chain
+        .keys()
+        .into_iter()
+        .find(|k| size(k) > s0)
+        .expect("a key larger than key 0");
+    let cap = s0 + s1 + s2;
+
+    let mut f = Fixture::new(Config { max_tracked_boxes: cap, ..Config::default() });
+    let room = |f: &mut Fixture, key: &TrackingKey| {
+        let up_to = size(key);
+        match f.engine.query(Query::Capacity { key: key.clone(), up_to }) {
+            Reply::Capacity(Some(capacity)) => capacity,
+            other => panic!("{other:?}"),
+        }
+    };
+    let tracked = |f: &Fixture| [&zero, &one, &two, &three].map(|k| f.engine.is_tracked(k));
+    let evicted = |f: &mut Fixture| match f.engine.query(Query::Stats) {
+        Reply::Stats(stats) => stats.evicted_keys,
+        other => panic!("{other:?}"),
+    };
+    for key in [&zero, &one, &two] {
+        f.load(key);
+    }
+    // Just loaded: none has been idle for `evict_after` yet.
+    assert_eq!(room(&mut f, &three), Capacity { tracked: cap, evictable: 0, max: cap });
+    let refused =
+        Output::CapacityExceeded { key: three.clone(), tracked: cap, evictable: 0, boxes: s3 };
+    assert_eq!(f.load(&three), [refused]);
+
+    // Key 0 read a block later, key 2 subscribed two blocks later: only key 1, idle since its
+    // load, and key 0 are evictable, key 1 first.
+    f.mine(vec![]);
+    let _ = f.engine.query(Query::Balance(zero.clone()));
+    f.mine(vec![]);
+    f.engine
+        .apply(Event::Subscribed(two.clone()))
+        .expect("tracked");
+    let capacity = room(&mut f, &three);
+    assert_eq!(capacity, Capacity { tracked: cap, evictable: s0 + s1, max: cap });
+    assert!(capacity.fits(s3));
+    let outputs = f.load(&three);
+    assert!(f.engine.is_tracked(&three), "{outputs:?}");
+    assert_eq!(tracked(&f), [true, false, true, true], "key 1 alone made room");
+    assert_eq!(evicted(&mut f), 1);
+
+    // Key 0 is the only idle key left, and too small for `big`: refused, key 0 kept.
+    let capacity = room(&mut f, &big);
+    assert_eq!(capacity.evictable, s0, "key 3 just loaded, key 2 subscribed");
+    assert!(!capacity.fits(size(&big)));
+    let held = f.engine.reverse.len();
+    let refused = Output::CapacityExceeded {
+        key: big.clone(),
+        tracked: held,
+        evictable: s0,
+        boxes: size(&big),
+    };
+    assert_eq!(f.load(&big), [refused]);
+    assert_eq!(tracked(&f), [true, false, true, true], "nothing evicted");
+    assert_eq!(f.engine.reverse.len(), held);
+    assert_eq!(evicted(&mut f), 1);
+}
+
+/// The room a loader reads counts idle keys only when a load of the size it asks about could
+/// pass the cap: below that, their room changes no answer and counting it walks every key.
+#[test]
+fn the_room_counts_idle_keys_only_when_a_load_could_need_them() {
+    let probe = Fixture::new(Config::default());
+    let height = probe.chain.height();
+    let [zero, one, two] = [0, 1, 2].map(|t| probe.key(t));
+    let [s0, s1, s2] = [&zero, &one, &two].map(|k| probe.chain.oracle().load(k, height).len());
+    let cap = s0 + s1 + s2;
+
+    let mut f = Fixture::new(Config { max_tracked_boxes: cap, ..Config::default() });
+    f.load(&zero);
+    f.load(&one);
+    f.mine(vec![]);
+    let room = |f: &mut Fixture, up_to| match f
+        .engine
+        .query(Query::Capacity { key: two.clone(), up_to })
+    {
+        Reply::Capacity(Some(capacity)) => capacity,
+        other => panic!("{other:?}"),
+    };
+    let tracked = s0 + s1;
+    assert_eq!(room(&mut f, s2), Capacity { tracked, evictable: 0, max: cap }, "fits as it is");
+    let near = Capacity { tracked, evictable: s0 + s1, max: cap };
+    assert_eq!(room(&mut f, s2 + 1), near, "both keys idle since the block");
+}
+
+/// The engine's clock never goes back: an earlier time leaves it where it was, so a key read
+/// late is not seen as idle for longer than it was.
+#[test]
+fn the_clock_never_goes_back() {
+    let mut f = Fixture::new(Config::default());
+    let zero = f.key(0);
+    f.load(&zero);
+    let grace = Config::default().grace;
+    f.engine.set_now(grace);
+    f.engine.set_now(Duration::ZERO);
+    let _ = f.engine.query(Query::Balance(zero.clone()));
+    // The next block comes half a grace period after the read.
+    f.now = grace + grace / 2 - sim::testing::BLOCK_TIME;
+    f.mine(vec![]);
+    assert!(f.engine.is_tracked(&zero), "read at the grace period, not at zero");
 }
 
 #[test]
