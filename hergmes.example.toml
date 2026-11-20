@@ -62,7 +62,7 @@
 # Seconds a key with no subscribers stays tracked after its last read or unsubscribe, checked
 # at each block; at least 60. A load past max_tracked_boxes can evict it sooner, once it has
 # been idle for a minute.
-# grace_secs = 600
+# grace_secs = 3600
 
 # Memory for full boxes kept to serve pages, in MiB; 0 disables it.
 # box_cache_mb = 128

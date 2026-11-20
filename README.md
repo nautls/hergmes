@@ -49,7 +49,7 @@ variables instead, without a file: `ERGO_NODE_URL`, `HERGMES_LISTEN_ADDR` and
 | ---------------------------------- | -------------- | --------------------------------------------------------------------------------- |
 | `node_url`                         |                | URL of an indexed Ergo node (required); or `ERGO_NODE_URL`                        |
 | `window_blocks`                    | 720            | Blocks of deltas kept for replays, rollbacks and pinned pages                     |
-| `grace_secs`                       | 600            | Seconds a key with no subscribers stays tracked after its last read (at least 60) |
+| `grace_secs`                       | 3600           | Seconds a key with no subscribers stays tracked after its last read (at least 60) |
 | `poll_interval_ms`                 | 1000           | How often the node's status is read to spot a new block or mempool change         |
 | `mempool_refresh_ms`               | 10000          | Most time between full mempool fetches, even if the node's status shows no change |
 | `token_supply_limit`               | 100            | Largest token emission that can be tracked                                        |

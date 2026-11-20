@@ -56,12 +56,12 @@ pub struct Config {
 }
 
 impl Config {
-    /// About a day of blocks, ten minutes of grace, a minute before eviction, about 290 MB
+    /// About a day of blocks, an hour of grace, a minute before eviction, about 290 MB
     /// of ids, and an untrack of at most about 30 ms a block: three keys at the loader's
     /// default per-key cap.
     pub const DEFAULT: Self = Self {
         window: 720,
-        grace: Duration::from_secs(10 * 60),
+        grace: Duration::from_secs(60 * 60),
         evict_after: Duration::from_secs(60),
         max_tracked_boxes: 2_000_000,
         untrack_boxes_per_block: 50_000,

@@ -39,8 +39,8 @@ use crate::{
 /// in the engine, and about 7 MB of full boxes while it loads.
 pub const MAX_BOXES: usize = MAX_PAGE_LIMIT as usize - 1;
 
-/// How long a key over the per-key cap is answered `TooManyBoxes` without paging it again:
-/// the default grace period. A key gets under the cap only by many consolidation txs,
+/// How long a key over the per-key cap is answered `TooManyBoxes` without paging it again,
+/// ten minutes. A key gets under the cap only by many consolidation txs,
 /// so a wallet that just did waits at most this long, while a hot address over the cap costs
 /// one reload per this long rather than one per request.
 pub const REFUSAL_TTL: Duration = Duration::from_secs(10 * 60);
