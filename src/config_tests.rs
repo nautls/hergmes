@@ -40,7 +40,7 @@ fn defaults(config: &Config) {
     assert_eq!(config.engine, engine::Config::default());
     assert_eq!(config.follower, follower::Config::default());
     assert_eq!(config.loader, loader::Config::default());
-    assert_eq!(config.loader.max_boxes, 50_000);
+    assert_eq!(config.loader.max_boxes, 16_383);
     assert_eq!(config.engine.max_tracked_boxes, 2_000_000);
     assert_eq!(config.token_supply_limit, SUPPLY_LIMIT);
     assert_eq!(config.box_cache_bytes, 128 * 1024 * 1024);

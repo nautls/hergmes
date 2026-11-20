@@ -26,9 +26,14 @@ use crate::{
     types::ergo::{BoxId, IndexedBox, UTxO},
 };
 
-/// The default cap on a key's boxes: about 5.5 MB of ids in the engine, and about 20 MB of
-/// full boxes while it loads.
-pub const MAX_BOXES: usize = 50_000;
+/// The default cap on a key's boxes: the most that leave room in one page, so a key over it
+/// fills its first page and is refused there. The node reads every unspent box before a
+/// page's offset, one database read each, and slices (`Segment.retrieveUtxos`, node 6.0.8),
+/// so paging a key costs about `n² / (2 × page)` reads: on a mainnet node about 0.2 to 0.5 ms
+/// a box, so a fourth page of 16,384 took over the client's 30 s timeout, and a load that
+/// long often sees a block and starts over. About 2.2 MB of ids in the engine, and about 7 MB
+/// of full boxes while it loads.
+pub const MAX_BOXES: usize = MAX_PAGE_LIMIT as usize - 1;
 
 /// How long a key over the per-key cap is answered `TooManyBoxes` without paging it again:
 /// the default grace period. A key gets under the cap only by many consolidation txs,

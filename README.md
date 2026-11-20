@@ -59,7 +59,7 @@ variables instead, without a file: `ERGO_NODE_URL`, `HERGMES_LISTEN_ADDR` and
 | `deny_addresses`                   | `[]`           | Addresses clients may not name; deny wins over allow                              |
 | `allow_tokens`                     | omitted: any   | Token ids clients may name                                                        |
 | `box_cache_mb`                     | 128            | Memory for full boxes kept to serve pages, in MiB; 0 disables it                  |
-| `max_boxes_per_key`                | 50000          | Most boxes an address or token can have to be tracked                             |
+| `max_boxes_per_key`                | 16383          | Most boxes an address or token can have to be tracked: one node page              |
 | `max_tracked_boxes`                | 2000000        | Most boxes tracked over all keys; about 860 MiB resident when full                |
 | `listen_addr`                      | 127.0.0.1:8080 | IP and port of the REST API and the WebSocket; or `HERGMES_LISTEN_ADDR`           |
 | `allow_origins`                    | `["*"]`        | Browser pages and extensions that may use the API: origins and `"scheme://*"`     |

@@ -311,6 +311,15 @@ fn a_key_over_the_per_key_cap_is_refused_without_paging_it_all() {
     assert!(matches!(ready(loader.load(&engine, &key)), Ok((_, 4))));
 }
 
+/// By default a key over the cap is refused at its first page: a key with more boxes fills
+/// it. The node reads every box before a page's offset (`Segment.retrieveUtxos`), so each
+/// later page costs more than the one before, and a fourth took over the client's timeout.
+#[test]
+fn the_default_cap_is_one_page() {
+    assert_eq!(MAX_BOXES, MAX_PAGE_LIMIT as usize - 1);
+    assert_eq!(Config::default().page_limit, MAX_PAGE_LIMIT);
+}
+
 /// A key over the per-key cap is refused again with no node call until the refusal expires,
 /// then paged again. A refusal for the total cap is not remembered: it frees up as keys go
 /// idle.
