@@ -167,10 +167,11 @@ impl Default for Timings {
     }
 }
 
-/// Buckets from 10 µs, a cheap query, to 42 s, quadrupling: a long event shows apart from a
-/// queue of short ones, and a relay seconds behind apart from one that hangs.
+/// Buckets from 10 µs, a cheap query, to 42 s, doubling: a long event shows apart from a
+/// queue of short ones, a relay seconds behind apart from one that hangs, and a change that
+/// halves a time shows as one bucket down.
 fn seconds() -> Histogram {
-    Histogram::new(exponential_buckets(1e-5, 4.0, 12))
+    Histogram::new(exponential_buckets(1e-5, 2.0, 23))
 }
 
 /// A handle to the engine task. Cheap to clone; the task runs until every handle is dropped.

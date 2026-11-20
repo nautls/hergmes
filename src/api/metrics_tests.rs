@@ -128,7 +128,7 @@ async fn the_engine_tasks_messages_are_timed_by_kind() {
         .into_iter()
         .filter(|l| l.starts_with("hergmes_engine_inbox_wait_seconds_bucket"))
         .count();
-    assert_eq!(buckets, 13, "twelve bounds and +Inf: {text}");
+    assert_eq!(buckets, 24, "23 bounds and +Inf: {text}");
 }
 
 #[test]
