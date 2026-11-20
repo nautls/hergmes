@@ -689,8 +689,6 @@ async fn any_origin_may_read_responses_and_errors() {
     assert_eq!(refused.headers()[ACCESS_CONTROL_ALLOW_ORIGIN], "*");
 }
 
-// --- Box by id ---
-
 #[tokio::test(start_paused = true)]
 async fn a_box_by_id_is_served_alone_in_either_case() {
     let mut f = Fixture::new();
@@ -731,8 +729,6 @@ async fn a_box_by_id_is_outside_the_key_policy() {
     let body = f.ok(&format!("/v1/boxes/{}", held.id)).await;
     assert_eq!(body["boxId"], held.id.to_string());
 }
-
-// --- Token metadata ---
 
 /// Tokens in the wire shape, in request order, the unknown id left out; refused ids get
 /// their codes. Outside the key policy and the supply limit: a relay that admits no token
@@ -778,8 +774,6 @@ async fn token_metadata_is_served_for_any_token() {
         assert_eq!(f.error(&uri, StatusCode::BAD_REQUEST).await, code, "{uri}");
     }
 }
-
-// --- Transactions ---
 
 impl Fixture {
     async fn post(&self, uri: &str, body: impl Into<Body>) -> Response {

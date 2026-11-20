@@ -206,8 +206,6 @@ fn a_box_spent_by_both_sides_of_a_conflict_is_subtracted_once() {
     assert_eq!(pending_delta(&mempool, &order, &owner()).nano_ergs, -1);
 }
 
-// --- A tx's change for one address (history) ---
-
 fn valued(n: u8, owner: u8, value: u64, tokens: &[(u8, u64)]) -> UTxO {
     UTxO { value, ..utxo(n, 0, owner, tokens) }
 }

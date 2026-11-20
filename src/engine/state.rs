@@ -251,8 +251,6 @@ impl Engine {
         }
     }
 
-    // --- Blocks ---
-
     fn block_applied(&mut self, block: &IndexedBlock) -> Result<Vec<Output>, EngineError> {
         let block_ref = BlockRef::from(&block.header);
         if let Some(tip) = self.tip
@@ -501,8 +499,6 @@ impl Engine {
             .collect()
     }
 
-    // --- Keys ---
-
     fn key_loaded(
         &mut self,
         key: TrackingKey,
@@ -726,8 +722,6 @@ impl Engine {
         holders
     }
 
-    // --- Balances ---
-
     /// A tracked address's balance at the tip. `None` for a token key.
     fn balance(&self, key: &TrackingKey) -> Option<Balance> {
         let state = &self.keys[self.ids.get(key)?];
@@ -780,8 +774,6 @@ impl Engine {
             outputs.push(Output::Balance { key: key.clone(), balance });
         }
     }
-
-    // --- Reads ---
 
     /// The lowest height whose state the engine can still serve: the parent of the oldest
     /// block in the ring, or the tip when the ring is empty.

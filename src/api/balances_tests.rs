@@ -494,8 +494,6 @@ fn random_histories_reach_the_hard_balance_cases() {
     }
 }
 
-// --- Hand-driven ---
-
 /// A node and an engine at its tip, with a pending tx sending tree 0's first box to tree 1
 /// in the engine's snapshot.
 struct Fixture {

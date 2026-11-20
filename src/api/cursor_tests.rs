@@ -76,8 +76,6 @@ fn malformed_cursors_are_refused() {
     }
 }
 
-// --- History cursor ---
-
 fn tx_cursor(pos: u32, total: u32) -> TxCursor {
     TxCursor { anchor: Digest([3; 32]), pos, total }
 }

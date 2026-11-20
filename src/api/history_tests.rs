@@ -489,8 +489,6 @@ fn random_histories_reach_the_hard_history_cases() {
     }
 }
 
-// --- Hand-driven ---
-
 /// A node with three blocks paying tree 0, and an engine at its tip with the pool in use.
 struct Fixture {
     sim: SimChain,
@@ -871,8 +869,6 @@ async fn without_a_tip_the_first_page_is_confirmed_only() {
     assert!(!page.items.is_empty());
     assert!(page.items.iter().all(|i| i.included.is_some()));
 }
-
-// --- Over the recorded indexer JSON ---
 
 mod recorded {
     use std::collections::BTreeMap;

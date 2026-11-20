@@ -305,8 +305,6 @@ fn unspent_by_token_lists_every_box_holding_it() {
     );
 }
 
-// --- Address history ---
-
 fn history_ids(sim: &SimChain, tree: &ErgoTree, offset: u32, limit: u32) -> (Vec<TxId>, u32) {
     let page = ready(sim.address_transactions(tree, offset, limit)).unwrap();
     (page.items.iter().map(|t| t.id).collect(), page.total)

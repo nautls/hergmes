@@ -431,8 +431,6 @@ fn random_histories_reach_the_hard_paging_cases() {
     }
 }
 
-// --- Hand tests ---
-
 /// An engine at the chain's tip, and the page service over the chain with a cache of
 /// `cache` bytes.
 fn service(chain: Chain, cache: u64) -> (SimChain, Mutex<Engine>, Pages<SimChain>) {
@@ -772,8 +770,6 @@ fn node_errors_keep_their_code() {
     };
     assert_eq!(ApiError::from(&failed).code(), "node_error");
 }
-
-// --- Boxes with the pool ---
 
 /// Submits `txs` to the node and gives the engine the node's mempool, observed at its tip.
 fn submit(sim: &SimChain, engine: &Mutex<Engine>, txs: Vec<Arc<crate::sim::SimTx>>) {

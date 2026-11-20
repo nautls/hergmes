@@ -369,8 +369,6 @@ impl Chain {
         }
     }
 
-    // --- Reading the selected chain ---
-
     pub fn config(&self) -> &SimConfig {
         &self.config
     }
@@ -452,8 +450,6 @@ impl Chain {
     pub fn find_box(&self, id: &BoxId) -> Option<Arc<UTxO>> {
         self.boxes.get(id).cloned()
     }
-
-    // --- Building txs ---
 
     /// A tx spending `inputs` (any boxes ever built) into `outputs`.
     ///
@@ -608,8 +604,6 @@ impl Chain {
         outputs
     }
 
-    // --- Mining and reorgs ---
-
     /// Mines a block on the tip with up to `from_pool` pool txs (in pool order, each valid one
     /// taken with probability 3/4) and `fresh` new txs, which may spend outputs of earlier txs
     /// in the same block or boxes a pending tx also spends.
@@ -719,8 +713,6 @@ impl Chain {
         }
         depth
     }
-
-    // --- Mempool ---
 
     /// The pool in insertion order, including txs the node cannot resolve.
     pub fn pool(&self) -> &[Arc<SimTx>] {
@@ -918,8 +910,6 @@ impl Chain {
             }
         }
     }
-
-    // --- Indexer ---
 
     pub fn indexed_tip(&self) -> BlockRef {
         self.blocks[&self.indexer.tip].block_ref()

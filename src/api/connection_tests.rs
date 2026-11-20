@@ -380,8 +380,6 @@ fn token_key() -> (TrackingKey, Value) {
     (TrackingKey::Token(id), json!({ "tokenId": id.to_string() }))
 }
 
-// --- The handshake and the stream ---
-
 #[tokio::test(start_paused = true)]
 async fn a_box_subscription_replays_from_its_snapshot_then_follows_the_chain() {
     let mut f = Fixture::new().await;
@@ -417,9 +415,9 @@ async fn a_box_subscription_replays_from_its_snapshot_then_follows_the_chain() {
     assert!(client.closed.is_none());
 }
 
-/// The Done-when case: the client's block is orphaned and the engine has reverted it, but
-/// not yet applied the new branch, when the subscribe arrives. The catch-up rolls the client
-/// back, and the new branch follows live.
+/// The client's block is orphaned and the engine has reverted it, but not yet applied the new
+/// branch, when the subscribe arrives. The catch-up rolls the client back, and the new branch
+/// follows live.
 #[tokio::test(start_paused = true)]
 async fn a_subscribe_in_the_middle_of_a_reorg_rolls_back_then_follows_the_new_branch() {
     let mut f = Fixture::new().await;
@@ -566,8 +564,6 @@ async fn a_subscription_with_from_to_an_untracked_key_is_not_tracked() {
     assert!(!f.tracked(&f.tree_key(1)).await, "not loaded");
 }
 
-// --- The tip ---
-
 /// A connection's first message is the tip, subscribed or not, and each block brings the new
 /// one; a burst of blocks may bring only the last.
 #[tokio::test(start_paused = true)]
@@ -632,8 +628,6 @@ async fn the_new_tip_comes_before_the_blocks_outputs() {
     f.check(&key, &view);
     assert_eq!(client.tips.last().copied(), view.tip);
 }
-
-// --- Reconnecting (the Done-when sim cases) ---
 
 /// Leaves after following a key, then comes back `blocks` blocks later and subscribes from
 /// the last block it applied. Returns the messages, and the node calls made meanwhile.
@@ -715,8 +709,6 @@ fn resyncs(f: &Fixture, reason: &str) -> u64 {
         .metrics
         .count(&format!("hergmes_resyncs_total{{reason=\"{reason}\"}}"))
 }
-
-// --- Refusals ---
 
 #[tokio::test(start_paused = true)]
 async fn refused_keys_are_rejected_and_the_connection_carries_on() {
@@ -831,8 +823,6 @@ fn truncation_keeps_whole_characters() {
     assert_eq!(truncate("aé", 3), "aé");
     assert_eq!(truncate("", 5), "");
 }
-
-// --- Replace and unsubscribe ---
 
 /// Subscribing again replaces: a box subscription after a balance-only one gets every
 /// message once, and the key's count is one, so it goes idle once the client leaves.
@@ -1400,11 +1390,9 @@ async fn cancelled_subscribes_count_against_the_cap_until_they_finish() {
     assert_eq!(types(&written(&mut from_server)), ["subscribed", "balance"]);
 }
 
-// --- Backpressure and keepalive ---
-
-/// The Done-when case: a client that stops reading. The socket fills, then the sink, and the
-/// engine task ends the subscription; once the client reads again it gets what was queued,
-/// `resync_required` (`slow_consumer`) and the close.
+/// A client that stops reading. The socket fills, then the sink, and the engine task ends the
+/// subscription; once the client reads again it gets what was queued, `resync_required`
+/// (`slow_consumer`) and the close.
 #[tokio::test(start_paused = true)]
 async fn a_slow_consumer_gets_resync_required_and_is_closed() {
     let mut f = Fixture::new().await;

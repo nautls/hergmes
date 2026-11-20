@@ -350,8 +350,6 @@ fn random_histories_reach_the_hard_overlay_cases() {
     }
 }
 
-// --- The engine's emission rules on hand-built snapshots ---
-
 const OWNER: u8 = 7;
 const OTHER: u8 = 8;
 

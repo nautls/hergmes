@@ -298,8 +298,6 @@ impl Harness {
         (!candidates.is_empty()).then(|| candidates[index.index(candidates.len())])
     }
 
-    // --- Adapters ---
-
     /// Moves the engine up to `steps` blocks towards the node's tip, as the block consumer
     /// does: reverts its blocks off the node's chain, tip first, then applies the node's
     /// blocks, oldest first. With no tip (a fresh start, or after the ring ran out) it starts
@@ -633,8 +631,6 @@ impl Harness {
         outputs
     }
 
-    // --- The transport ---
-
     fn subscribe(&mut self, key: TrackingKey, balance_only: bool) {
         if !self.engine.is_tracked(&key) {
             self.load(&key);
@@ -865,8 +861,6 @@ impl Harness {
         assert_eq!(reply, Some(WithPoolIds { as_of: tip, confirmed, pending, total }));
     }
 
-    // --- Expectations ---
-
     /// `key`'s view with the pool at the engine's tip: the oracle's unspent boxes the reference
     /// overlay leaves unspent, then the boxes it creates and leaves unspent, in its order.
     fn reference_with_pool(&self, key: &TrackingKey) -> (Vec<BoxKey>, Vec<Arc<UTxO>>) {
@@ -994,8 +988,6 @@ impl Harness {
             model.balance = balance.clone();
         }
     }
-
-    // --- Invariants after every op ---
 
     fn check(&mut self) {
         let tracked: Vec<&TrackingKey> = self.engine.ids.keys().collect();
@@ -1449,8 +1441,6 @@ fn random_histories_reach_the_hard_engine_cases() {
         assert!(seen.contains(feature), "no random history reached: {feature}");
     }
 }
-
-// --- Hand-driven cases ---
 
 /// An engine following a `Chain` by hand.
 struct Fixture {
