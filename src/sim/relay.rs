@@ -136,7 +136,13 @@ impl SimRelay {
                 mempool: mempool::Config { refresh: Duration::ZERO },
             },
         );
-        let loader = loader::Config { retry: RETRY, ..Default::default() };
+        let loader = loader::Config {
+            // Ten waits, as the other retry loops make.
+            give_up_after: 10 * RETRY,
+            retry: RETRY,
+            poll: RETRY,
+            ..Default::default()
+        };
         let api = Arc::new(Api {
             engine: engine.clone(),
             pages: Pages::new(

@@ -497,16 +497,53 @@ async fn load_retries_until_the_engine_catches_up() {
     task.abort();
 }
 
+/// A load that finds the engine behind tries again a `poll` later, not a `retry` later: right
+/// after a block the engine trails the node by up to a follower tick, and a load that slept a
+/// whole second past its catching up would answer that much later.
 #[tokio::test(start_paused = true)]
-async fn load_gives_up_after_its_attempts() {
+async fn a_load_polls_while_the_engine_catches_up() {
+    let chain = new_chain();
+    let engine = Arc::new(synced_engine(&chain));
+    let sim = SimChain::new(chain);
+    sim.lock().mine(1, 1, 1);
+    let key = tree_key(&sim, 0);
+
+    let catch_up = Duration::from_millis(300);
+    let follower_engine = engine.clone();
+    let follower = Follower::new(sim.clone(), follower::Config::default());
+    let task = tokio::spawn(async move {
+        sleep(catch_up).await;
+        follower.run(&*follower_engine).await
+    });
+
+    let config = Config::default();
+    let started = tokio::time::Instant::now();
+    loader_of(&sim, config).load(&*engine, &key).await.unwrap();
+    let waited = started.elapsed();
+    assert!(waited >= catch_up && waited <= catch_up + config.poll, "{waited:?}");
+    task.abort();
+}
+
+fn loader_of(sim: &SimChain, config: Config) -> Loader<SimChain> {
+    Loader::new(sim.clone(), config)
+}
+
+/// While the engine stays behind, the load polls until its next attempt would start past
+/// `give_up_after`, and hands the wait it skipped to the caller.
+#[tokio::test(start_paused = true)]
+async fn load_gives_up_at_its_deadline() {
     let chain = new_chain();
     let engine = synced_engine(&chain);
     let sim = SimChain::new(chain);
     let node = sim.lock().mine(0, 1, 1);
     let key = tree_key(&sim, 0);
-    let loader = Loader::new(sim.clone(), Config { attempts: 3, ..Config::default() });
-    let error = loader.load(&engine, &key).await.unwrap_err();
+    let config = Config { give_up_after: Duration::from_millis(500), ..Config::default() };
+    let error = loader_of(&sim, config)
+        .load(&engine, &key)
+        .await
+        .unwrap_err();
     let before = engine.lock().unwrap().tip();
+    // Attempts at 0, 200 and 400 ms; a fourth would start at 600.
     assert!(
         matches!(
             *error,
@@ -514,11 +551,41 @@ async fn load_gives_up_after_its_attempts() {
                 attempts: 3,
                 last: Some(Attempt::EngineBehind { engine, node: n }),
                 wait,
-            } if engine == before && n == node && wait == Config::default().retry
+            } if engine == before && n == node && wait == config.poll
         ),
         "{error:?}"
     );
     assert_eq!(count(&sim, Endpoint::Info), 3);
+}
+
+/// An attempt that paged the key and lost it (here the engine rejects it) waits a `retry`
+/// before the next: a full reload is what the poll must not repeat five times a second.
+#[tokio::test(start_paused = true)]
+async fn a_rejected_load_waits_a_retry() {
+    let mut chain = new_chain();
+    chain.mine(0, 1, 1);
+    let mut engine = Engine::new(EngineConfig::default());
+    for height in chain.height() - 1..=chain.height() {
+        engine
+            .apply(Event::BlockApplied(chain.oracle().indexed_block(height)))
+            .unwrap();
+    }
+    let engine = Racing { inner: Mutex::new(engine), armed: AtomicBool::new(true) };
+    let sim = SimChain::new(chain);
+    let key = tree_key(&sim, 0);
+    let config = Config { give_up_after: Duration::from_millis(500), ..Config::default() };
+    let error = loader_of(&sim, config)
+        .load(&engine, &key)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(
+            *error,
+            LoadError::GaveUp { attempts: 1, last: Some(Attempt::Rejected), wait }
+                if wait == config.retry
+        ),
+        "{error:?}"
+    );
 }
 
 mod node {
@@ -583,7 +650,7 @@ mod node {
     }
 
     /// No wait follows the last attempt, so a `503` there hands its `Retry-After` to the
-    /// caller instead of losing it.
+    /// caller instead of losing it. A deadline of zero still makes one attempt.
     #[tokio::test]
     async fn a_503_on_the_last_attempt_hands_its_wait_to_the_caller() {
         let engine = Mutex::new(Engine::new(EngineConfig::default()));
@@ -594,7 +661,8 @@ mod node {
             .mount(&server)
             .await;
         let client = NodeClient::new(reqwest::Client::new(), &server.uri(), Network::Mainnet);
-        let loader = Loader::new(client, Config { attempts: 1, ..Config::default() });
+        let config = Config { give_up_after: Duration::ZERO, ..Config::default() };
+        let loader = Loader::new(client, config);
         let key = TrackingKey::Tree(HexBytes(hex::decode(sample("ergoTree")).unwrap()));
         let error = loader.load(&engine, &key).await.unwrap_err();
         assert!(

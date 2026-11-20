@@ -158,7 +158,8 @@ impl Harness {
     fn new() -> Self {
         let sim = SimChain::new(Chain::new(SimConfig::default()));
         // One attempt, so a load that does not settle gives up at once.
-        let config = loader::Config { page_limit: 4, attempts: 1, ..Default::default() };
+        let config =
+            loader::Config { page_limit: 4, give_up_after: Duration::ZERO, ..Default::default() };
         Self {
             follower: Follower::new(sim.clone(), follower::Config::default()),
             loader: Loader::new(sim.clone(), config),

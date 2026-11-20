@@ -243,7 +243,7 @@ async fn a_key_settles_on_its_first_answer_and_not_while_the_engine_is_behind() 
     let keeper = keeper(&sim, &engine);
     let (_kept, settled) = keep_settling(&keeper, &key);
     let loader = loader::Config::default();
-    sleep(loader.retry * loader.attempts * 3).await;
+    sleep(loader.give_up_after * 3).await;
     assert!(!settled.is_settled(), "the engine is behind the node");
 
     sync(&sim, &engine).await;
@@ -304,11 +304,11 @@ async fn a_load_that_gave_up_is_tried_again_after_its_wait() {
     let key = sim.lock().keys()[0].clone();
     let loader = loader::Config::default();
     let _keeper = keep(&keeper(&sim, &engine), &key);
-    let span = loader.retry * loader.attempts * 10;
+    let span = loader.give_up_after * 10;
     sleep(span).await;
     let reads = sim.calls().iter().filter(|e| **e == Endpoint::Info).count();
-    // One attempt per retry, with no burst when the loader gives up.
-    let most = (span.as_secs() / loader.retry.as_secs()) as usize + 1;
+    // One attempt per poll, with no burst when the loader gives up.
+    let most = (span.as_millis() / loader.poll.as_millis()) as usize + 1;
     assert!(reads <= most, "{reads} reads in {span:?}, at most {most} expected");
 }
 

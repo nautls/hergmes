@@ -122,7 +122,8 @@ impl Harness {
         let sim = SimChain::new(Chain::new(SimConfig::default()));
         let cache = BoxCache::new(if cache { 1 << 20 } else { 0 });
         // One attempt, so a load that does not settle answers `not_ready` with no wait.
-        let config = loader::Config { page_limit: 2, attempts: 1, ..Default::default() };
+        let config =
+            loader::Config { page_limit: 2, give_up_after: Duration::ZERO, ..Default::default() };
         let loader = Loader::new(sim.clone(), config).seeding(cache.clone());
         Self {
             follower: Follower::new(sim.clone(), follower::Config::default()),

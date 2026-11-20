@@ -14,7 +14,7 @@
 use std::{sync::Arc, time::Duration};
 
 use moka::future::Cache;
-use tokio::time::sleep;
+use tokio::time::{Instant, sleep};
 use tracing::{debug, info};
 
 use crate::{
@@ -49,12 +49,18 @@ pub struct Config {
     pub max_boxes: usize,
     /// How long a key over `max_boxes` is refused without paging it again.
     pub refusal_ttl: Duration,
-    /// Attempts before [`Loader::load`] gives up. Each one that reaches the indexer is a full
-    /// reload, so this stays small.
-    pub attempts: u32,
-    /// The wait between attempts: about one tick of the follower, which is what an engine
-    /// behind the node needs to catch up.
+    /// How long [`Loader::load`] keeps trying: no attempt starts past it, and one always
+    /// runs.
+    pub give_up_after: Duration,
+    /// The wait after an attempt that paged the key and lost it ([`Attempt::TipMoved`],
+    /// [`Attempt::Rejected`]): the next one is a full reload too, so it waits about a
+    /// follower tick, which is what a moving tip needs to settle.
     pub retry: Duration,
+    /// The wait after an attempt that stopped before the pages ([`Attempt::NoTip`],
+    /// [`Attempt::EngineBehind`], [`Attempt::IndexerBehind`]). Those cost one or two cheap
+    /// calls, and their cause usually clears within a block's first second: the engine trails
+    /// the node by up to a follower tick, and a `retry` would answer up to that much late.
+    pub poll: Duration,
 }
 
 impl Default for Config {
@@ -63,8 +69,9 @@ impl Default for Config {
             page_limit: MAX_PAGE_LIMIT,
             max_boxes: MAX_BOXES,
             refusal_ttl: REFUSAL_TTL,
-            attempts: 10,
+            give_up_after: Duration::from_secs(10),
             retry: Duration::from_secs(1),
+            poll: Duration::from_millis(200),
         }
     }
 }
@@ -170,10 +177,11 @@ impl<S: NodeSource> Loader<S> {
         self
     }
 
-    /// Loads `key` and sends it to the engine, retrying until an attempt is accepted or
-    /// `attempts` have been made. A `503` waits for its `Retry-After`; other node errors end
-    /// the load, as do the caps. No wait follows the last attempt: a caller giving up should
-    /// not sit through it, so `GaveUp` carries it instead.
+    /// Loads `key` and sends it to the engine, retrying until an attempt is accepted or the
+    /// next would start past `give_up_after`. An attempt that paged waits `retry`, one that
+    /// stopped before the pages waits `poll`, and a `503` its `Retry-After`; other node errors
+    /// end the load, as do the caps. No wait follows the last attempt: a caller giving up
+    /// should not sit through it, so `GaveUp` carries it instead.
     ///
     /// A call while another load of `key` runs waits for that one and gets its outcome. A key
     /// refused for too many boxes in the last `refusal_ttl` is refused again with no node
@@ -201,18 +209,21 @@ impl<S: NodeSource> Loader<S> {
         engine: &impl EngineHandle,
         key: &TrackingKey,
     ) -> Result<(BlockRef, usize), LoadError> {
-        let mut last = None;
-        let mut wait = self.config.retry;
-        for attempt in 1..=self.config.attempts {
-            (last, wait) = match self.try_load(engine, key).await {
+        let started = Instant::now();
+        for attempt in 1.. {
+            let (last, wait) = match self.try_load(engine, key).await {
                 Ok(Attempt::Tracked { as_of, boxes }) => return Ok((as_of, boxes)),
                 Ok(outcome) => {
+                    let wait = match outcome {
+                        Attempt::TipMoved | Attempt::Rejected => self.config.retry,
+                        _ => self.config.poll,
+                    };
                     if outcome == Attempt::Rejected {
                         info!(?key, attempt, "Load rejected by the engine, retrying");
                     } else {
                         debug!(?key, attempt, ?outcome, "Load not settled, retrying");
                     }
-                    (Some(outcome), self.config.retry)
+                    (Some(outcome), wait)
                 }
                 Err(LoadError::Node(error @ NodeError::Unavailable { .. })) => {
                     let wait = backoff(&error, self.config.retry);
@@ -221,11 +232,12 @@ impl<S: NodeSource> Loader<S> {
                 }
                 Err(error) => return Err(error),
             };
-            if attempt < self.config.attempts {
-                sleep(wait).await;
+            if started.elapsed() + wait >= self.config.give_up_after {
+                return Err(LoadError::GaveUp { attempts: attempt, last, wait });
             }
+            sleep(wait).await;
         }
-        Err(LoadError::GaveUp { attempts: self.config.attempts, last, wait })
+        unreachable!("the attempts run until one returns")
     }
 
     /// One attempt: read the tip, check the engine and the indexer are at it, read the room
