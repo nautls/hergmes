@@ -7,6 +7,8 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
+use tokio::time::Instant;
+
 use super::*;
 use crate::{
     adapters::{BoxCache, BoxFetcher, EngineGone, Follower, follower},
@@ -312,8 +314,9 @@ fn a_key_over_the_per_key_cap_is_refused_without_paging_it_all() {
 }
 
 /// By default a key over the cap is refused at its first page: a key with more boxes fills
-/// it. The node reads every box before a page's offset (`Segment.retrieveUtxos`), so each
-/// later page costs more than the one before, and a fourth took over the client's timeout.
+/// it. The node reads every box before a page's offset (`Segment.retrieveUtxos`, see
+/// `MAX_BOXES`), so each later page costs more than the one before, and a fourth took over
+/// the client's timeout.
 #[test]
 fn the_default_cap_is_one_page() {
     assert_eq!(MAX_BOXES, MAX_PAGE_LIMIT as usize - 1);
@@ -592,6 +595,194 @@ async fn a_rejected_load_waits_a_retry() {
             *error,
             LoadError::GaveUp { attempts: 1, last: Some(Attempt::Rejected), wait }
                 if wait == config.retry
+        ),
+        "{error:?}"
+    );
+}
+
+/// The quick polls last a `retry`: an engine or indexer still behind after that is no
+/// block's first second (an indexer resyncing after a restart stays behind for hours), so
+/// the load falls back to one attempt a `retry`, as cheap on the node as before the polls.
+#[tokio::test(start_paused = true)]
+async fn a_load_polls_for_a_retry_then_waits_retries() {
+    let chain = new_chain();
+    let engine = synced_engine(&chain);
+    let sim = SimChain::new(chain);
+    sim.lock().mine(0, 1, 1);
+    let key = tree_key(&sim, 0);
+    let config = Config { give_up_after: Duration::from_secs(3), ..Config::default() };
+    let error = loader_of(&sim, config)
+        .load(&engine, &key)
+        .await
+        .unwrap_err();
+    // Polls at 0, 200, 400, 600 and 800 ms and at 1 s, then a retry at 2 s; a third retry
+    // would start at 3 s.
+    assert!(
+        matches!(*error, LoadError::GaveUp { attempts: 7, wait, .. } if wait == config.retry),
+        "{error:?}"
+    );
+    assert_eq!(count(&sim, Endpoint::Info), 7);
+}
+
+/// The run of quick polls is the loader's, not one load's: what it waits out (the engine or
+/// the indexer behind the node) is the same for every key. A keeper that loads again after
+/// giving up, or a client's load of another key, finds the run over and waits retries.
+#[tokio::test(start_paused = true)]
+async fn later_loads_share_the_run_of_polls() {
+    let chain = new_chain();
+    let engine = synced_engine(&chain);
+    let sim = SimChain::new(chain);
+    sim.lock().mine(0, 1, 1);
+    let config = Config { give_up_after: Duration::from_secs(3), ..Config::default() };
+    let loader = loader_of(&sim, config);
+    let gave_up_after = |error: &LoadError| match error {
+        LoadError::GaveUp { attempts, wait, .. } => (*attempts, *wait),
+        other => panic!("{other:?}"),
+    };
+
+    // The first load polls its first second, as in `a_load_polls_for_a_retry_then_waits_retries`.
+    let first = loader.load(&engine, &tree_key(&sim, 0)).await.unwrap_err();
+    assert_eq!(gave_up_after(&first), (7, config.retry));
+    // The same key again, as a keeper does: retries only, at 0, 1 and 2 s.
+    let again = loader.load(&engine, &tree_key(&sim, 0)).await.unwrap_err();
+    assert_eq!(gave_up_after(&again), (3, config.retry));
+    // Another key: the same.
+    let other = loader.load(&engine, &tree_key(&sim, 1)).await.unwrap_err();
+    assert_eq!(gave_up_after(&other), (3, config.retry));
+    assert_eq!(count(&sim, Endpoint::Info), 13);
+}
+
+/// A run of polls: the first `retry` of attempts that stopped before the pages, ended by one
+/// that got past them, lapsed once none was behind for two `retry`s, and left as it is by an
+/// error that says nothing of the checks.
+#[test]
+fn a_run_of_polls_starts_ends_and_lapses() {
+    let retry = Duration::from_secs(1);
+    let start = Instant::now();
+    let at = |ms: u64| start + Duration::from_millis(ms);
+    let mut polls = Polls::default();
+    assert!(polls.record(at(0), Checks::Behind, retry), "a run's first attempt");
+    assert!(polls.record(at(800), Checks::Behind, retry), "within its first retry");
+    assert!(!polls.record(at(1_000), Checks::Behind, retry), "past it");
+    // A node `503` in the middle of a long run does not start a new one.
+    assert!(!polls.record(at(1_500), Checks::Unknown, retry));
+    assert!(!polls.record(at(2_000), Checks::Behind, retry), "the same run");
+    // Another load gets to its pages: the run ends, and the next behind attempt starts one.
+    assert!(!polls.record(at(2_100), Checks::Passed, retry));
+    assert!(polls.record(at(2_200), Checks::Behind, retry), "a new run");
+    assert!(!polls.record(at(3_200), Checks::Behind, retry));
+    // Every load gave up and the next attempt comes long after: a new run.
+    assert!(!polls.record(at(5_200), Checks::Behind, retry), "two retries later, still one");
+    assert!(polls.record(at(7_201), Checks::Behind, retry), "lapsed");
+
+    // What each outcome says of the checks.
+    assert_eq!(Checks::of(&Ok(Attempt::NoTip)), Checks::Behind);
+    assert_eq!(Checks::of(&Ok(Attempt::TipMoved)), Checks::Passed);
+    assert_eq!(Checks::of(&Err(LoadError::TooManyBoxes { max: 1 })), Checks::Passed);
+    let unavailable = NodeError::Unavailable { retry_after: None };
+    assert_eq!(Checks::of(&Err(LoadError::Node(unavailable))), Checks::Unknown);
+}
+
+/// [`Racing`], slow to take a load: as a large key's pages are on a busy node.
+struct Slow {
+    racing: Racing,
+    delay: Duration,
+}
+
+impl EngineHandle for Slow {
+    async fn apply(&self, event: Event) -> Result<Result<Vec<Output>, EngineError>, EngineGone> {
+        if matches!(event, Event::KeyLoaded { .. }) {
+            sleep(self.delay).await;
+        }
+        self.racing.apply(event).await
+    }
+
+    async fn query(&self, query: Query) -> Result<Reply, EngineGone> {
+        self.racing.query(query).await
+    }
+}
+
+/// The deadline counts from the first attempt's answer, so an attempt that took nearly all of
+/// `give_up_after` and lost its load to a block still gets its retries.
+#[tokio::test(start_paused = true)]
+async fn a_slow_attempt_still_gets_its_retries() {
+    let mut chain = new_chain();
+    chain.mine(0, 1, 1);
+    let mut engine = Engine::new(EngineConfig::default());
+    for height in chain.height() - 1..=chain.height() {
+        engine
+            .apply(Event::BlockApplied(chain.oracle().indexed_block(height)))
+            .unwrap();
+    }
+    let racing = Racing { inner: Mutex::new(engine), armed: AtomicBool::new(true) };
+    let config = Config::default();
+    let engine = Slow { racing, delay: config.give_up_after - Duration::from_millis(500) };
+    let sim = SimChain::new(chain);
+    let key = tree_key(&sim, 0);
+    let error = loader_of(&sim, config)
+        .load(&engine, &key)
+        .await
+        .unwrap_err();
+    // Rejected, then the reverted engine is behind for every later attempt.
+    assert!(
+        matches!(
+            *error,
+            LoadError::GaveUp { attempts, last: Some(Attempt::EngineBehind { .. }), .. }
+                if attempts > 1
+        ),
+        "{error:?}"
+    );
+}
+
+/// [`Racing`] that answers its first tip read with no tip, as an engine a block behind would.
+struct BehindOnce {
+    racing: Racing,
+    behind: AtomicBool,
+}
+
+impl EngineHandle for BehindOnce {
+    async fn apply(&self, event: Event) -> Result<Result<Vec<Output>, EngineError>, EngineGone> {
+        self.racing.apply(event).await
+    }
+
+    async fn query(&self, query: Query) -> Result<Reply, EngineGone> {
+        if matches!(query, Query::Tip) && self.behind.swap(false, Ordering::SeqCst) {
+            return Ok(Reply::Tip(None));
+        }
+        self.racing.query(query).await
+    }
+}
+
+/// An attempt that paged ends a run of polls, so the next run polls again: a block that
+/// lands during a load's pages leaves the engine behind for a moment, and that moment is
+/// what the polls are for.
+#[tokio::test(start_paused = true)]
+async fn a_paged_attempt_starts_the_polls_again() {
+    let mut chain = new_chain();
+    chain.mine(0, 1, 1);
+    let mut engine = Engine::new(EngineConfig::default());
+    for height in chain.height() - 1..=chain.height() {
+        engine
+            .apply(Event::BlockApplied(chain.oracle().indexed_block(height)))
+            .unwrap();
+    }
+    let racing = Racing { inner: Mutex::new(engine), armed: AtomicBool::new(true) };
+    let engine = BehindOnce { racing, behind: AtomicBool::new(true) };
+    let sim = SimChain::new(chain);
+    let key = tree_key(&sim, 0);
+    let config = Config { give_up_after: Duration::from_millis(1500), ..Config::default() };
+    let error = loader_of(&sim, config)
+        .load(&engine, &key)
+        .await
+        .unwrap_err();
+    // Behind at 0, rejected at 200 ms, then behind (the revert) from 1.2 s: polled at 1.2
+    // and 1.4 s, where a fresh run ends. Without the new run the 1.2 s attempt would wait a
+    // `retry` and be the last.
+    assert!(
+        matches!(
+            *error,
+            LoadError::GaveUp { attempts: 4, last: Some(Attempt::EngineBehind { .. }), wait }
+                if wait == config.poll
         ),
         "{error:?}"
     );

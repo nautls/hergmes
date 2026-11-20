@@ -44,20 +44,30 @@ fn main() {
         _ => usage(),
     };
     let [active_keys, active_boxes, idle_keys, idle_boxes, ring] = args[..5] else { usage() };
+    // The timed block pays an active key, and the sweep needs a key to untrack.
+    if active_keys == 0 || idle_keys == 0 {
+        usage();
+    }
     run(active_keys, active_boxes, idle_keys, idle_boxes, ring, budget);
 }
 
 fn usage() -> ! {
     eprintln!(
         "usage: untrackbench <active-keys> <active-boxes-per-key> <idle-keys> \
-         <idle-boxes-per-key> <ring-blocks> [<untrack-boxes-per-block>]"
+         <idle-boxes-per-key> <ring-blocks> [<untrack-boxes-per-block>], with at least one \
+         active and one idle key"
     );
     std::process::exit(2)
 }
 
 fn address_keys(engine: &mut Engine) -> usize {
+    tracked(engine).0
+}
+
+/// The address keys and boxes tracked.
+fn tracked(engine: &mut Engine) -> (usize, usize) {
     let Reply::Stats(stats) = engine.query(Query::Stats) else { unreachable!() };
-    stats.address_keys
+    (stats.address_keys, stats.tracked_boxes)
 }
 
 /// Applies `block` to `engine` and returns the time it took.
@@ -70,12 +80,12 @@ fn apply(engine: &mut Engine, block: &IndexedBlock) -> f64 {
 }
 
 /// Applies `block` to a copy of `engine` with its clock at `now`, and returns the time it
-/// took and the keys left.
-fn timed(engine: &Engine, now: Duration, block: &IndexedBlock) -> (f64, usize) {
+/// took and the keys and boxes left.
+fn timed(engine: &Engine, now: Duration, block: &IndexedBlock) -> (f64, (usize, usize)) {
     let mut copy = engine.clone();
     copy.set_now(now);
     let ms = apply(&mut copy, block);
-    (ms, address_keys(&mut copy))
+    (ms, tracked(&mut copy))
 }
 
 fn run(
@@ -127,15 +137,16 @@ fn run(
     let after_grace = grace + Duration::from_secs(1);
     let mut baseline = Vec::new();
     let mut sweep = Vec::new();
-    let mut first_keys = 0;
+    let (mut first_keys, mut gone) = (0, 0);
     for _ in 0..3 {
         // At `grace` exactly the idle keys are not past it yet: nothing goes.
-        let (ms, left) = timed(&engine, grace, &next);
-        assert_eq!(left, active_keys + idle_keys, "the baseline untracks nothing");
+        let (ms, (kept, kept_boxes)) = timed(&engine, grace, &next);
+        assert_eq!(kept, active_keys + idle_keys, "the baseline untracks nothing");
         baseline.push(ms);
-        let (ms, left) = timed(&engine, after_grace, &next);
-        assert!(left < active_keys + idle_keys, "the sweep untracks some idle key");
-        first_keys = active_keys + idle_keys - left;
+        let (ms, (left, left_boxes)) = timed(&engine, after_grace, &next);
+        assert!(left < kept, "the sweep untracks some idle key");
+        // Counted, not worked out: the ring blocks paid idle keys boxes of their own.
+        (first_keys, gone) = (kept - left, kept_boxes - left_boxes);
         sweep.push(ms);
     }
 
@@ -152,7 +163,6 @@ fn run(
         v[v.len() / 2]
     };
     let added = median(&mut sweep) - median(&mut baseline);
-    let gone = first_keys * idle_boxes;
     let list = |v: &[f64]| {
         v.iter()
             .map(|ms| format!("{ms:.1}"))
@@ -160,10 +170,10 @@ fn run(
             .join(",")
     };
     println!(
-        "untrack active_keys={active_keys} active_boxes={} idle_keys={idle_keys} idle_boxes={gone} \
-         ring={ring} budget={budget} baseline_ms=[{}] sweep_ms=[{}] added_ms={added:.1} \
-         first_block_keys={first_keys} ns_per_box={:.0} us_per_key={:.2} blocks={blocks} \
-         slowest_ms={slowest:.1}",
+        "untrack active_keys={active_keys} active_boxes={} idle_keys={idle_keys} \
+         idle_boxes={idle_boxes} ring={ring} budget={budget} baseline_ms=[{}] sweep_ms=[{}] \
+         added_ms={added:.1} first_block_keys={first_keys} first_block_boxes={gone} \
+         ns_per_box={:.0} us_per_key={:.2} blocks={blocks} slowest_ms={slowest:.1}",
         active_keys * active_boxes,
         list(&baseline),
         list(&sweep),

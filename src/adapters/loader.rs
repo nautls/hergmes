@@ -11,7 +11,10 @@
 //! outcome instead of paging the key from the node again. A key refused for having too many
 //! boxes is remembered for a while, so asking again doesn't page it from the node again.
 
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 use moka::future::Cache;
 use tokio::time::{Instant, sleep};
@@ -28,11 +31,12 @@ use crate::{
 
 /// The default cap on a key's boxes: the most that leave room in one page, so a key over it
 /// fills its first page and is refused there. The node reads every unspent box before a
-/// page's offset, one database read each, and slices (`Segment.retrieveUtxos`, node 6.0.8),
-/// so paging a key costs about `n² / (2 × page)` reads: on a mainnet node about 0.2 to 0.5 ms
-/// a box, so a fourth page of 16,384 took over the client's 30 s timeout, and a load that
-/// long often sees a block and starts over. About 2.2 MB of ids in the engine, and about 7 MB
-/// of full boxes while it loads.
+/// page's offset, one database read each, and slices (`retrieveUtxos` in
+/// `src/main/scala/org/ergoplatform/nodeView/history/extra/Segment.scala`, ergoplatform/ergo
+/// at `c1a69f65`, node 6.0.8), so paging a key costs about `n² / (2 × page)` reads: on a
+/// mainnet node about 0.2 to 0.5 ms a box, so a fourth page of 16,384 took over the client's
+/// 30 s timeout, and a load that long often sees a block and starts over. About 2.2 MB of ids
+/// in the engine, and about 7 MB of full boxes while it loads.
 pub const MAX_BOXES: usize = MAX_PAGE_LIMIT as usize - 1;
 
 /// How long a key over the per-key cap is answered `TooManyBoxes` without paging it again:
@@ -54,17 +58,21 @@ pub struct Config {
     pub max_boxes: usize,
     /// How long a key over `max_boxes` is refused without paging it again.
     pub refusal_ttl: Duration,
-    /// How long [`Loader::load`] keeps trying: no attempt starts past it, and one always
-    /// runs.
+    /// How long [`Loader::load`] keeps trying, from the first attempt's answer: no attempt
+    /// starts past it, and one always runs. Counted from the answer, not the call, so a slow
+    /// first attempt (a large key's pages on a busy node) still gets its retries.
     pub give_up_after: Duration,
     /// The wait after an attempt that paged the key and lost it ([`Attempt::TipMoved`],
     /// [`Attempt::Rejected`]): the next one is a full reload too, so it waits about a
     /// follower tick, which is what a moving tip needs to settle.
     pub retry: Duration,
     /// The wait after an attempt that stopped before the pages ([`Attempt::NoTip`],
-    /// [`Attempt::EngineBehind`], [`Attempt::IndexerBehind`]). Those cost one or two cheap
-    /// calls, and their cause usually clears within a block's first second: the engine trails
-    /// the node by up to a follower tick, and a `retry` would answer up to that much late.
+    /// [`Attempt::EngineBehind`], [`Attempt::IndexerBehind`]), for a `retry` from the first
+    /// such attempt in a row, of any load; then `retry`. Those cost one or two cheap calls,
+    /// and their cause usually clears within a block's first second: the engine trails the
+    /// node by up to a follower tick, and a `retry` would answer up to that much late. A cause
+    /// that lasts (an indexer resyncing after a restart) gets one attempt a `retry` from each
+    /// load, as before the polls.
     pub poll: Duration,
 }
 
@@ -151,6 +159,74 @@ pub struct Loader<S> {
     /// wallet a few minutes once after a long consolidation. The total cap is not
     /// remembered: it frees up as keys go idle.
     refused: Cache<TrackingKey, usize>,
+    /// The current run of attempts that stopped before the pages. Shared by every load, since
+    /// the cause is the node's, the indexer's or the engine's and not a key's: loads started
+    /// later (a keeper's after giving up, clients' of other keys) wait retries rather than
+    /// each poll a second of their own.
+    polls: Mutex<Polls>,
+}
+
+/// What an attempt says about the engine and the indexer keeping up with the node.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Checks {
+    /// Stopped before the pages: [`Attempt::NoTip`], [`Attempt::EngineBehind`],
+    /// [`Attempt::IndexerBehind`].
+    Behind,
+    /// Got past them, to the pages: whatever came next, the engine and the indexer were at
+    /// the node's tip.
+    Passed,
+    /// Neither: an error before or during the checks (a node `503`, a failed read), which
+    /// says nothing about them.
+    Unknown,
+}
+
+impl Checks {
+    fn of(outcome: &Result<Attempt, LoadError>) -> Self {
+        match outcome {
+            Ok(Attempt::NoTip | Attempt::EngineBehind { .. } | Attempt::IndexerBehind { .. }) => {
+                Self::Behind
+            }
+            Ok(Attempt::Tracked { .. } | Attempt::TipMoved | Attempt::Rejected)
+            | Err(
+                LoadError::TooManyBoxes { .. }
+                | LoadError::CapacityExceeded { .. }
+                | LoadError::Mismatch { .. },
+            ) => Self::Passed,
+            Err(_) => Self::Unknown,
+        }
+    }
+}
+
+/// A run of attempts, of any load, that stopped before the pages: when it began, and when
+/// the last one did. Loads poll during its first `retry`.
+#[derive(Debug, Default)]
+struct Polls {
+    run: Option<(Instant, Instant)>,
+}
+
+impl Polls {
+    /// Records an attempt that answered at `now`, and says whether its load polls. A run
+    /// ends at an attempt that got past the checks, and lapses once no attempt was behind
+    /// for two `retry`s: past that it was no one cause seen throughout (every load gave up,
+    /// and the next to come finds a block's ordinary lag), so a new run polls again. An
+    /// error that says nothing of the checks leaves the run as it is.
+    fn record(&mut self, now: Instant, checks: Checks, retry: Duration) -> bool {
+        match checks {
+            Checks::Behind => {
+                let since = match self.run {
+                    Some((since, last)) if now - last <= 2 * retry => since,
+                    _ => now,
+                };
+                self.run = Some((since, now));
+                now - since < retry
+            }
+            Checks::Passed => {
+                self.run = None;
+                false
+            }
+            Checks::Unknown => false,
+        }
+    }
 }
 
 impl<S: NodeSource> Loader<S> {
@@ -166,6 +242,7 @@ impl<S: NodeSource> Loader<S> {
             cache: BoxCache::disabled(),
             loads: Cache::builder().build(),
             refused,
+            polls: Mutex::new(Polls::default()),
         }
     }
 
@@ -184,9 +261,11 @@ impl<S: NodeSource> Loader<S> {
 
     /// Loads `key` and sends it to the engine, retrying until an attempt is accepted or the
     /// next would start past `give_up_after`. An attempt that paged waits `retry`, one that
-    /// stopped before the pages waits `poll`, and a `503` its `Retry-After`; other node errors
-    /// end the load, as do the caps. No wait follows the last attempt: a caller giving up
-    /// should not sit through it, so `GaveUp` carries it instead.
+    /// stopped before the pages waits `poll` (for a `retry`, then `retry`), and a `503` its
+    /// `Retry-After`; other node errors end the load, as do the caps. No wait follows the last
+    /// attempt: a caller giving up should not sit through it, so `GaveUp` carries it instead.
+    /// A `503` whose `Retry-After` reaches past `give_up_after` ends the load at once that way:
+    /// a request then answers `not_ready` with that wait rather than hold its client for it.
     ///
     /// A call while another load of `key` runs waits for that one and gets its outcome. A key
     /// refused for too many boxes in the last `refusal_ttl` is refused again with no node
@@ -214,15 +293,20 @@ impl<S: NodeSource> Loader<S> {
         engine: &impl EngineHandle,
         key: &TrackingKey,
     ) -> Result<(BlockRef, usize), LoadError> {
-        let started = Instant::now();
+        let mut answered: Option<Instant> = None;
         for attempt in 1.. {
-            let (last, wait) = match self.try_load(engine, key).await {
+            let outcome = self.try_load(engine, key).await;
+            let now = Instant::now();
+            let started = *answered.get_or_insert(now);
+            let poll = self
+                .polls
+                .lock()
+                .expect("never held across a panic")
+                .record(now, Checks::of(&outcome), self.config.retry);
+            let (last, wait) = match outcome {
                 Ok(Attempt::Tracked { as_of, boxes }) => return Ok((as_of, boxes)),
                 Ok(outcome) => {
-                    let wait = match outcome {
-                        Attempt::TipMoved | Attempt::Rejected => self.config.retry,
-                        _ => self.config.poll,
-                    };
+                    let wait = if poll { self.config.poll } else { self.config.retry };
                     if outcome == Attempt::Rejected {
                         info!(?key, attempt, "Load rejected by the engine, retrying");
                     } else {
@@ -237,7 +321,7 @@ impl<S: NodeSource> Loader<S> {
                 }
                 Err(error) => return Err(error),
             };
-            if started.elapsed() + wait >= self.config.give_up_after {
+            if now - started + wait >= self.config.give_up_after {
                 return Err(LoadError::GaveUp { attempts: attempt, last, wait });
             }
             sleep(wait).await;

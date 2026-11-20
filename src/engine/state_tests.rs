@@ -15,9 +15,9 @@ use crate::{
     },
 };
 
-/// Small enough that random histories reach the window, idle, cap and untrack budget edges: reorgs go up to
-/// 5 blocks deep, `Advance` moves the clock up to [`MAX_ADVANCE_SECS`] at a time, and the
-/// simulator's keys hold about twice the cap.
+/// Small enough that random histories reach the window, idle, cap and untrack budget edges:
+/// reorgs go up to 5 blocks deep, `Advance` moves the clock up to [`MAX_ADVANCE_SECS`] at a
+/// time, and the simulator's keys hold about twice the cap.
 const CONFIG: Config = Config {
     window: 4,
     grace: Duration::from_secs(3),

@@ -387,6 +387,15 @@ impl Engine {
             let idle_ms = self.now_ms - self.keys[&self.ids[key]].last_seen_ms;
             debug!(?key, idle_ms, height = block_ref.height, "Untracking idle key");
         }
+        // The sweep looked at one key past those it took: the budget stopped it there.
+        if keys > idle.len() {
+            debug!(
+                height = block_ref.height,
+                untracked_keys = idle.len(),
+                budget,
+                "Idle keys past the grace period held for the next block: the budget is spent"
+            );
+        }
         self.untrack(&idle);
         before.retain(|id, _| self.keys.contains_key(id));
 

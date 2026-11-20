@@ -307,8 +307,9 @@ async fn a_load_that_gave_up_is_tried_again_after_its_wait() {
     let span = loader.give_up_after * 10;
     sleep(span).await;
     let reads = sim.calls().iter().filter(|e| **e == Endpoint::Info).count();
-    // One attempt per poll, with no burst when the loader gives up.
-    let most = (span.as_millis() / loader.poll.as_millis()) as usize + 1;
+    // One run of polls, then one attempt per retry, with no burst when the loader gives up.
+    let polls = (loader.retry.as_millis() / loader.poll.as_millis()) as usize;
+    let most = polls + (span.as_millis() / loader.retry.as_millis()) as usize + 1;
     assert!(reads <= most, "{reads} reads in {span:?}, at most {most} expected");
 }
 
