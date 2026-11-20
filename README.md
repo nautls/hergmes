@@ -143,7 +143,9 @@ recently active first, and is refused with `capacity_exceeded` only if all of th
 can't make room. Idle keys would leave after `grace_secs` anyway, so they never stand in the way
 of active ones, and the minute keeps a client's key between requests that belong together, such
 as the pages of one walk. `hergmes_evictable_boxes` shows the room they hold, and
-`hergmes_evicted_keys_total` how many went.
+`hergmes_evicted_keys_total` how many went. A block untracks at most 50,000 boxes of keys past
+`grace_secs`, so after a mass disconnect they leave over several blocks rather than holding one
+block for seconds.
 
 To track more, raise `max_tracked_boxes` and `box_cache_mb` together. At the defaults the cache
 holds about a tenth of the tracked boxes and answers about 99% of lookups. A larger cap with the

@@ -15,7 +15,7 @@ use crate::{
     },
 };
 
-/// Small enough that random histories reach the window, idle and cap edges: reorgs go up to
+/// Small enough that random histories reach the window, idle, cap and untrack budget edges: reorgs go up to
 /// 5 blocks deep, `Advance` moves the clock up to [`MAX_ADVANCE_SECS`] at a time, and the
 /// simulator's keys hold about twice the cap.
 const CONFIG: Config = Config {
@@ -23,6 +23,7 @@ const CONFIG: Config = Config {
     grace: Duration::from_secs(3),
     evict_after: Duration::from_secs(2),
     max_tracked_boxes: 12,
+    untrack_boxes_per_block: 3,
 };
 const MAX_ADVANCE_SECS: u8 = 2;
 const MAX_REORG: u8 = 5;
@@ -372,20 +373,39 @@ impl Harness {
             _ => {}
         }
 
-        // Idle keys go; keys with subscribers or recent activity stay.
+        // Idle keys go, least recently active and then oldest load first, until the block's
+        // budget of boxes is spent: the first always goes, a later one only if it fits, and
+        // none after one that does not. Keys with subscribers or recent activity stay.
         let grace = CONFIG.grace.as_millis() as u64;
         let now = self.now;
-        let idle: Vec<TrackingKey> = self
+        let oracle = self.oracle();
+        let mut idle: Vec<(u64, u64, TrackingKey, usize)> = self
             .keys
             .iter()
             .filter(|(_, m)| m.subscribers == 0 && now - m.last_seen > grace)
-            .map(|(k, _)| k.clone())
+            .map(|(k, m)| (m.last_seen, m.epoch, k.clone(), oracle.unspent(k, block.height).len()))
             .collect();
-        for key in idle {
+        idle.sort();
+        let mut untracked = 0;
+        for (i, (_, _, key, boxes)) in idle.into_iter().enumerate() {
+            if i > 0 && untracked + boxes > CONFIG.untrack_boxes_per_block {
+                self.seen
+                    .insert("idle key kept past grace: the block's budget was spent");
+                break;
+            }
+            untracked += boxes;
             self.keys.remove(&key);
             self.seen.insert("idle key untracked");
+            if boxes > CONFIG.untrack_boxes_per_block {
+                self.seen
+                    .insert("idle key over the block's budget untracked alone");
+            }
         }
-        if self.keys.values().any(|m| now - m.last_seen > grace) {
+        if self
+            .keys
+            .values()
+            .any(|m| m.subscribers > 0 && now - m.last_seen > grace)
+        {
             self.seen.insert("key kept by a subscriber");
         }
         self.check_emissions(&outputs, &before);
@@ -1380,6 +1400,8 @@ fn random_histories_reach_the_hard_engine_cases() {
         "tracked box created and spent within a block",
         "snapshot held for a block used",
         "idle key untracked",
+        "idle key kept past grace: the block's budget was spent",
+        "idle key over the block's budget untracked alone",
         "idle key evicted for a load",
         "idle key kept: the load fit without it",
         "load refused at the cap",

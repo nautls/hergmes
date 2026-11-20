@@ -47,16 +47,24 @@ pub struct Config {
     /// past it first evicts idle keys (see `Engine::evictable`), which would leave after
     /// the grace period anyway, so idle keys never stand in the way of active ones.
     pub max_tracked_boxes: usize,
+    /// The most boxes a block untracks for keys idle past the grace period: the first key
+    /// always goes, a later one only if it fits, and the rest wait for the next block. A
+    /// key's untrack costs about half a microsecond a box (`examples/untrackbench.rs`), so
+    /// a mass disconnect would otherwise hold one block, and every request behind it, for
+    /// seconds. Keys left waiting stay idle, so a load that needs their room evicts them.
+    pub untrack_boxes_per_block: usize,
 }
 
 impl Config {
-    /// About a day of blocks, ten minutes of grace, a minute before eviction, and about
-    /// 290 MB of ids.
+    /// About a day of blocks, ten minutes of grace, a minute before eviction, about 290 MB
+    /// of ids, and an untrack of at most about 30 ms a block: as many boxes as the largest
+    /// key may hold, so any key goes in one block.
     pub const DEFAULT: Self = Self {
         window: 720,
         grace: Duration::from_secs(10 * 60),
         evict_after: Duration::from_secs(60),
         max_tracked_boxes: 2_000_000,
+        untrack_boxes_per_block: 50_000,
     };
 }
 
@@ -360,12 +368,20 @@ impl Engine {
         self.orphans.retain(|_, o| o.block.height > floor);
 
         // Untrack idle keys before deciding the overlays: their boxes are no longer checked.
+        // Least recently active first, within the block's budget.
         let grace = millis(self.config.grace);
+        let budget = self.config.untrack_boxes_per_block;
+        let (mut keys, mut untracked) = (0, 0);
         let idle: Vec<TrackingKey> = self
             .idle
-            .keys()
-            .take_while(|&&(last_seen_ms, _)| self.now_ms.saturating_sub(last_seen_ms) > grace)
-            .map(|(_, id)| self.keys[id].key.clone())
+            .iter()
+            .take_while(|&(&(last_seen_ms, _), _)| self.now_ms.saturating_sub(last_seen_ms) > grace)
+            .take_while(|&(_, &boxes)| {
+                keys += 1;
+                untracked += boxes;
+                keys == 1 || untracked <= budget
+            })
+            .map(|((_, id), _)| self.keys[id].key.clone())
             .collect();
         for key in &idle {
             let idle_ms = self.now_ms - self.keys[&self.ids[key]].last_seen_ms;

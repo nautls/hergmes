@@ -259,6 +259,9 @@ impl Config {
                 grace: grace(file.grace_secs, engine_defaults)?,
                 // Not a setting: it protects requests that belong together, not a policy.
                 evict_after: engine_defaults.evict_after,
+                // Not a setting either: it bounds a block's time, which no deployment wants
+                // longer.
+                untrack_boxes_per_block: engine_defaults.untrack_boxes_per_block,
                 max_tracked_boxes: at_least_one(
                     keys::MAX_TRACKED_BOXES,
                     file.max_tracked_boxes,
