@@ -2,7 +2,7 @@
 //! the engine's tip, and per tracked key the overlay hash and pending delta last sent.
 
 use std::{
-    collections::{BTreeMap, HashSet},
+    collections::{BTreeMap, BTreeSet, HashSet},
     sync::Arc,
 };
 
@@ -45,6 +45,10 @@ pub struct Mempool {
     /// A snapshot observed above the engine's tip, used if the engine reaches its block.
     ahead: Option<(Arc<[UnconfirmedTransaction]>, BlockRef)>,
     sent: BTreeMap<TrackingKey, Sent>,
+    /// The tracked keys whose sent overlay is not empty. A new snapshot can change only these
+    /// and the keys its txs touch, so `emit` compares those alone: every other key's overlay
+    /// was empty and stays so.
+    with_overlay: BTreeSet<TrackingKey>,
 }
 
 impl Mempool {
@@ -269,17 +273,28 @@ impl Mempool {
                 TrackingKey::Tree(_) => self.pending_delta(&key),
                 TrackingKey::Token(_) => PendingDelta::default(),
             };
-            let sent = Sent { hash: overlay::hash(&self.overlay(&key)), delta };
+            let overlay = self.overlay(&key);
+            if !overlay.is_empty() {
+                self.with_overlay.insert(key.clone());
+            }
+            let sent = Sent { hash: overlay::hash(&overlay), delta };
             self.sent.insert(key, sent);
         }
     }
 
     pub fn untrack(&mut self, key: &TrackingKey) {
         self.sent.remove(key);
+        self.with_overlay.remove(key);
     }
 
     pub fn is_tracked(&self, key: &TrackingKey) -> bool {
         self.sent.contains_key(key)
+    }
+
+    /// The tracked keys whose sent overlay is not empty, in key order.
+    #[cfg(test)]
+    pub fn with_overlay(&self) -> impl Iterator<Item = &TrackingKey> {
+        self.with_overlay.iter()
     }
 
     /// The keys whose overlays are sent, in key order.
@@ -288,16 +303,27 @@ impl Mempool {
         self.sent.keys()
     }
 
-    /// A message for each tracked key whose overlay hash differs from the one sent.
+    /// A message, in key order, for each tracked key whose overlay hash differs from the one
+    /// sent. Only the keys with an overlay now or at the last message can differ, so only
+    /// those are compared: a walk of every key cost each snapshot and block about a tenth of
+    /// a microsecond per tracked key (`examples/eventbench.rs`).
     fn emit(&mut self, tip_height: u32) -> Vec<Output> {
         let mut overlays = self.tracked_overlays();
+        let candidates: BTreeSet<TrackingKey> =
+            overlays.keys().chain(&self.with_overlay).cloned().collect();
         let mut outputs = Vec::new();
-        for (key, sent) in &mut self.sent {
-            let (overlay, delta) = overlays.remove(key).unwrap_or_default();
+        for key in candidates {
+            let sent = self.sent.get_mut(&key).expect("a candidate is tracked");
+            let (overlay, delta) = overlays.remove(&key).unwrap_or_default();
             let hash = overlay::hash(&overlay);
             if hash != sent.hash {
                 *sent = Sent { hash, delta };
-                outputs.push(Output::Mempool { key: key.clone(), tip_height, pending: overlay });
+                if overlay.is_empty() {
+                    self.with_overlay.remove(&key);
+                } else {
+                    self.with_overlay.insert(key.clone());
+                }
+                outputs.push(Output::Mempool { key, tip_height, pending: overlay });
             }
         }
         outputs

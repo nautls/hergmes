@@ -133,6 +133,13 @@ fn check_state(
         }
     }
     assert_eq!(outputs, expected);
+    // `emit` compares only these and the keys a snapshot touches.
+    let with_overlay: Vec<&TrackingKey> = sent
+        .iter()
+        .filter(|(_, overlay)| !overlay.is_empty())
+        .map(|(key, _)| key)
+        .collect();
+    assert_eq!(mempool.with_overlay().collect::<Vec<_>>(), with_overlay, "keys with an overlay");
 
     // Idempotent: the same snapshot again, in any order, emits nothing.
     assert!(

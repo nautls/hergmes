@@ -43,6 +43,8 @@ use hergmes::{
 };
 use support::{digest, plain_box, tree};
 
+// Shared with the other examples, which use more of it.
+#[allow(dead_code)]
 mod support;
 
 /// Pending txs in the benchmark's mempool snapshot: a busy pool, a fifth of the node's cap.

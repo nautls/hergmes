@@ -23,24 +23,15 @@
 //! An example rather than a test: it measures, and a time is no assertion on a shared CI
 //! machine.
 
-use std::{sync::Arc, time::Duration, time::Instant};
+use std::time::{Duration, Instant};
 
 use hergmes::{
-    engine::{BlockRef, Config, Engine, Event, LoadedBox, Query, Reply, TrackingKey},
-    types::ergo::{BlockHeader, IndexedBlock, IndexedBox, IndexedTransaction},
+    engine::{Config, Engine, Event, Query, Reply},
+    types::ergo::IndexedBlock,
 };
-use support::{digest, plain_box, tree};
+use support::{FIRST, block, load};
 
 mod support;
-
-/// Where each kind of synthetic id starts, so no two kinds collide.
-const BLOCK_IDS: u64 = 1 << 62;
-const RING_BOXES: u64 = 1 << 61;
-const TX_IDS: u64 = 1 << 60;
-/// A key's boxes are numbered from `key << KEY_SHIFT`: room for a million boxes a key.
-const KEY_SHIFT: u32 = 20;
-/// Height of the first block.
-const FIRST: u32 = 1_000_000;
 
 fn main() {
     let args: Vec<usize> = std::env::args()
@@ -62,51 +53,6 @@ fn usage() -> ! {
          <idle-boxes-per-key> <ring-blocks> [<untrack-boxes-per-block>]"
     );
     std::process::exit(2)
-}
-
-/// The block at `height`, child of the one below it, paying one new box to each of `keys`.
-fn block(height: u32, keys: &[u64]) -> IndexedBlock {
-    let header = BlockHeader {
-        id: digest(BLOCK_IDS + u64::from(height)),
-        parent_id: digest(BLOCK_IDS + u64::from(height) - 1),
-        height,
-        json: "{}".into(),
-    };
-    let outputs = keys
-        .iter()
-        .enumerate()
-        .map(|(i, &k)| IndexedBox {
-            utxo: plain_box(RING_BOXES + u64::from(height) * 16 + i as u64, &tree(k)),
-            inclusion_height: height,
-        })
-        .collect();
-    let tx =
-        IndexedTransaction { id: digest(TX_IDS + u64::from(height)), inputs: Vec::new(), outputs };
-    IndexedBlock { header, transactions: vec![tx] }
-}
-
-fn tip(engine: &mut Engine) -> BlockRef {
-    let Reply::Tip(Some(tip)) = engine.query(Query::Tip) else {
-        unreachable!("a block was applied")
-    };
-    tip
-}
-
-/// Loads keys `from..from + count`, `boxes` each, at the engine's tip.
-fn load(engine: &mut Engine, from: usize, count: usize, boxes: usize) {
-    let as_of = tip(engine);
-    for k in from..from + count {
-        let tree = tree(k as u64);
-        let loaded = (0..boxes)
-            .map(|b| LoadedBox {
-                utxo: Arc::new(plain_box(((k as u64) << KEY_SHIFT) + b as u64, &tree)),
-                inclusion_height: as_of.height - (b % 100_000) as u32,
-            })
-            .collect();
-        engine
-            .apply(Event::KeyLoaded { key: TrackingKey::Tree(tree), as_of, boxes: loaded })
-            .expect("a load is never an error");
-    }
 }
 
 fn address_keys(engine: &mut Engine) -> usize {

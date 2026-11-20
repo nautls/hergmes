@@ -1095,6 +1095,19 @@ impl Harness {
         // only, with just the boxes those shares name.
         let sent: Vec<&TrackingKey> = self.engine.mempool.tracked().collect();
         assert_eq!(sent, self.keys.keys().collect::<Vec<_>>(), "keys the mempool sends for");
+        // `emit` compares only these and the keys a snapshot touches, so a key missing here
+        // would never get the message that empties its overlay.
+        let with_overlay: Vec<&TrackingKey> = self
+            .keys
+            .iter()
+            .filter(|(_, m)| !m.overlay.is_empty())
+            .map(|(key, _)| key)
+            .collect();
+        assert_eq!(
+            self.engine.mempool.with_overlay().collect::<Vec<_>>(),
+            with_overlay,
+            "keys with an overlay"
+        );
         for delta in self.engine.ring.iter().chain(self.engine.orphans.values()) {
             for key_id in delta.keys.keys() {
                 assert!(self.engine.keys.contains_key(key_id), "a share of an untracked key");

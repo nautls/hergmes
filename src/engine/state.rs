@@ -729,19 +729,28 @@ impl Engine {
         })
     }
 
-    /// Appends a `Balance` for each tracked address whose totals changed in this step
-    /// (`before` holds the totals of the keys the step touched, as they were) or whose
+    /// Appends a `Balance`, in key order, for each tracked address whose totals changed in this
+    /// step (`before` holds the totals of the keys the step touched, as they were) or whose
     /// pending delta differs from the one sent. Token keys get none.
+    ///
+    /// Only those keys are looked at: totals change only for the keys in `before`, and a
+    /// pending delta only with its overlay, so only for a key with a `Mempool` message in
+    /// `outputs`. A walk of every key here cost each block and mempool snapshot about a
+    /// quarter of a microsecond per tracked key, growing faster than the keys as their maps
+    /// outgrew the CPU's caches (`examples/eventbench.rs`).
     fn push_balances(&mut self, before: &BTreeMap<KeyId, Totals>, outputs: &mut Vec<Output>) {
-        let Some(tip) = self.tip else {
-            return;
-        };
-        for (key, key_id) in &self.ids {
-            let state = self.keys.get_mut(key_id).expect("an id is tracked");
-            let pending = self.mempool.tracked_delta(key);
-            if let Some(balance) = changed_balance(state, tip, before.get(key_id), pending) {
-                outputs.push(Output::Balance { key: key.clone(), balance });
-            }
+        let mut changed: BTreeSet<TrackingKey> = before
+            .keys()
+            .filter_map(|id| self.keys.get(id))
+            .map(|state| state.key.clone())
+            .collect();
+        changed.extend(outputs.iter().filter_map(|o| match o {
+            Output::Mempool { key, .. } => Some(key.clone()),
+            _ => None,
+        }));
+        for key in &changed {
+            let totals = self.ids.get(key).and_then(|id| before.get(id));
+            self.push_balance(key, totals, outputs);
         }
     }
 
