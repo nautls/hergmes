@@ -24,30 +24,33 @@ function box(n: number, height?: number, value = 1000, tokens: [string, number][
 const confirmed = (n: number, height: number, value?: number) =>
   box(n, height, value) as WireConfirmedBox;
 
+/** A block or rollback at `height`, chained to the key's change at `prev`. */
 function delta(
   type: "block" | "rollback",
   height: number,
   created: WireConfirmedBox[],
   spent: number[],
-  parent = block(height - 1).headerId,
+  prev = block(height - 1),
 ): ServerMessage {
   const spends = spent.map((n) => ({ boxId: hex(n), txId: hex(9000 + n) }));
   const at = block(height);
-  return { type, key, ...at, parentId: parent, created, spent: spends };
+  return { type, key, ...at, prev, created, spent: spends };
 }
 
-const mempool = (tipHeight: number, pending: [string, PoolBox[], number[]][] = []) =>
+/** An overlay naming the key's last change at `lastChange`. */
+const mempool = (lastChange: number, pending: [string, PoolBox[], number[]][] = []) =>
   ({
     type: "mempool",
     key,
-    tipHeight,
+    lastChange: block(lastChange),
     pending: pending.map(([txId, created, spent]) => ({ txId, created, spent: spent.map(hex) })),
   }) as ServerMessage;
 
-const balance = (at: BlockRef, nanoErgs: number, pending = 0): ServerMessage => ({
+const balance = (at: BlockRef, nanoErgs: number, pending = 0, lastChange = at): ServerMessage => ({
   type: "balance",
   key,
   asOf: at,
+  lastChange,
   confirmed: { nanoErgs: String(nanoErgs), tokens: [] },
   pending: { nanoErgs: String(pending), tokens: [] },
 });
@@ -115,7 +118,7 @@ describe("a box subscription", () => {
 
     expect(m.state.phase).toBe("live");
     const view = m.state.view;
-    expect(view?.at).toEqual(block(11));
+    expect(view?.lastChange).toEqual(block(11));
     expect(view?.confirmed.map((b) => b.boxId)).toEqual([hex(2)]);
     expect(view?.confirmed[0]?.value).toBe(1000n);
     expect(view?.spendable.map((b) => b.boxId)).toEqual([hex(3)]);
@@ -143,16 +146,37 @@ describe("a box subscription", () => {
     const { m, resyncs } = live();
     m.receive(delta("block", 11, [confirmed(3, 11)], [1]));
     m.receive(delta("rollback", 11, [confirmed(1, 9)], [3]));
-    expect(m.state.view?.at).toEqual(block(10));
+    expect(m.state.view?.lastChange).toEqual(block(10));
     expect(m.state.view?.confirmed.map((b) => b.boxId)).toEqual([hex(1), hex(2)]);
-    m.receive(delta("block", 11, [], [2], block(10).headerId));
+    m.receive(delta("block", 11, [], [2]));
     expect(m.state.view?.confirmed.map((b) => b.boxId)).toEqual([hex(1)]);
     expect(resyncs).toEqual([]);
   });
 
+  test("chains a change across the blocks that left the key alone, which are not sent", () => {
+    const { m, resyncs } = live();
+    m.receive(delta("block", 14, [confirmed(3, 14)], [1], block(10)));
+    m.receive(mempool(14));
+    m.receive(balance(block(15), 1000, 0, block(14)));
+    expect(m.state.view?.lastChange).toEqual(block(14));
+    m.receive(delta("rollback", 14, [confirmed(1, 9)], [3], block(10)));
+    expect(m.state.view?.lastChange).toEqual(block(10));
+    expect(resyncs).toEqual([]);
+  });
+
+  test("refuses a first change at the snapshot's height on another fork", () => {
+    const { m, resyncs } = machine();
+    const sub = subscribeOf(m.snapshotLoaded(snapshotOf(m.start()), block(10), [confirmed(1, 9)]));
+    m.receive({ type: "subscribed", id: sub.id, key });
+    const fork = { height: 10, headerId: hex(4242) };
+    m.receive({ type: "mempool", key, lastChange: fork, pending: [] });
+    expect(resyncs).toEqual([{ key, by: "sdk", reason: "mempool_at_another_change" }]);
+  });
+
   test.each<[string, ServerMessage, Resync["by"]?]>([
-    ["block_does_not_chain", delta("block", 11, [], [], hex(4242))],
-    ["block_does_not_chain", delta("block", 12, [], [], block(10).headerId)],
+    ["block_does_not_chain", delta("block", 11, [], [7], { height: 10, headerId: hex(4242) })],
+    ["block_does_not_chain", delta("block", 12, [], [7], block(11))],
+    ["block_does_not_chain", delta("block", 10, [], [7], block(10))],
     ["spends_unknown_box", delta("block", 11, [], [7])],
     ["creates_held_box", delta("block", 11, [confirmed(1, 11)], [])],
     ["creates_held_box", delta("block", 11, [confirmed(3, 10)], [])],
@@ -160,8 +184,10 @@ describe("a box subscription", () => {
     ["undoes_unknown_box", delta("rollback", 10, [], [7])],
     ["restores_held_box", delta("rollback", 10, [confirmed(2, 9)], [])],
     ["restores_held_box", delta("rollback", 10, [confirmed(3, 10)], [])],
-    ["mempool_at_another_height", mempool(9)],
-    ["balance_at_another_block", balance(block(9), 1)],
+    ["mempool_at_another_change", mempool(9)],
+    // A change the view lacks: its block was lost.
+    ["mempool_at_another_change", mempool(11)],
+    ["balance_at_another_change", balance(block(11), 1, 0, block(11))],
     ["fork_beyond_window", { type: "resync_required", key, reason: "fork_beyond_window" }, "relay"],
   ])("takes a new snapshot on %s", (reason, message, by = "sdk") => {
     const { m, resyncs } = live();
@@ -230,23 +256,19 @@ describe("a box subscription", () => {
     const { m } = live();
     expect(m.stop()).toEqual([{ kind: "send", message: { op: "unsubscribe", key } }]);
     expect(m.state.phase).toBe("disconnected");
-    m.receive(delta("block", 11, [], []));
-    expect(m.state.view?.at).toEqual(block(10));
+    m.receive(delta("block", 11, [], [1]));
+    expect(m.state.view?.lastChange).toEqual(block(10));
   });
 });
 
-describe("a block that leaves the key untouched", () => {
-  test("reuses the view's boxes and spendable set, moving only its block", () => {
+describe("the view's confirmed boxes", () => {
+  test("are reused by an overlay that leaves them alone", () => {
     const { m } = live();
-    m.receive(mempool(10, [["a", [box(3)], [1]]]));
     const before = m.state.view;
-    m.receive(delta("block", 11, [], []));
-    m.receive(mempool(11, [["a", [box(3)], [1]]]));
+    m.receive(mempool(10, [["a", [box(3)], [1]]]));
     const after = m.state.view;
-    expect(after?.at).toEqual(block(11));
     expect(after?.confirmed).toBe(before?.confirmed);
-    m.receive(delta("block", 12, [], []));
-    expect(m.state.view?.spendable).toBe(after?.spendable);
+    expect(after?.spendable.map((b) => b.boxId)).toEqual([hex(2), hex(3)]);
   });
 
   test("a block that moves boxes keeps the keyset order without sorting them all", () => {
@@ -316,7 +338,7 @@ function retryOf(actions: Action[]) {
 }
 
 describe("across a dropped socket", () => {
-  test("a live key resumes from its block, keeping its view meanwhile", () => {
+  test("a live key resumes from its last change, keeping its view meanwhile", () => {
     const { m, resyncs } = live();
     const view = m.state.view;
     expect(m.disconnected()).toEqual([]);
@@ -331,6 +353,20 @@ describe("across a dropped socket", () => {
     m.receive(mempool(11));
     expect(m.state.phase).toBe("live");
     expect(m.state.view?.confirmed.map((b) => b.boxId)).toEqual([hex(2), hex(3)]);
+    expect(resyncs).toEqual([]);
+  });
+
+  test("a resume's replay may chain from a change below its from, as after a reload", () => {
+    const { m, resyncs } = live();
+    m.receive(delta("block", 12, [confirmed(3, 12)], [1], block(10)));
+    m.disconnected();
+    const sub = subscribeOf(m.connected());
+    expect(sub.from).toEqual(block(12));
+    m.receive({ type: "subscribed", id: sub.id, key });
+    m.receive(delta("block", 14, [confirmed(4, 14)], [3], block(11)));
+    m.receive(mempool(14));
+    expect(m.state.phase).toBe("live");
+    expect(m.state.view?.lastChange).toEqual(block(14));
     expect(resyncs).toEqual([]);
   });
 
@@ -351,7 +387,7 @@ describe("across a dropped socket", () => {
     m.receive({ type: "subscribed", id: first.id, key });
     m.receive(delta("block", 11, [confirmed(3, 11)], [1]));
     // Not published yet: the replay is not over.
-    expect(m.state.view?.at).toEqual(block(10));
+    expect(m.state.view?.lastChange).toEqual(block(10));
     m.disconnected();
     expect(subscribeOf(m.connected()).from).toEqual(block(11));
   });

@@ -23,7 +23,7 @@ use crate::{
     },
     types::{
         address::{self, Network},
-        ergo::{BoxId, HeaderId},
+        ergo::BoxId,
     },
 };
 
@@ -103,6 +103,20 @@ impl Fixture {
         self.tick().await;
     }
 
+    /// Mines a block that moves one of tree `tree`'s boxes back to it, so the key changes:
+    /// only a block that changes a key is sent to it.
+    async fn mine_changing(&mut self, tree: usize) {
+        self.clock.advance(BLOCK_TIME);
+        {
+            let mut chain = self.sim.lock();
+            let source = crate::sim::testing::box_of(&chain, tree);
+            let to = chain.trees()[tree].clone();
+            let tx = chain.transfer(&[source], &to);
+            chain.mine_txs(vec![tx]);
+        }
+        self.tick().await;
+    }
+
     fn connect(&self) -> Client {
         self.connect_with(Config::default(), 1024)
     }
@@ -145,7 +159,7 @@ impl Fixture {
                 .page(&self.engine, key, cursor.as_deref(), Some(2))
                 .await
                 .unwrap();
-            view.tip = Some(page.as_of);
+            view.known_at = Some(page.as_of);
             for b in &page.items {
                 view.boxes.insert(b.utxo.id, b.inclusion_height);
             }
@@ -173,7 +187,18 @@ impl Fixture {
     fn check(&self, key: &TrackingKey, view: &View) {
         let chain = self.sim.lock();
         let tip = chain.tip();
-        assert_eq!(view.tip, Some(tip), "the view is at the tip");
+        let oracle = chain.oracle();
+        // The key's last change: at or above the oracle's last change of its boxes (the key's
+        // load block, if they have not changed since), on the main chain.
+        let last = view.last.expect("a message named the key's last change");
+        assert_eq!(chain.header_at(last.height), Some(last), "the last change is on the chain");
+        let changed = (1..=tip.height)
+            .rev()
+            .find(|&h| oracle.unspent(key, h) != oracle.unspent(key, h - 1));
+        assert!(
+            changed.is_none_or(|h| last.height >= h),
+            "{last:?} misses a change at {changed:?}"
+        );
         let expected: BTreeMap<BoxId, u32> = chain
             .oracle()
             .unspent(key, tip.height)
@@ -304,7 +329,11 @@ fn subscribe_message(key: Value, from: Option<BlockRef>) -> Value {
 /// A client's view of one key, from its snapshot and the messages since.
 #[derive(Debug, Default)]
 struct View {
-    tip: Option<BlockRef>,
+    /// The block of the key's last change, once a message names it.
+    last: Option<BlockRef>,
+    /// Until then, the block the boxes are known at: the snapshot's, or the `from` of the
+    /// last subscribe. The key's last change is at or below it.
+    known_at: Option<BlockRef>,
     /// Box ids and the heights that included them.
     boxes: BTreeMap<BoxId, u32>,
     mempool: Option<Value>,
@@ -323,27 +352,35 @@ fn block_ref(height: &Value, header_id: &Value) -> BlockRef {
 }
 
 impl View {
+    /// Where a subscribe resumes from: the key's last change, or where the boxes are known.
+    fn from(&self) -> Option<BlockRef> {
+        self.last.or(self.known_at)
+    }
+
     /// Applies a message, checking what the SDK checks.
     fn apply(&mut self, m: &Value) {
         match m["type"].as_str().unwrap() {
             "block" => {
-                let tip = self.tip.expect("a box view has a tip");
                 let block = block_ref(&m["height"], &m["headerId"]);
-                assert_eq!(id::<HeaderId>(&m["parentId"]), tip.header_id, "{block:?} skips");
-                assert_eq!(block.height, tip.height + 1);
-                for s in m["spent"].as_array().unwrap() {
+                let prev = block_ref(&m["prev"]["height"], &m["prev"]["headerId"]);
+                self.chain(prev, "block");
+                assert!(prev.height < block.height);
+                assert!(m.get("parentId").is_none(), "no parentId on the wire");
+                let (spent, created) = (m["spent"].as_array().unwrap(), m["created"].as_array());
+                assert!(!spent.is_empty() || !created.unwrap().is_empty(), "an empty block");
+                for s in spent {
                     assert!(self.boxes.remove(&id(&s["boxId"])).is_some(), "spends unknown");
                 }
-                for b in m["created"].as_array().unwrap() {
+                for b in created.unwrap() {
                     let height = b["inclusionHeight"].as_u64().unwrap() as u32;
                     assert_eq!(height, block.height);
                     assert!(self.boxes.insert(id(&b["boxId"]), height).is_none(), "creates held");
                 }
-                self.tip = Some(block);
+                self.last = Some(block);
             }
             "rollback" => {
                 let block = block_ref(&m["height"], &m["headerId"]);
-                assert_eq!(Some(block), self.tip, "rolls back a block the view is not at");
+                self.chain(block, "rollback");
                 for s in m["spent"].as_array().unwrap() {
                     assert!(self.boxes.remove(&id(&s["boxId"])).is_some(), "undoes unknown");
                 }
@@ -352,18 +389,42 @@ impl View {
                     assert!(height < block.height, "a restored box is older than the block");
                     assert!(self.boxes.insert(id(&b["boxId"]), height).is_none(), "restores held");
                 }
-                self.tip =
-                    Some(BlockRef { height: block.height - 1, header_id: id(&m["parentId"]) });
+                self.last = Some(block_ref(&m["prev"]["height"], &m["prev"]["headerId"]));
             }
             "mempool" => {
-                let tip = self.tip.expect("a box view has a tip");
-                assert_eq!(m["tipHeight"].as_u64(), Some(tip.height.into()));
+                let last = &m["lastChange"];
+                self.chain(block_ref(&last["height"], &last["headerId"]), "mempool");
                 self.mempool = Some(m["pending"].clone());
             }
-            "balance" => self.balance = Some(m.clone()),
-            // The start of the subscription; the view is already at its `from`.
-            "subscribed" => {}
+            "balance" => {
+                let last = &m["lastChange"];
+                if self.known_at.is_some() {
+                    self.chain(block_ref(&last["height"], &last["headerId"]), "balance");
+                }
+                self.balance = Some(m.clone());
+            }
+            // The start of the subscription: the replay chains from its `from`, or below it.
+            "subscribed" => {
+                self.known_at = self.from();
+                self.last = None;
+            }
             other => panic!("{other} does not apply to a view: {m}"),
+        }
+    }
+
+    /// A message naming the key's last change: the view's, or before any message named it,
+    /// one at or below where the boxes are known.
+    fn chain(&mut self, named: BlockRef, kind: &str) {
+        match self.last {
+            Some(last) => assert_eq!(named, last, "{kind} off the key's chain of changes"),
+            None => {
+                let known_at = self.known_at.expect("a box view starts at a block");
+                assert!(named.height <= known_at.height, "{kind} above {known_at:?}");
+                if named.height == known_at.height {
+                    assert_eq!(named, known_at, "{kind} on another fork");
+                }
+                self.last = Some(named);
+            }
         }
     }
 }
@@ -386,9 +447,9 @@ async fn a_box_subscription_replays_from_its_snapshot_then_follows_the_chain() {
     let key = f.tree_key(0);
     let echo = json!({ "address": f.address(0) });
     let mut view = f.snapshot(&key).await;
-    let from = view.tip;
-    for seed in 0..2 {
-        f.mine(seed).await;
+    let from = view.from();
+    for _ in 0..2 {
+        f.mine_changing(0).await;
     }
     f.sim.lock().mempool_add(7);
     f.tick().await;
@@ -405,6 +466,14 @@ async fn a_box_subscription_replays_from_its_snapshot_then_follows_the_chain() {
 
     for seed in 2..6 {
         f.mine(seed).await;
+        let live = client.texts().await;
+        let blocks = live.iter().take_while(|m| m["type"] == "block").count();
+        assert!(live[blocks..].iter().all(|m| m["type"] != "block"), "blocks come first");
+        for m in &live {
+            view.apply(m);
+        }
+        f.check(&key, &view);
+        f.mine_changing(0).await;
         let live = client.texts().await;
         assert_eq!(live[0]["type"], "block", "a block first, then its overlay and balance");
         for m in &live {
@@ -434,7 +503,7 @@ async fn a_subscribe_in_the_middle_of_a_reorg_rolls_back_then_follows_the_new_br
     mine_touching(&mut f);
     f.tick().await;
     let mut view = f.snapshot(&key).await;
-    let orphaned = view.tip.unwrap();
+    let orphaned = view.known_at.unwrap();
 
     f.sim.lock().reorg(1, 1, 99);
     let reverted = f
@@ -457,7 +526,7 @@ async fn a_subscribe_in_the_middle_of_a_reorg_rolls_back_then_follows_the_new_br
 
     f.tick().await;
     let live = client.texts().await;
-    assert_eq!(types(&live)[..2], ["block", "block"], "the new branch");
+    assert_eq!(live[0]["type"], "block", "the new branch changes the key");
     for m in &live {
         view.apply(m);
     }
@@ -471,7 +540,7 @@ async fn a_live_subscription_follows_a_reorg() {
     let (key, echo) = token_key();
     let mut view = f.snapshot(&key).await;
     let mut client = f.connect();
-    client.subscribe(echo, view.tip).await;
+    client.subscribe(echo, view.from()).await;
     for m in &client.texts().await {
         view.apply(m);
     }
@@ -611,7 +680,7 @@ async fn the_new_tip_comes_before_the_blocks_outputs() {
     let mut client = f.connect();
     client.keep_tips = true;
     client
-        .subscribe(json!({ "address": f.address(0) }), view.tip)
+        .subscribe(json!({ "address": f.address(0) }), view.from())
         .await;
     let opening = client.texts().await;
     assert_eq!(types(&opening), ["tip", "subscribed", "mempool", "balance"]);
@@ -637,7 +706,7 @@ async fn the_new_tip_comes_before_the_blocks_outputs() {
         view.apply(m);
     }
     f.check(&key, &view);
-    assert_eq!(client.tips.last().copied(), view.tip);
+    assert_eq!(client.tips.last().copied(), Some(f.sim.lock().tip()));
 }
 
 /// Leaves after following a key, then comes back `blocks` blocks later and subscribes from
@@ -647,7 +716,7 @@ async fn reconnect_after(blocks: u32) -> (Fixture, View, Vec<Value>, Vec<Endpoin
     let (key, echo) = token_key();
     let mut view = f.snapshot(&key).await;
     let mut client = f.connect();
-    client.subscribe(echo.clone(), view.tip).await;
+    client.subscribe(echo.clone(), view.from()).await;
     f.mine(0).await;
     for m in &client.texts().await {
         view.apply(m);
@@ -659,7 +728,7 @@ async fn reconnect_after(blocks: u32) -> (Fixture, View, Vec<Value>, Vec<Endpoin
     }
     let before = f.sim.calls().len();
     let mut client = f.connect();
-    client.subscribe(echo, view.tip).await;
+    client.subscribe(echo, view.from()).await;
     let messages = client.texts().await;
     let calls = f.sim.calls()[before..].to_vec();
     (f, view, messages, calls)
@@ -687,7 +756,7 @@ async fn a_hang_up_leaves_its_keys_evictable_before_the_next_block() {
     let (key, echo) = token_key();
     let view = f.snapshot(&key).await;
     let mut client = f.connect();
-    client.subscribe(echo, view.tip).await;
+    client.subscribe(echo, view.from()).await;
     client.texts().await;
     let stats = || async {
         match f.engine.query(Query::Stats).await.unwrap() {
@@ -870,7 +939,7 @@ async fn subscribing_again_replaces_the_subscription() {
     assert_eq!(types(&client.texts().await), ["subscribed", "balance"]);
     let mut view = f.snapshot(&key).await;
     let echo = json!({ "address": f.address(0) });
-    client.subscribe(echo.clone(), view.tip).await;
+    client.subscribe(echo.clone(), view.from()).await;
     for m in &client.texts().await {
         view.apply(m);
     }
@@ -902,13 +971,13 @@ async fn subscribed_marks_where_a_replacing_subscription_starts() {
     let (key, echo) = token_key();
     let first = f.snapshot(&key).await;
     let mut client = f.connect();
-    client.subscribe(echo.clone(), first.tip).await;
+    client.subscribe(echo.clone(), first.from()).await;
     for seed in 0..3 {
         f.mine(seed).await;
     }
     // Unread: the old subscription's catch-up and three blocks.
     let mut view = f.snapshot(&key).await;
-    client.subscribe(echo.clone(), view.tip).await;
+    client.subscribe(echo.clone(), view.from()).await;
     let messages = client.texts().await;
     // The new subscription's start is the last `subscribed`; the first is the old one's.
     let start = messages
@@ -920,7 +989,7 @@ async fn subscribed_marks_where_a_replacing_subscription_starts() {
     assert_eq!(old[0]["type"], "subscribed", "the old subscription's own start");
     let stale_block = old.iter().find(|m| m["type"] == "block").unwrap();
     assert!(
-        stale_block["height"].as_u64().unwrap() <= view.tip.unwrap().height.into(),
+        stale_block["height"].as_u64().unwrap() <= view.known_at.unwrap().height.into(),
         "an old block would not extend the new snapshot"
     );
 
@@ -943,7 +1012,7 @@ async fn a_refused_replace_ends_the_old_subscription() {
     let (key, echo) = token_key();
     let view = f.snapshot(&key).await;
     let mut client = f.connect();
-    client.subscribe(echo.clone(), view.tip).await;
+    client.subscribe(echo.clone(), view.from()).await;
     client.texts().await;
     client.subscribe(echo.clone(), None).await;
     assert_eq!(
@@ -1233,12 +1302,12 @@ async fn ids_tell_an_older_subscribes_answer_from_the_newest() {
     }
     let mut client = f.connect();
     // Each subscribe is answered, unread, before the client's next message.
-    client.subscribe_as(1, echo.clone(), view.tip).await;
+    client.subscribe_as(1, echo.clone(), view.from()).await;
     sleep(QUIET).await;
     client.unsubscribe(echo.clone()).await;
-    client.subscribe_as(2, echo.clone(), view.tip).await;
+    client.subscribe_as(2, echo.clone(), view.from()).await;
     sleep(QUIET).await;
-    client.subscribe_as(3, echo.clone(), view.tip).await;
+    client.subscribe_as(3, echo.clone(), view.from()).await;
 
     let mut started = false;
     let mut skipped = Vec::new();
@@ -1270,7 +1339,7 @@ async fn an_unsubscribe_stops_the_messages_at_once() {
     let (key, echo) = token_key();
     let view = f.snapshot(&key).await;
     let mut client = f.connect();
-    client.subscribe(echo.clone(), view.tip).await;
+    client.subscribe(echo.clone(), view.from()).await;
     client.texts().await;
     client.unsubscribe(echo).await;
     f.mine(0).await;
@@ -1429,13 +1498,14 @@ async fn cancelled_subscribes_count_against_the_cap_until_they_finish() {
 #[tokio::test(start_paused = true)]
 async fn a_slow_consumer_gets_resync_required_and_is_closed() {
     let mut f = Fixture::new().await;
-    let (key, echo) = token_key();
+    let key = f.tree_key(0);
+    let echo = json!({ "address": f.address(0) });
     let view = f.snapshot(&key).await;
     let mut client = f.connect_with(Config::default(), 4);
-    client.subscribe(echo.clone(), view.tip).await;
-    // Stalled: blocks keep coming while the client reads nothing.
-    for seed in 0..(SINK_CAPACITY as u64 + 10) {
-        f.mine(seed).await;
+    client.subscribe(echo.clone(), view.from()).await;
+    // Stalled: blocks that change the key keep coming while the client reads nothing.
+    for _ in 0..(SINK_CAPACITY + 10) {
+        f.mine_changing(0).await;
     }
     let messages = client.texts().await;
     let last = messages.last().unwrap();
@@ -1454,7 +1524,7 @@ async fn a_client_that_never_reads_is_dropped_after_the_write_timeout() {
     let (key, echo) = token_key();
     let view = f.snapshot(&key).await;
     let client = f.connect_with(Config::default(), 1);
-    client.subscribe(echo, view.tip).await;
+    client.subscribe(echo, view.from()).await;
     for seed in 0..3 {
         f.mine(seed).await;
     }
@@ -1479,13 +1549,13 @@ async fn a_slow_reader_is_not_dropped_during_a_long_catch_up() {
     // Another client holds the key while this one is away.
     let mut holder = f.connect();
     holder.subscribe(echo.clone(), None).await;
-    for seed in 0..6 {
-        f.mine(seed).await;
+    for _ in 0..6 {
+        f.mine_changing(0).await;
     }
     holder.texts().await;
 
     let mut client = f.connect_with(Config::default(), 1);
-    client.subscribe(echo, view.tip).await;
+    client.subscribe(echo, view.from()).await;
     // One message every 15 s: the tip and the catch-up's 9 messages (`subscribed`, 6 blocks,
     // the overlay and the balance) take over two minutes, more than the idle limit's 90 s.
     let mut types = Vec::new();

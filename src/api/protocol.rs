@@ -17,10 +17,7 @@ use crate::{
         wire::{AsOf, Confirmed, Pending, WireBox},
     },
     engine::{BlockRef, Output, PendingTx, ResyncReason, TrackingKey},
-    types::{
-        address::Network,
-        ergo::{BoxId, HeaderId},
-    },
+    types::{address::Network, ergo::BoxId},
 };
 
 /// A key as the client wrote it: `{ "address": ... }` or `{ "tokenId": ... }`, exactly one.
@@ -244,27 +241,34 @@ fn serialize_output<S: Serializer>(
     output: &Output,
 ) -> Result<S::Ok, S::Error> {
     match output {
-        Output::Block { block, parent_id, created, spent, .. } => {
+        Output::Block { block, prev, created, spent, .. } => {
             let created: Vec<_> = created
                 .iter()
                 .map(|utxo| WireBox { utxo, inclusion_height: Some(block.height) })
                 .collect();
-            delta(serializer, "block", key, block, parent_id, &created, spent)
+            delta(serializer, "block", key, block, prev, &created, spent)
         }
-        Output::Rollback { block, parent_id, created, spent, .. } => {
+        Output::Rollback { block, prev, created, spent, .. } => {
             let created: Vec<_> = created.iter().map(WireBox::from).collect();
-            delta(serializer, "rollback", key, block, parent_id, &created, spent)
+            delta(serializer, "rollback", key, block, prev, &created, spent)
         }
-        Output::Mempool { tip_height, pending, .. } => {
+        Output::Mempool { pending, last_change, .. } => {
             let pending: Vec<_> = pending.iter().map(WirePendingTx).collect();
-            let mut s = start(serializer, "Mempool", "mempool", None, key, 2)?;
-            s.serialize_field("tipHeight", tip_height)?;
+            let fields = 1 + usize::from(last_change.is_some());
+            let mut s = start(serializer, "Mempool", "mempool", None, key, fields)?;
+            if let Some(last_change) = last_change {
+                s.serialize_field("lastChange", &AsOf::from(last_change))?;
+            }
             s.serialize_field("pending", &pending)?;
             s.end()
         }
-        Output::Balance { balance, .. } => {
-            let mut s = start(serializer, "Balance", "balance", None, key, 3)?;
+        Output::Balance { balance, last_change, .. } => {
+            let fields = 3 + usize::from(last_change.is_some());
+            let mut s = start(serializer, "Balance", "balance", None, key, fields)?;
             s.serialize_field("asOf", &AsOf::from(&balance.as_of))?;
+            if let Some(last_change) = last_change {
+                s.serialize_field("lastChange", &AsOf::from(last_change))?;
+            }
             s.serialize_field("confirmed", &Confirmed(&balance.confirmed))?;
             s.serialize_field("pending", &Pending(&balance.pending))?;
             s.end()
@@ -285,14 +289,14 @@ fn delta<S: Serializer>(
     kind: &'static str,
     key: Option<&RawValue>,
     block: &BlockRef,
-    parent_id: &HeaderId,
+    prev: &BlockRef,
     created: &[WireBox<'_>],
     spent: &[crate::engine::Spend],
 ) -> Result<S::Ok, S::Error> {
     let mut s = start(serializer, "Delta", kind, None, key, 5)?;
     s.serialize_field("height", &block.height)?;
     s.serialize_field("headerId", &block.header_id)?;
-    s.serialize_field("parentId", parent_id)?;
+    s.serialize_field("prev", &AsOf::from(prev))?;
     s.serialize_field("created", created)?;
     s.serialize_field("spent", spent)?;
     s.end()

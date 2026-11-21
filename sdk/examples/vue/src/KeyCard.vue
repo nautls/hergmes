@@ -61,7 +61,9 @@ const confirmedIds = computed(
       <h3>
         Spendable: {{ state.view.spendable.length }} boxes,
         {{ erg(state.view.spendableTotals.nanoErgs) }}
-        <span class="muted">at {{ state.view.at.height.toLocaleString() }}</span>
+        <span class="muted">
+          last change at {{ state.view.lastChange.height.toLocaleString() }}
+        </span>
       </h3>
       <ul class="boxes">
         <li v-for="box in state.view.spendable" :key="box.boxId">

@@ -18,7 +18,7 @@
 //!
 //! `balance` tracks synthetic addresses balance-only, each holding ERG and `<tokens-per-key>`
 //! distinct tokens (default two), and reports the growth per key and what an empty block then
-//! takes, in microseconds: a block walks only the keys with boxes, so with balance-only keys
+//! takes, in microseconds: a block walks only the keys it changes, so with balance-only keys
 //! alone that time should stay near zero however many there are. A key's running totals keep
 //! one entry per token it holds, so runs at several token counts give the cost of a key with
 //! none and the cost of each token. Its trees are P2PK ones (36 bytes) unless `<tree-bytes>`
@@ -209,7 +209,7 @@ fn balance(keys: usize, tokens: usize, tree_bytes: usize) {
     let Reply::Stats(stats) = engine.query(Query::Stats) else { unreachable!() };
     assert_eq!(stats.balance_keys, keys, "every key was loaded");
 
-    // Empty blocks: what every block pays for the keys, with no change to any.
+    // Empty blocks: what a block pays for the keys when it changes none.
     let blocks = 20;
     let started = std::time::Instant::now();
     for _ in 0..blocks {

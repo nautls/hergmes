@@ -126,8 +126,8 @@ fn check_state(
         if overlay != previous {
             expected.push(Output::Mempool {
                 key: key.clone(),
-                tip_height: tip.height,
                 pending: overlay.clone(),
+                last_change: None,
             });
             *previous = overlay.clone();
         }
@@ -387,14 +387,17 @@ fn an_empty_overlay_is_not_sent_until_it_was_not_empty() {
     let spend = pay(0x10, (1, OWNER), OTHER);
     let outputs = mempool.apply_snapshot(snapshot(vec![spend]), at(1), Some(at(1)), confirmed);
     assert_eq!(outputs.len(), 1);
-    let Output::Mempool { key: k, tip_height, pending } = &outputs[0] else {
+    let Output::Mempool { key: k, pending, .. } = &outputs[0] else {
         panic!("a mempool message");
     };
-    assert_eq!((k, *tip_height, pending.len()), (&key(OWNER), 1, 1));
+    assert_eq!((k, pending.len()), (&key(OWNER), 1));
 
     // The tx leaves: the key's subscribers must drop it.
     let outputs = mempool.apply_snapshot(snapshot(vec![]), at(1), Some(at(1)), confirmed);
-    assert_eq!(outputs, vec![Output::Mempool { key: key(OWNER), tip_height: 1, pending: vec![] }]);
+    assert_eq!(
+        outputs,
+        vec![Output::Mempool { key: key(OWNER), pending: vec![], last_change: None }]
+    );
 }
 
 #[test]

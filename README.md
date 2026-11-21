@@ -251,16 +251,33 @@ only the last tip. Clients send JSON text:
 ```
 
 A subscribe that takes effect is answered with `subscribed`. A subscription with `from` (a page's
-`asOf`) then replays the blocks since, or rolls back to the fork point, and sends the current
-`mempool` overlay and, for an address, its `balance`; `block`, `rollback`, `mempool` and `balance`
-messages follow live. One without `from` gets only `balance` messages; if no one tracks the address,
-the relay reads its balance once and keeps it current from each block, with no boxes, so it takes an
-address of any size. Subscribing again to a key replaces its subscription, even if the new subscribe
-is refused; after a replace or an unsubscribe, a key's messages before the next `subscribed` belong
-to the old subscription. A subscribe's answer (`subscribed`, `rejected` or `resync_required`)
-carries its `id`, an integer the client picks: an older subscribe's answer can arrive after the
-client sent a newer message for the key, so a client drops the key's messages until the answer with
-its latest `id` (or, sending no ids, waits for a key's answer before its next message).
+`asOf`, or on a resume the key's last change) then replays the key's changes since, or rolls them
+back to the fork point, and sends the current `mempool` overlay and, for an address, its `balance`;
+`block`, `rollback`, `mempool` and `balance` messages follow live. One without `from` gets only
+`balance` messages; if no one tracks the address, the relay reads its balance once and keeps it
+current from each block, with no boxes, so it takes an address of any size. Subscribing again to a
+key replaces its subscription, even if the new subscribe is refused; after a replace or an
+unsubscribe, a key's messages before the next `subscribed` belong to the old subscription. A
+subscribe's answer (`subscribed`, `rejected` or `resync_required`) carries its `id`, an integer the
+client picks: an older subscribe's answer can arrive after the client sent a newer message for the
+key, so a client drops the key's messages until the answer with its latest `id` (or, sending no ids,
+waits for a key's answer before its next message).
+
+A key gets only the blocks that change its boxes: a block that leaves them alone sends nothing.
+Each `block` and `rollback` carries `prev`, the key's change before it (its load block before the
+first), and each `mempool` and, for a key followed with its boxes, each `balance` carries
+`lastChange`, the key's last change. So a client chains the key's changes as it would blocks:
+
+- a `block` must have `prev` equal to the client's last change, which becomes the block;
+- a `rollback` must name the client's last change, which becomes its `prev`;
+- a `mempool` or `balance` must name the client's last change;
+- until a message names it, after a snapshot or a resume, the last change is the `from` block or
+  one below it, and the first message to name one sets it.
+
+Anything else means a change was missed: take a new snapshot. A subscription resumes from its last
+change, which the relay accepts however old it is, as long as it can still replay every change
+since. The relay's tip is the height to show; a key's last change says only when its boxes last
+moved.
 
 A refused subscribe gets `rejected`, with REST's error codes, `retryAfter` (seconds) where REST
 would send `Retry-After`, and two codes of its own: `too_many_subscriptions` and `from_required`

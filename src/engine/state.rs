@@ -148,16 +148,17 @@ pub struct Engine {
     next_id: u32,
     /// Tracked keys, in the order messages go out in.
     ids: BTreeMap<TrackingKey, KeyId>,
-    /// The keys tracked with their boxes, in the same order: the ones a block sends a
-    /// `Block` to, walked apart so a block does not walk balance-only keys, which get none.
-    /// Their trees are shared with `ids`, not copied.
-    box_keys: BTreeMap<TrackingKey, KeyId>,
     /// The balance-only keys, by tree: how a block's inputs find them, since they hold no
     /// boxes in the reverse index.
     balance_trees: HashMap<ErgoTree, KeyId>,
     /// The keys' charges, summed: with the reverse index's length, what the cap counts.
     charges: usize,
     keys: HashMap<KeyId, KeyState>,
+    /// For each key tracked with its boxes, the block of its last change, or its load block
+    /// before the first: what its next `Block` chains to, and a resume from it has nothing to
+    /// replay however old it is. Kept apart from [`KeyState`] so a balance-only key, which
+    /// has no boxes to chain, does not pay for it.
+    last_changes: HashMap<KeyId, BlockRef>,
     /// The keys with no subscribers, least recently active first, with their box counts:
     /// the ones the idle sweep and eviction look at, in the order they go. Kept apart, counts
     /// included, so each walks only the idle keys it takes, not every key.
@@ -186,10 +187,10 @@ impl Engine {
             seq: 0,
             next_id: 0,
             ids: BTreeMap::new(),
-            box_keys: BTreeMap::new(),
             balance_trees: HashMap::new(),
             charges: 0,
             keys: HashMap::new(),
+            last_changes: HashMap::new(),
             idle: BTreeMap::new(),
             reverse: BTreeMap::new(),
             ring: VecDeque::new(),
@@ -230,6 +231,41 @@ impl Engine {
     /// `ResyncRequired` / `LoadRejected` / `CapacityExceeded`, then `Mempool`, then
     /// `Balance`, each in key order.
     pub fn apply(&mut self, event: Event) -> Result<Vec<Output>, EngineError> {
+        let mut outputs = self.apply_event(event)?;
+        self.stamp_last_changes(&mut outputs);
+        Ok(outputs)
+    }
+
+    /// Sets `last_change` on each `Mempool` and `Balance` for a key tracked with its boxes.
+    fn stamp_last_changes(&self, outputs: &mut [Output]) {
+        for output in outputs {
+            if let Output::Mempool { key, last_change, .. }
+            | Output::Balance { key, last_change, .. } = output
+            {
+                *last_change = self.last_change(key);
+            }
+        }
+    }
+
+    /// Records a key loaded at the tip on the tip's ring entry, for the tip's revert to drop.
+    /// A load is only ever at the tip, and the tip has an entry: with the ring empty, a revert
+    /// drops every key anyway.
+    fn loaded_at_tip(&mut self, key_id: KeyId) {
+        debug_assert!(
+            self.ring.back().is_none_or(|d| Some(d.block) == self.tip),
+            "the ring ends at the tip"
+        );
+        if let Some(delta) = self.ring.back_mut() {
+            delta.loaded.push(key_id);
+        }
+    }
+
+    /// The block of a key's last change, if it is tracked with its boxes.
+    fn last_change(&self, key: &TrackingKey) -> Option<BlockRef> {
+        self.last_changes.get(self.ids.get(key)?).copied()
+    }
+
+    fn apply_event(&mut self, event: Event) -> Result<Vec<Output>, EngineError> {
         Ok(match event {
             Event::BlockApplied(block) => self.block_applied(&block)?,
             Event::BlockReverted(block) => self.block_reverted(block)?,
@@ -294,7 +330,11 @@ impl Engine {
             Query::Boxes(ids) => Reply::Boxes(self.ring_boxes(&ids)),
             Query::PoolBox(id) => Reply::PoolBox(self.mempool.pool_box(&id)),
             Query::MempoolSnapshot => Reply::MempoolSnapshot(self.mempool.latest()),
-            Query::CatchUp { key, from } => Reply::CatchUp(self.catch_up(key, from)),
+            Query::CatchUp { key, from } => {
+                let mut outputs = self.catch_up(key, from);
+                self.stamp_last_changes(&mut outputs);
+                Reply::CatchUp(outputs)
+            }
             Query::Stats => Reply::Stats(self.stats()),
         }
     }
@@ -338,6 +378,7 @@ impl Engine {
             boxes: HashMap::new(),
             keys: HashMap::new(),
             balances: HashMap::new(),
+            loaded: Vec::new(),
         };
         let mut before: BTreeMap<KeyId, Totals> = BTreeMap::new();
         let mut mined = HashSet::new();
@@ -358,7 +399,11 @@ impl Engine {
                         before.entry(key_id).or_insert_with(|| totals.clone());
                         totals.sub(&input.utxo);
                     }
-                    let key_delta = delta.keys.entry(key_id).or_default();
+                    let prev = self.last_changes[&key_id];
+                    let key_delta = delta
+                        .keys
+                        .entry(key_id)
+                        .or_insert_with(|| KeyDelta::new(prev));
                     match key_delta.created.iter().position(|c| *c == id) {
                         Some(i) => {
                             key_delta.created.remove(i);
@@ -411,7 +456,12 @@ impl Engine {
                         totals.add(&output.utxo);
                     }
                     self.reverse.insert((id, key_id), block_ref.height);
-                    delta.keys.entry(key_id).or_default().created.push(id);
+                    let prev = self.last_changes[&key_id];
+                    let key_delta = delta
+                        .keys
+                        .entry(key_id)
+                        .or_insert_with(|| KeyDelta::new(prev));
+                    key_delta.created.push(id);
                 }
                 if held {
                     let utxo = Arc::new(output.utxo.clone());
@@ -440,6 +490,7 @@ impl Engine {
         }
         delta.balances.retain(|id, _| !mismatched.contains(id));
         for &key_id in delta.keys.keys() {
+            self.last_changes.insert(key_id, block_ref);
             self.recount(key_id);
         }
         let referenced: HashSet<BoxId> = delta
@@ -455,27 +506,32 @@ impl Engine {
         delta.boxes.retain(|id, _| referenced.contains(id));
 
         let mut outputs = Vec::new();
-        // A `Block` for every key with boxes, and a resync for every balance-only key whose
-        // totals the block could not take, merged in key order.
+        // A `Block` for every key whose boxes the block changed, and a resync for every
+        // balance-only key whose totals the block could not take, merged in key order. A key
+        // the block left alone gets nothing: its next change names its last one as `prev`.
         let dropped: Vec<TrackingKey> = mismatched
             .iter()
             .map(|id| self.keys[id].key.clone())
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect();
+        let changed: BTreeMap<&TrackingKey, &KeyDelta> = delta
+            .keys
+            .iter()
+            .map(|(id, d)| (&self.keys[id].key, d))
+            .collect();
         let mut resyncs = dropped.iter().peekable();
-        for (key, key_id) in &self.box_keys {
+        for (key, key_delta) in changed {
             while let Some(resync) = resyncs.next_if(|k| *k < key) {
                 let reason = ResyncReason::BalanceMismatch;
                 outputs.push(Output::ResyncRequired { key: resync.clone(), reason });
             }
-            let key_delta = delta.keys.get(key_id);
             outputs.push(Output::Block {
                 key: key.clone(),
                 block: block_ref,
-                parent_id: delta.parent_id,
-                created: key_delta.map_or_else(Vec::new, |d| created_boxes(&delta, d)),
-                spent: key_delta.map_or_else(Vec::new, |d| d.spent.clone()),
+                prev: key_delta.prev,
+                created: created_boxes(&delta, key_delta),
+                spent: key_delta.spent.clone(),
             });
         }
         for resync in resyncs {
@@ -559,7 +615,15 @@ impl Engine {
         let mut outputs = Vec::new();
         let (mut dropped, mut changed) = (Vec::new(), Vec::new());
         let mut before: BTreeMap<KeyId, Totals> = BTreeMap::new();
-        for (key, &key_id) in &self.ids {
+        // Only the keys the block concerns, in key order: those loaded while it was the tip,
+        // and those it changed, so a revert costs the same however many keys are tracked. A
+        // key loaded at it and upgraded at a later block has another `since`, and stays.
+        let concerned: BTreeMap<TrackingKey, KeyId> = (delta.loaded.iter())
+            .chain(delta.balances.keys())
+            .chain(delta.keys.keys())
+            .map(|&id| (self.keys[&id].key.clone(), id))
+            .collect();
+        for (key, &key_id) in &concerned {
             let state = self.keys.get_mut(&key_id).expect("an id is tracked");
             if state.since == block {
                 // Loaded at this block: its share of the block was never recorded.
@@ -580,8 +644,8 @@ impl Engine {
                 before.insert(key_id, std::mem::replace(totals, moved));
                 continue;
             }
-            let key_delta = delta.keys.get(&key_id);
-            if let Some(d) = key_delta {
+            if let Some(d) = delta.keys.get(&key_id) {
+                self.last_changes.insert(key_id, d.prev);
                 changed.push(key_id);
                 if let Some(totals) = &state.totals {
                     before.insert(key_id, totals.clone());
@@ -607,8 +671,8 @@ impl Engine {
                     self.reverse
                         .insert((spend.box_id, key_id), stored.inclusion_height);
                 }
+                outputs.push(rollback(key, &delta, d));
             }
-            outputs.push(rollback(key, &delta, key_delta));
         }
         for key_id in changed {
             self.recount(key_id);
@@ -724,8 +788,9 @@ impl Engine {
         }
         self.charges += charge;
         self.ids.insert(key.clone(), key_id);
-        self.box_keys.insert(key.clone(), key_id);
         self.keys.insert(key_id, state);
+        self.last_changes.insert(key_id, as_of);
+        self.loaded_at_tip(key_id);
 
         // The key's boxes are now checked against its set, which can leave txs out.
         let confirmed = Confirmed::new(&self.ids, &self.balance_trees, &self.reverse);
@@ -796,6 +861,7 @@ impl Engine {
         self.ids.insert(key.clone(), key_id);
         self.balance_trees.insert(tree, key_id);
         self.keys.insert(key_id, state);
+        self.loaded_at_tip(key_id);
         // No overlay is decided again: a balance-only key's boxes are not checked against a
         // set, as for an untracked key.
         self.mempool.track(key.clone());
@@ -943,8 +1009,8 @@ impl Engine {
             let Some(key_id) = self.ids.remove(key) else {
                 continue;
             };
-            self.box_keys.remove(key);
             let state = self.keys.remove(&key_id).expect("an id is tracked");
+            self.last_changes.remove(&key_id);
             self.idle.remove(&(state.last_seen_ms, key_id));
             self.charges -= state.charge;
             if let (true, TrackingKey::Tree(tree)) = (state.balance_only, key) {
@@ -960,6 +1026,9 @@ impl Engine {
             return;
         }
         for delta in self.ring.iter_mut().chain(self.orphans.values_mut()) {
+            if !delta.loaded.is_empty() {
+                delta.loaded.retain(|key_id| !gone.contains(key_id));
+            }
             if !delta.balances.is_empty() {
                 delta.balances.retain(|key_id, _| !gone.contains(key_id));
             }
@@ -1050,7 +1119,7 @@ impl Engine {
         let state = self.keys.get_mut(key_id).expect("an id is tracked");
         let pending = self.mempool.tracked_delta(key);
         if let Some(balance) = changed_balance(state, tip, before, pending) {
-            outputs.push(Output::Balance { key: key.clone(), balance });
+            outputs.push(Output::Balance { key: key.clone(), balance, last_change: None });
         }
     }
 
@@ -1168,11 +1237,22 @@ impl Engine {
         }
         let key_id = self.ids[&key];
         let mut outputs = Vec::new();
-        if let Some(from) = from {
-            // Roll back through orphaned blocks to the main chain, then replay.
+        // From the key's last change there is nothing to replay, however old it is: the key's
+        // boxes are the same at every block since.
+        let last_change = self.last_changes.get(&key_id).copied();
+        if let Some(from) = from.filter(|&from| Some(from) != last_change) {
+            // Roll back through orphaned blocks to the main chain, then replay. Only the
+            // blocks that changed the key are sent.
             let mut cursor = from;
             let mut rollbacks = Vec::new();
-            while !self.on_main(cursor) {
+            // Below the floor, `from` is still on the key's chain if the key's oldest change
+            // in the ring chains to it: every change since is in the ring. So a quiet key
+            // whose client was away while it changed replays instead of resyncing.
+            let chained_below = from.height < self.floor()
+                && (self.ring.iter())
+                    .find_map(|d| d.keys.get(&key_id))
+                    .is_some_and(|d| d.prev == from);
+            while !chained_below && !self.on_main(cursor) {
                 let reason = if cursor.height < self.floor() {
                     ResyncReason::OutsideWindow
                 } else {
@@ -1192,24 +1272,28 @@ impl Engine {
                 return vec![Output::ResyncRequired { key, reason: ResyncReason::NotTracked }];
             }
             for orphan in rollbacks {
-                outputs.push(rollback(&key, orphan, orphan.keys.get(&key_id)));
+                if let Some(key_delta) = orphan.keys.get(&key_id) {
+                    outputs.push(rollback(&key, orphan, key_delta));
+                }
             }
             for delta in self.ring_above(cursor.height) {
-                let key_delta = delta.keys.get(&key_id);
-                outputs.push(Output::Block {
-                    key: key.clone(),
-                    block: delta.block,
-                    parent_id: delta.parent_id,
-                    created: key_delta.map_or_else(Vec::new, |d| created_boxes(delta, d)),
-                    spent: key_delta.map_or_else(Vec::new, |d| d.spent.clone()),
-                });
+                if let Some(key_delta) = delta.keys.get(&key_id) {
+                    outputs.push(Output::Block {
+                        key: key.clone(),
+                        block: delta.block,
+                        prev: key_delta.prev,
+                        created: created_boxes(delta, key_delta),
+                        spent: key_delta.spent.clone(),
+                    });
+                }
             }
-            let tip_height = self.tip.map_or(0, |t| t.height);
+        }
+        if from.is_some() {
             let pending = self.mempool.overlay(&key);
-            outputs.push(Output::Mempool { key: key.clone(), tip_height, pending });
+            outputs.push(Output::Mempool { key: key.clone(), pending, last_change: None });
         }
         if let Some(balance) = self.balance(&key) {
-            outputs.push(Output::Balance { key, balance });
+            outputs.push(Output::Balance { key, balance, last_change: None });
         }
         outputs
     }
@@ -1256,27 +1340,22 @@ fn created_boxes(delta: &BlockDelta, key_delta: &KeyDelta) -> Vec<Arc<UTxO>> {
         .collect()
 }
 
-/// The `Rollback` of `delta` for `key`: its sides swapped.
-fn rollback(key: &TrackingKey, delta: &BlockDelta, key_delta: Option<&KeyDelta>) -> Output {
-    let (created, spent) = match key_delta {
-        Some(d) => (
-            d.spent
-                .iter()
-                .map(|s| delta.boxes[&s.box_id].clone())
-                .collect(),
-            d.created
-                .iter()
-                .map(|id| Spend { box_id: *id, tx_id: delta.boxes[id].utxo.transaction_id })
-                .collect(),
-        ),
-        None => (Vec::new(), Vec::new()),
-    };
+/// The `Rollback` of `delta` for `key`, whose share of it is `key_delta`: its sides swapped.
+fn rollback(key: &TrackingKey, delta: &BlockDelta, key_delta: &KeyDelta) -> Output {
     Output::Rollback {
         key: key.clone(),
         block: delta.block,
-        parent_id: delta.parent_id,
-        created,
-        spent,
+        prev: key_delta.prev,
+        created: key_delta
+            .spent
+            .iter()
+            .map(|s| delta.boxes[&s.box_id].clone())
+            .collect(),
+        spent: key_delta
+            .created
+            .iter()
+            .map(|id| Spend { box_id: *id, tx_id: delta.boxes[id].utxo.transaction_id })
+            .collect(),
     }
 }
 

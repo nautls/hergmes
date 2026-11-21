@@ -268,11 +268,13 @@ test(`subscriptions converge to the oracle at every checkpoint (SEED=${String(SE
         const exp = expected.get(name);
         if (!exp) return false;
         if (box.state.phase === "rejected") return exp.boxes.length === 0;
-        const at: BlockRef | undefined = box.state.view?.at;
+        // Only blocks that change a key reach it: its last change is at or below the tip.
+        const at: BlockRef | undefined = box.state.view?.lastChange;
         const want = wanted(exp);
         return (
           box.state.phase === "live" &&
-          isDeepStrictEqual(at, tip) &&
+          at !== undefined &&
+          at.height <= tip.height &&
           isDeepStrictEqual(held(box), want) &&
           (balance === undefined ||
             (balance.state.phase === "live" &&
@@ -314,7 +316,7 @@ test(`subscriptions converge to the oracle at every checkpoint (SEED=${String(SE
           continue;
         }
         expect(box.state.phase, keyContext).toBe("live");
-        expect(box.state.view?.at, keyContext).toEqual(tip);
+        expect(box.state.view?.lastChange.height, keyContext).toBeLessThanOrEqual(tip.height);
         const want = wanted(exp);
         expect(held(box), keyContext).toEqual(want);
         if (want.balance && box.state.view) {

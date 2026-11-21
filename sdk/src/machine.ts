@@ -4,13 +4,18 @@
  * subscription goes snapshot → catching up → live, and back to a snapshot whenever its view
  * can't be trusted: the relay asks (`resync_required`), a block does not chain, or a message
  * names boxes the view does not hold as it says. It survives the socket: after a reconnect it
- * subscribes from the block its view is at, and a failure that is for now waits and starts
+ * subscribes from the key's last change, and a failure that is for now waits and starts
  * again.
+ *
+ * The relay sends a key only the blocks that change it, each naming the key's change before
+ * it (`prev`), and its overlays and balances name the key's last change. So the view follows
+ * the key's chain of changes, and a skipped one shows as a message that names a change the
+ * view does not have.
  */
 
 import { ensureUTxOBigInt, type Box } from "@fleet-sdk/common";
 import { RelayError } from "./error.ts";
-import type { ClientMessage, ServerMessage, WirePendingTx } from "./protocol.ts";
+import type { ClientMessage, ServerMessage } from "./protocol.ts";
 import type {
   Assets as WireAssets,
   BlockRef,
@@ -41,9 +46,13 @@ export interface Balance {
   pending: Assets;
 }
 
-/** A key's boxes at block `at`, and the mempool's effect on them. */
+/**
+ * A key's boxes, and the mempool's effect on them. The boxes are the key's at every block from
+ * `lastChange`, the block of its last change (or of its load, before any), to the relay's tip
+ * (`Relay.tip`), which is the height to show.
+ */
 export interface BoxView {
-  at: BlockRef;
+  lastChange: BlockRef;
   /** In `(inclusionHeight, boxId)` order. */
   confirmed: readonly ConfirmedBox[];
   /** The txs the overlay holds, parents before children. */
@@ -162,13 +171,19 @@ export interface Resync {
 }
 
 interface Working {
-  at: BlockRef;
+  /** The block of the key's last change, once a message named it. */
+  last: BlockRef | undefined;
+  /**
+   * Until then, where the boxes are known to be: the snapshot's block, or the `from` of a
+   * resume. The key's last change is at or below it.
+   */
+  knownAt: BlockRef;
   boxes: Map<string, ConfirmedBox>;
   pending: PendingTx[];
   /**
    * `boxes` in keyset order, and what is spendable now, as last published; `undefined` once
-   * stale. The relay sends a block to every key on every block, most of them touching
-   * nothing, and those reuse both rather than sorting and copying every box again.
+   * stale. An overlay or a balance that leaves the boxes alone reuses the confirmed half
+   * rather than sorting and copying every box again.
    */
   confirmed: ConfirmedBox[] | undefined;
   spendable: { boxes: Box<bigint>[]; totals: Assets } | undefined;
@@ -233,7 +248,8 @@ export class KeyMachine {
   snapshotLoaded(generation: number, asOf: BlockRef, boxes: readonly WireConfirmedBox[]): Action[] {
     if (generation !== this.#generation || this.#state.phase !== "snapshot") return [];
     this.#working = {
-      at: asOf,
+      last: undefined,
+      knownAt: asOf,
       boxes: new Map(boxes.map((box) => [box.boxId, ensureUTxOBigInt(box) as ConfirmedBox])),
       pending: [],
       confirmed: undefined,
@@ -282,7 +298,7 @@ export class KeyMachine {
       case "rollback":
         return this.#rollback(message);
       case "mempool":
-        return this.#mempool(message.tipHeight, message.pending);
+        return this.#mempool(message);
       case "balance":
         return this.#balance(message);
       case "tip":
@@ -305,15 +321,21 @@ export class KeyMachine {
   }
 
   /**
-   * A socket is open or opening again: a subscription the cut ended subscribes from the block
-   * its view is at, or, balance-only, subscribes again.
+   * A socket is open or opening again: a subscription the cut ended subscribes from the key's
+   * last change, or, balance-only, subscribes again.
    */
   connected(): Action[] {
     this.#online = true;
     if (this.#ended || this.#state.phase !== "disconnected") return [];
     if (!this.boxes) return this.#subscribe(undefined);
     const w = this.#working;
-    return w ? this.#subscribe(w.at) : this.#snapshot();
+    if (!w) return this.#snapshot();
+    // The replay names the last change again. After the key was loaded anew it chains from
+    // the new load's changes, which may name one below `from` rather than `from` itself.
+    const from = w.last ?? w.knownAt;
+    w.knownAt = from;
+    w.last = undefined;
+    return this.#subscribe(from);
   }
 
   /** The subscription is over (the relay closed): nothing more is read, sent or retried. */
@@ -389,25 +411,23 @@ export class KeyMachine {
   #block(m: Extract<ServerMessage, { type: "block" }>): Action[] {
     const w = this.#working;
     if (!w) return this.#resync("block_without_view");
-    if (m.parentId !== w.at.headerId || m.height !== w.at.height + 1) {
+    if (!chains(w, m.prev) || m.prev.height >= m.height) {
       return this.#resync("block_does_not_chain");
     }
     if (!m.spent.every((s) => w.boxes.has(s.boxId))) return this.#resync("spends_unknown_box");
     const created = m.created.every((b) => !w.boxes.has(b.boxId) && b.inclusionHeight === m.height);
     if (!created) return this.#resync("creates_held_box");
-    if (m.spent.length > 0 || m.created.length > 0) {
-      const spent = new Set(m.spent.map((s) => s.boxId));
-      for (const id of spent) w.boxes.delete(id);
-      const created = m.created.map((b) => ensureUTxOBigInt(b) as ConfirmedBox);
-      for (const b of created) w.boxes.set(b.boxId, b);
-      // A block's boxes are the highest, so they go after the rest, in id order.
-      w.confirmed = w.confirmed && [
-        ...w.confirmed.filter((b) => !spent.has(b.boxId)),
-        ...created.sort(keysetOrder),
-      ];
-      w.spendable = undefined;
-    }
-    w.at = { height: m.height, headerId: m.headerId };
+    const spent = new Set(m.spent.map((s) => s.boxId));
+    for (const id of spent) w.boxes.delete(id);
+    const confirmed = m.created.map((b) => ensureUTxOBigInt(b) as ConfirmedBox);
+    for (const b of confirmed) w.boxes.set(b.boxId, b);
+    // A block's boxes are the highest, so they go after the rest, in id order.
+    w.confirmed = w.confirmed && [
+      ...w.confirmed.filter((b) => !spent.has(b.boxId)),
+      ...confirmed.sort(keysetOrder),
+    ];
+    w.spendable = undefined;
+    w.last = { height: m.height, headerId: m.headerId };
     this.#publish();
     return [];
   }
@@ -415,29 +435,30 @@ export class KeyMachine {
   #rollback(m: Extract<ServerMessage, { type: "rollback" }>): Action[] {
     const w = this.#working;
     if (!w) return this.#resync("rollback_without_view");
-    if (m.headerId !== w.at.headerId || m.height !== w.at.height) {
+    const block = { height: m.height, headerId: m.headerId };
+    if (!chains(w, block) || m.prev.height >= m.height) {
       return this.#resync("rollback_of_another_block");
     }
     if (!m.spent.every((s) => w.boxes.has(s.boxId))) return this.#resync("undoes_unknown_box");
     const restored = m.created.every((b) => !w.boxes.has(b.boxId) && b.inclusionHeight < m.height);
     if (!restored) return this.#resync("restores_held_box");
-    if (m.spent.length > 0 || m.created.length > 0) {
-      for (const s of m.spent) w.boxes.delete(s.boxId);
-      for (const b of m.created) w.boxes.set(b.boxId, ensureUTxOBigInt(b) as ConfirmedBox);
-      // Restored boxes are older ones, anywhere in the order.
-      w.confirmed = undefined;
-      w.spendable = undefined;
-    }
-    w.at = { height: m.height - 1, headerId: m.parentId };
+    for (const s of m.spent) w.boxes.delete(s.boxId);
+    for (const b of m.created) w.boxes.set(b.boxId, ensureUTxOBigInt(b) as ConfirmedBox);
+    // Restored boxes are older ones, anywhere in the order.
+    w.confirmed = undefined;
+    w.spendable = undefined;
+    w.last = m.prev;
     this.#publish();
     return [];
   }
 
-  #mempool(tipHeight: number, pending: readonly WirePendingTx[]): Action[] {
+  #mempool(m: Extract<ServerMessage, { type: "mempool" }>): Action[] {
     const w = this.#working;
     if (!w) return this.#resync("mempool_without_view");
-    if (tipHeight !== w.at.height) return this.#resync("mempool_at_another_height");
-    w.pending = pending.map((tx) => ({
+    if (!m.lastChange || !chains(w, m.lastChange)) {
+      return this.#resync("mempool_at_another_change");
+    }
+    w.pending = m.pending.map((tx) => ({
       txId: tx.txId,
       created: tx.created.map((b) => ensureUTxOBigInt(b)),
       spent: tx.spent,
@@ -451,9 +472,11 @@ export class KeyMachine {
   #balance(m: Extract<ServerMessage, { type: "balance" }>): Action[] {
     const balance = { asOf: m.asOf, confirmed: assets(m.confirmed), pending: assets(m.pending) };
     if (this.boxes) {
-      // Sent after the block and the overlay it is computed with.
-      const at = this.#working?.at;
-      if (at?.headerId !== m.asOf.headerId) return this.#resync("balance_at_another_block");
+      // Sent after the block and the overlay it is computed with, naming the same change.
+      const w = this.#working;
+      if (!w || !m.lastChange || !chains(w, m.lastChange)) {
+        return this.#resync("balance_at_another_change");
+      }
       this.#set({ balance });
       return [];
     }
@@ -466,14 +489,14 @@ export class KeyMachine {
   /** Publishes the working view, once the catch-up is done or as `phase` makes it. */
   #publish(phase?: Phase): void {
     const w = this.#working;
-    if (!w) return;
+    if (!w?.last) return;
     const next = phase ?? this.#state.phase;
     if (next !== "live") return;
     this.#attempt = 0;
     const confirmed = (w.confirmed ??= [...w.boxes.values()].sort(keysetOrder));
     w.spendable ??= spendableNow(confirmed, w.boxes, w.pending);
     const view: BoxView = {
-      at: w.at,
+      lastChange: w.last,
       confirmed,
       pending: w.pending,
       spendable: w.spendable.boxes,
@@ -481,6 +504,20 @@ export class KeyMachine {
     };
     this.#set({ phase: next, view: Object.freeze(view) });
   }
+}
+
+/**
+ * Whether a message naming `named` as the key's last change fits the view: it is the view's
+ * last change, or, before any message named one, below where the boxes are known, or that
+ * block itself. Then it is the view's last change.
+ */
+function chains(w: Working, named: BlockRef): boolean {
+  if (w.last) return named.height === w.last.height && named.headerId === w.last.headerId;
+  if (named.height > w.knownAt.height) return false;
+  // At the known block's own height, only that block is on the view's chain.
+  if (named.height === w.knownAt.height && named.headerId !== w.knownAt.headerId) return false;
+  w.last = named;
+  return true;
 }
 
 /**

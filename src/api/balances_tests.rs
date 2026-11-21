@@ -55,7 +55,7 @@ impl Recording {
         let mut streamed = self.streamed.lock().unwrap();
         for output in outputs {
             match output {
-                Output::Balance { key, balance } => {
+                Output::Balance { key, balance, .. } => {
                     streamed.insert(key.clone(), balance.clone());
                 }
                 Output::ResyncRequired { key, .. } => {

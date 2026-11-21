@@ -74,7 +74,7 @@ impl Mempool {
         match tip {
             Some(tip) if tip == observed_tip => {
                 self.install(txs, tip, is_confirmed);
-                self.emit(tip.height)
+                self.emit()
             }
             Some(tip) if observed_tip.height > tip.height => {
                 debug!(
@@ -131,7 +131,7 @@ impl Mempool {
         match self.ahead.take() {
             Some((txs, observed)) if observed == tip => {
                 self.install(txs, tip, is_confirmed);
-                return self.emit(tip.height);
+                return self.emit();
             }
             Some(ahead) if ahead.1.height > tip.height => self.ahead = Some(ahead),
             Some((txs, observed)) => {
@@ -162,7 +162,7 @@ impl Mempool {
                 "Mempool snapshot pruned by block"
             );
         }
-        self.emit(tip.height)
+        self.emit()
     }
 
     /// The engine reverted its tip and is now at `tip`. The snapshot in use is dropped: it
@@ -173,7 +173,7 @@ impl Mempool {
         if self.snapshot.take().is_some() {
             debug!(height = tip.height, "Mempool snapshot dropped by revert");
         }
-        self.emit(tip.height)
+        self.emit()
     }
 
     /// Forgets every snapshot, as when the engine loses its tip.
@@ -208,8 +208,7 @@ impl Mempool {
             // compare, where `emit` would walk every tracked key on each load.
             return Vec::new();
         }
-        let height = s.tip.height;
-        self.emit(height)
+        self.emit()
     }
 
     /// The snapshot in use as received, and the block it was observed at.
@@ -307,7 +306,7 @@ impl Mempool {
     /// sent. Only the keys with an overlay now or at the last message can differ, so only
     /// those are compared: a walk of every key cost each snapshot and block about a tenth of
     /// a microsecond per tracked key (`examples/eventbench.rs`).
-    fn emit(&mut self, tip_height: u32) -> Vec<Output> {
+    fn emit(&mut self) -> Vec<Output> {
         let mut overlays = self.tracked_overlays();
         let candidates: BTreeSet<TrackingKey> =
             overlays.keys().chain(&self.with_overlay).cloned().collect();
@@ -323,7 +322,7 @@ impl Mempool {
                 } else {
                     self.with_overlay.insert(key.clone());
                 }
-                outputs.push(Output::Mempool { key, tip_height, pending: overlay });
+                outputs.push(Output::Mempool { key, pending: overlay, last_change: None });
             }
         }
         outputs

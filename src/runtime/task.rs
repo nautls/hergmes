@@ -400,8 +400,8 @@ struct Registered {
 }
 
 /// The live subscriptions: each key's, with their sinks, and each subscription's key. Routing
-/// finds a key's sinks in one lookup: with a lookup by id per subscriber too, a block's
-/// output to every tracked key cost twice the cache misses.
+/// finds a key's sinks in one lookup: with a lookup by id per subscriber too, routing a
+/// block's outputs cost twice the cache misses.
 ///
 /// A key's subscriptions are a `Vec` in id order (ids only grow, so a new one goes last): a
 /// key rarely has more than one or two, which a map would hold in a node of its own, eleven
@@ -468,9 +468,10 @@ impl Router {
     }
 
     /// Ends every subscription whose receiver was dropped. Routing notices a closed sink
-    /// only when it sends to it, which a balance-only subscription to a quiet key never
-    /// gets, and its count would keep the key tracked for good. They end in id order, as the
-    /// keys' map would not give them, so the engine gets the same events on every run.
+    /// only when it sends to it, which a subscription to a quiet key never gets (only the
+    /// blocks that change a key reach it), and its count would keep the key tracked for good.
+    /// They end in id order, as the keys' map would not give them, so the engine gets the
+    /// same events on every run.
     fn sweep(&mut self, engine: &mut Engine) {
         let mut closed: Vec<SubscriptionId> = self
             .by_key
@@ -549,15 +550,13 @@ fn resync_reason(outputs: &[Output]) -> Option<ResyncReason> {
     })
 }
 
-/// Logs what the engine returned to an event: the deltas of blocks and rollbacks that touch a
-/// key, and every `resync_required`. The engine logs only what leaves no trace in its
+/// Logs what the engine returned to an event: every block and rollback delta (each touches its
+/// key), and every `resync_required`. The engine logs only what leaves no trace in its
 /// outputs. A subscribe's `resync_required` is logged where it is answered.
 fn log(outputs: &[Output]) {
     for output in outputs {
         match output {
-            Output::Block { key, block, created, spent, .. }
-                if !created.is_empty() || !spent.is_empty() =>
-            {
+            Output::Block { key, block, created, spent, .. } => {
                 info!(
                     ?key,
                     height = block.height,
@@ -567,9 +566,7 @@ fn log(outputs: &[Output]) {
                     "Block delta"
                 );
             }
-            Output::Rollback { key, block, created, spent, .. }
-                if !created.is_empty() || !spent.is_empty() =>
-            {
+            Output::Rollback { key, block, created, spent, .. } => {
                 info!(
                     ?key,
                     height = block.height,
@@ -590,8 +587,7 @@ fn log(outputs: &[Output]) {
             Output::Mempool { key, pending, .. } => {
                 debug!(?key, txs = pending.len(), "Mempool overlay");
             }
-            Output::Balance { key, balance } => debug!(?key, ?balance, "Balance"),
-            Output::Block { .. } | Output::Rollback { .. } => {}
+            Output::Balance { key, balance, .. } => debug!(?key, ?balance, "Balance"),
         }
     }
 }

@@ -84,7 +84,7 @@ async function converged(sub: Subscription, tip: BlockRef): Promise<void> {
   });
   const done = () =>
     sub.state.phase === "live" &&
-    sub.state.view?.at.headerId === tip.headerId &&
+    (sub.state.view?.lastChange.height ?? 0) <= tip.height &&
     isDeepStrictEqual(held(), want);
   await until(done, `the oracle's state at ${String(tip.height)}`).catch((e: unknown) => {
     expect(held()).toEqual(want);

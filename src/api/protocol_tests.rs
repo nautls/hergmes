@@ -185,18 +185,19 @@ fn a_block_carries_its_boxes_with_its_height_and_the_key_as_sent() {
     let block = Output::Block {
         key: tracking_key(),
         block: BlockRef { height: 12, header_id: digest(20) },
-        parent_id: digest(19),
+        prev: BlockRef { height: 7, header_id: digest(21) },
         created: vec![created.clone()],
         spent: vec![Spend { box_id: digest(3), tx_id: digest(4) }],
     };
     let expected = format!(
         concat!(
             r#"{{"type":"block","key":{{"tokenId":"{}"}},"height":12,"headerId":"{}","#,
-            r#""parentId":"{}","created":[{}],"spent":[{{"boxId":"{}","txId":"{}"}}]}}"#
+            r#""prev":{{"height":7,"headerId":"{}"}},"created":[{}],"#,
+            r#""spent":[{{"boxId":"{}","txId":"{}"}}]}}"#
         ),
         hex(9).to_uppercase(),
         hex(20),
-        hex(19),
+        hex(21),
         wire_box(&created, Some(12)),
         hex(3),
         hex(4),
@@ -210,18 +211,19 @@ fn a_rollback_restores_boxes_with_the_heights_that_included_them() {
     let rollback = Output::Rollback {
         key: tracking_key(),
         block: BlockRef { height: 12, header_id: digest(20) },
-        parent_id: digest(19),
+        prev: BlockRef { height: 7, header_id: digest(21) },
         created: vec![StoredBox { inclusion_height: 5, utxo: restored.clone() }],
         spent: vec![Spend { box_id: digest(3), tx_id: digest(4) }],
     };
     let expected = format!(
         concat!(
             r#"{{"type":"rollback","key":{{"address":"{}"}},"height":12,"headerId":"{}","#,
-            r#""parentId":"{}","created":[{}],"spent":[{{"boxId":"{}","txId":"{}"}}]}}"#
+            r#""prev":{{"height":7,"headerId":"{}"}},"created":[{}],"#,
+            r#""spent":[{{"boxId":"{}","txId":"{}"}}]}}"#
         ),
         ADDRESS,
         hex(20),
-        hex(19),
+        hex(21),
         wire_box(&restored, Some(5)),
         hex(3),
         hex(4),
@@ -234,19 +236,21 @@ fn a_mempool_overlay_has_no_inclusion_heights_and_spends_by_id() {
     let created = utxo(1);
     let mempool = Output::Mempool {
         key: tracking_key(),
-        tip_height: 12,
         pending: vec![PendingTx {
             tx_id: digest(30),
             created: vec![created.clone()],
             spent: vec![digest(3)],
         }],
+        last_change: Some(BlockRef { height: 7, header_id: digest(21) }),
     };
     let expected = format!(
         concat!(
-            r#"{{"type":"mempool","key":{{"address":"{}"}},"tipHeight":12,"#,
+            r#"{{"type":"mempool","key":{{"address":"{}"}},"#,
+            r#""lastChange":{{"height":7,"headerId":"{}"}},"#,
             r#""pending":[{{"txId":"{}","created":[{}],"spent":["{}"]}}]}}"#
         ),
         ADDRESS,
+        hex(21),
         hex(30),
         wire_box(&created, None),
         hex(3),
@@ -267,16 +271,18 @@ fn a_balance_is_as_of_a_height_and_header_with_string_amounts() {
                 tokens: BTreeMap::from([(digest(9), -5)]),
             },
         },
+        last_change: Some(BlockRef { height: 7, header_id: digest(21) }),
     };
     let expected = format!(
         concat!(
             r#"{{"type":"balance","key":{{"address":"{}"}},"#,
-            r#""asOf":{{"height":12,"headerId":"{}"}},"#,
+            r#""asOf":{{"height":12,"headerId":"{}"}},"lastChange":{{"height":7,"headerId":"{}"}},"#,
             r#""confirmed":{{"nanoErgs":"18446744073709551615","tokens":[{{"tokenId":"{}","amount":"5"}}]}},"#,
             r#""pending":{{"nanoErgs":"-1180591620717411303424","tokens":[{{"tokenId":"{}","amount":"-5"}}]}}}}"#
         ),
         ADDRESS,
         hex(20),
+        hex(21),
         hex(9),
         hex(9),
     );

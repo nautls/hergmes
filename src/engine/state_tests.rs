@@ -98,6 +98,9 @@ struct KeyModel {
     /// Counts loads, so a client can tell whether the key stayed tracked since its snapshot.
     epoch: u64,
     since: BlockRef,
+    /// The blocks that changed the key's boxes, oldest first, after `since`, which starts it:
+    /// the chain each `prev` must follow. Kept from the oracle, not from the engine's messages.
+    changes: Vec<BlockRef>,
     /// Tracked for its balance alone, with no boxes.
     balance_only: bool,
     /// What it counts against the cap besides its boxes, from the tokens it held at its load.
@@ -111,6 +114,12 @@ struct KeyModel {
     overlay: Vec<PendingTx>,
 }
 
+impl KeyModel {
+    fn last_change(&self) -> BlockRef {
+        *self.changes.last().expect("starts at the load block")
+    }
+}
+
 #[derive(Debug, Clone)]
 struct Client {
     key: TrackingKey,
@@ -120,7 +129,11 @@ struct Client {
     /// Disconnected with its state, and may resume.
     resumable: bool,
     epoch: u64,
-    tip: BlockRef,
+    /// The block of the key's last change, once a message names it.
+    last: Option<BlockRef>,
+    /// Until then, the block the client's boxes are known at (its snapshot's, or the one it
+    /// resumed from): the key's last change is at or below it.
+    known_at: BlockRef,
     /// The boxes held, with the heights that included them.
     boxes: BTreeMap<BoxId, (u32, Arc<UTxO>)>,
     overlay: Vec<PendingTx>,
@@ -129,11 +142,17 @@ struct Client {
 
 impl Client {
     /// Applies one message, checking what a client SDK checks.
-    fn receive(&mut self, output: &Output, engine_tip: Option<BlockRef>) {
+    fn receive(
+        &mut self,
+        output: &Output,
+        engine_tip: Option<BlockRef>,
+        seen: &mut BTreeSet<&'static str>,
+    ) {
         match output {
-            Output::Block { block, parent_id, created, spent, .. } if !self.balance_only => {
-                assert_eq!(*parent_id, self.tip.header_id, "block {block:?} skips a block");
-                assert_eq!(block.height, self.tip.height + 1);
+            Output::Block { block, prev, created, spent, .. } if !self.balance_only => {
+                self.check_chain(*prev, "block", seen);
+                assert!(prev.height < block.height, "block {block:?} after its prev {prev:?}");
+                assert!(!created.is_empty() || !spent.is_empty(), "an empty block {block:?}");
                 for s in spent {
                     assert!(self.boxes.remove(&s.box_id).is_some(), "spends unknown {}", s.box_id);
                 }
@@ -141,10 +160,12 @@ impl Client {
                     let held = self.boxes.insert(b.id, (block.height, b.clone()));
                     assert!(held.is_none(), "creates held {}", b.id);
                 }
-                self.tip = *block;
+                self.last = Some(*block);
             }
-            Output::Rollback { block, parent_id, created, spent, .. } if !self.balance_only => {
-                assert_eq!(*block, self.tip, "rolls back a block the client is not at");
+            Output::Rollback { block, prev, created, spent, .. } if !self.balance_only => {
+                self.check_chain(*block, "rollback", seen);
+                assert!(prev.height < block.height, "rollback {block:?} to {prev:?}");
+                assert!(!created.is_empty() || !spent.is_empty(), "an empty rollback {block:?}");
                 for s in spent {
                     assert!(self.boxes.remove(&s.box_id).is_some(), "undoes unknown {}", s.box_id);
                 }
@@ -153,10 +174,11 @@ impl Client {
                     let held = self.boxes.insert(id, (b.inclusion_height, b.utxo.clone()));
                     assert!(held.is_none(), "restores held {id}");
                 }
-                self.tip = BlockRef { height: block.height - 1, header_id: *parent_id };
+                self.last = Some(*prev);
             }
-            Output::Mempool { tip_height, pending, .. } if !self.balance_only => {
-                assert_eq!(*tip_height, self.tip.height);
+            Output::Mempool { pending, last_change, .. } if !self.balance_only => {
+                let last_change = last_change.expect("a key with boxes names its last change");
+                self.check_chain(last_change, "mempool", seen);
                 // Every pending spend refers to a box the client has, or to one an earlier tx
                 // of the overlay creates.
                 let mut created = HashSet::new();
@@ -172,11 +194,14 @@ impl Client {
                 }
                 self.overlay = pending.clone();
             }
-            Output::Balance { key, balance } => {
+            Output::Balance { key, balance, last_change } => {
                 assert!(matches!(key, TrackingKey::Tree(_)), "a balance sent for {key:?}");
                 let engine_tip = engine_tip.expect("a balance goes out with a tip");
-                let tip = if self.balance_only { engine_tip } else { self.tip };
-                assert_eq!(balance.as_of, tip, "a balance for another block");
+                assert_eq!(balance.as_of, engine_tip, "a balance for another block");
+                if !self.balance_only {
+                    let last_change = last_change.expect("a key with boxes names its last change");
+                    self.check_chain(last_change, "balance", seen);
+                }
                 self.balance = Some(balance.clone());
             }
             Output::ResyncRequired { .. } => {
@@ -186,6 +211,26 @@ impl Client {
             Output::Block { .. } | Output::Rollback { .. } | Output::Mempool { .. } => {}
             Output::LoadRejected { .. } | Output::CapacityExceeded { .. } => {
                 panic!("load results go to the loader")
+            }
+        }
+    }
+
+    /// The check of a message naming the key's last change as the client has it: a block's
+    /// `prev`, a rollback's block, an overlay's or balance's `last_change`. Before any
+    /// message named it, it is at or below the block the client's boxes are known at, and
+    /// then the message names it.
+    fn check_chain(&mut self, named: BlockRef, kind: &str, seen: &mut BTreeSet<&'static str>) {
+        match self.last {
+            Some(last) => assert_eq!(named, last, "{kind} off the key's chain of changes"),
+            None => {
+                assert!(named.height <= self.known_at.height, "{kind} above {:?}", self.known_at);
+                if named.height == self.known_at.height {
+                    assert_eq!(named, self.known_at, "{kind} on another fork");
+                }
+                if named.height < self.known_at.height {
+                    seen.insert("client learns a last change below where its boxes are known");
+                }
+                self.last = Some(named);
             }
         }
     }
@@ -210,6 +255,8 @@ struct Harness {
     held: Option<Arc<[UnconfirmedTransaction]>>,
     ahead: Option<(Arc<[UnconfirmedTransaction]>, BlockRef)>,
     clients: Vec<Client>,
+    /// The keys with boxes that a revert since the last applied block left alone.
+    unchanged_reverts: BTreeSet<TrackingKey>,
     seen: BTreeSet<&'static str>,
 }
 
@@ -228,6 +275,7 @@ impl Harness {
             held: None,
             ahead: None,
             clients: Vec::new(),
+            unchanged_reverts: BTreeSet::new(),
             seen: BTreeSet::new(),
         };
         harness.sync(usize::MAX);
@@ -365,7 +413,14 @@ impl Harness {
             .oracle_at(&block.header_id)
             .indexed_block(block.height);
         let before = self.expected_states();
-        let box_keys = self.box_keys();
+        // The keys tracked with their boxes whose boxes the block changes, by the oracle: a
+        // box created and spent within the block changes nothing.
+        let oracle = self.chain.oracle_at(&block.header_id);
+        let changed: Vec<TrackingKey> = self
+            .box_keys()
+            .into_iter()
+            .filter(|k| oracle.unspent(k, block.height - 1) != oracle.unspent(k, block.height))
+            .collect();
         let in_block = in_block_spends(&indexed);
         let moves_balance_only = self.keys.iter().any(|(k, m)| {
             m.balance_only
@@ -383,13 +438,16 @@ impl Harness {
         self.fed.push(block);
         self.ring_len = (self.ring_len + 1).min(CONFIG.window);
 
-        // Every key tracked with its boxes gets the block, in key order, and nothing else at
-        // rank 0: a balance-only key gets none.
+        // Exactly the keys tracked with their boxes that the block changes get it, in key
+        // order, each chained to its last change, and nothing else at rank 0: a key the block
+        // leaves alone gets nothing, and a balance-only key gets none.
         let blocks: Vec<&TrackingKey> = outputs
             .iter()
             .filter_map(|o| match o {
-                Output::Block { key, block: b, .. } => {
+                Output::Block { key, block: b, prev, .. } => {
                     assert_eq!(*b, block);
+                    let model = &self.keys[key];
+                    assert_eq!(*prev, model.last_change(), "{key:?}'s block skips a change");
                     Some(key)
                 }
                 Output::Rollback { .. } | Output::ResyncRequired { .. } => {
@@ -398,7 +456,25 @@ impl Harness {
                 _ => None,
             })
             .collect();
-        assert_eq!(blocks, box_keys.iter().collect::<Vec<_>>());
+        assert_eq!(blocks, changed.iter().collect::<Vec<_>>(), "the keys the block changes");
+        if changed.len() < self.box_keys().len() {
+            self.seen.insert("block leaves a key with boxes unchanged");
+        }
+        for key in &changed {
+            let alone = !outputs.iter().any(|o| {
+                matches!(o, Output::Mempool { .. } | Output::Balance { .. }) && o.key() == key
+            });
+            if alone {
+                self.seen
+                    .insert("block changes a key with no overlay or balance after it");
+            }
+            let model = self.keys.get_mut(key).expect("tracked");
+            if model.changes.len() > 1 && model.last_change().height + 1 < block.height {
+                self.seen.insert("change chained across unchanged blocks");
+            }
+            model.changes.push(block);
+        }
+        self.unchanged_reverts.clear();
         if outputs.iter().any(|o| {
             matches!(o, Output::Block { created, spent, .. }
             if created.iter().any(|b| in_block.contains(&b.id))
@@ -525,17 +601,36 @@ impl Harness {
         }
         self.keys.retain(|_, m| m.since != block);
 
+        // Exactly the keys tracked with their boxes whose last change was the block get its
+        // rollback, which moves their last change back to the one before.
+        let changed: Vec<TrackingKey> = self
+            .box_keys()
+            .into_iter()
+            .filter(|k| self.keys[k].last_change() == block)
+            .collect();
+        for key in &changed {
+            self.keys.get_mut(key).expect("tracked").changes.pop();
+        }
         let rollbacks: Vec<&TrackingKey> = outputs
             .iter()
             .filter_map(|o| match o {
-                Output::Rollback { key, block: b, .. } => {
+                Output::Rollback { key, block: b, prev, .. } => {
                     assert_eq!(*b, block);
+                    assert_eq!(*prev, self.keys[key].last_change(), "{key:?}'s rollback");
                     Some(key)
                 }
                 _ => None,
             })
             .collect();
-        assert_eq!(rollbacks, self.box_keys().iter().collect::<Vec<_>>());
+        assert_eq!(rollbacks, changed.iter().collect::<Vec<_>>(), "the keys the block changed");
+        for key in &changed {
+            if self.unchanged_reverts.contains(key) {
+                self.seen
+                    .insert("rollback of a change below an orphan that left the key alone");
+            }
+        }
+        let unchanged = self.box_keys().into_iter().filter(|k| !changed.contains(k));
+        self.unchanged_reverts.extend(unchanged);
         if undoes_balance_only {
             self.seen
                 .insert("rollback undoes a balance-only key's change");
@@ -549,7 +644,12 @@ impl Harness {
         let before = self.expected_states();
         let outputs =
             self.feed(Event::MempoolSnapshot { txs: txs.clone(), observed_tip: observed });
-        let tip = self.tip();
+        // A reorg past the ring leaves the engine with no tip until the next sync: a snapshot
+        // then has nothing to apply to, and is ignored.
+        let Some(tip) = self.engine.tip() else {
+            assert!(outputs.is_empty());
+            return;
+        };
         if observed == tip {
             // Txs of orphaned blocks back in the pool reach overlays only from a snapshot
             // taken after the rollback.
@@ -607,6 +707,7 @@ impl Harness {
             // no client has its boxes from before.
             let model = self.keys.get_mut(key).expect("tracked");
             model.since = as_of;
+            model.changes = vec![as_of];
             model.charge = charge;
             model.balance_only = false;
             model.last_seen = self.now;
@@ -625,6 +726,7 @@ impl Harness {
             let model = KeyModel {
                 epoch: self.next_epoch,
                 since: as_of,
+                changes: vec![as_of],
                 balance_only: false,
                 charge,
                 last_seen: self.now,
@@ -669,6 +771,7 @@ impl Harness {
             let model = KeyModel {
                 epoch: self.next_epoch,
                 since: as_of,
+                changes: vec![as_of],
                 balance_only: true,
                 charge,
                 last_seen: self.now,
@@ -769,7 +872,7 @@ impl Harness {
                 .iter_mut()
                 .filter(|c| c.live && c.key == key(output))
             {
-                client.receive(output, tip);
+                client.receive(output, tip, &mut self.seen);
             }
         }
         outputs
@@ -796,7 +899,8 @@ impl Harness {
             live: true,
             resumable: false,
             epoch: self.keys[&key].epoch,
-            tip,
+            last: None,
+            known_at: tip,
             boxes: BTreeMap::new(),
             overlay: Vec::new(),
             balance: None,
@@ -827,7 +931,11 @@ impl Harness {
         let balance = usize::from(matches!(key, TrackingKey::Tree(_)));
         assert_eq!(outputs.len(), usize::from(!balance_only) + balance);
         for output in &outputs {
-            client.receive(output, Some(tip));
+            client.receive(output, Some(tip), &mut self.seen);
+        }
+        if !balance_only {
+            // The overlay names the key's last change, so the client knows it from here on.
+            assert_eq!(client.last, Some(self.keys[&key].last_change()));
         }
         self.clients.push(client);
     }
@@ -865,22 +973,51 @@ impl Harness {
         model.last_seen = self.now;
 
         let client = &self.clients[i];
-        let from = (!client.balance_only).then_some(client.tip);
+        // A client with boxes resumes from its last change, which its first message named.
+        let from = (!client.balance_only).then(|| client.last.expect("named at the subscribe"));
+        let model = &self.keys[&key];
+        // From the key's last change, there is nothing to replay, however old it is.
+        let current = !model.balance_only && from == Some(model.last_change());
+        // From the change before the key's oldest one the ring still holds, every change
+        // since is in the ring, however old `from` is: a quiet key whose last change is
+        // below the floor, changed while its client was away.
+        let floor = self.floor();
+        let chained_below = from.is_some_and(|from| {
+            !model.balance_only
+                && model
+                    .changes
+                    .windows(2)
+                    .find(|pair| pair[1].height > floor)
+                    .is_some_and(|pair| pair[0] == from)
+        });
         // A key tracked again since the client left replays too, if the client's block is
         // on the main chain at or above the new load: the key's boxes there are the same
         // whichever load found them. Eviction can untrack and reload a key within a block.
-        let model = &self.keys[&key];
-        let reloaded_below = !model.balance_only
-            && client.epoch != model.epoch
-            && self.fed.contains(&client.tip)
-            && client.tip.height >= model.since.height.max(self.floor());
+        let reloaded_below = from.is_some_and(|from| {
+            !model.balance_only
+                && client.epoch != model.epoch
+                && self.fed.contains(&from)
+                && from.height >= model.since.height.max(self.floor())
+        });
         let expect_replay = client.balance_only
+            || current
+            || chained_below
             || reloaded_below
-            || (client.epoch == model.epoch
-                && !model.balance_only
-                && self
-                    .fork_point(client.tip)
-                    .is_some_and(|f| f.height >= self.floor()));
+            || from.is_some_and(|from| {
+                client.epoch == model.epoch
+                    && !model.balance_only
+                    && self
+                        .fork_point(from)
+                        .is_some_and(|f| f.height >= self.floor())
+            });
+        if chained_below && from.is_some_and(|from| from.height < floor) {
+            self.seen
+                .insert("resume from below the floor replays the key's changes since");
+        }
+        if current && from.is_some_and(|from| from.height < self.floor()) {
+            self.seen
+                .insert("resume from a last change below the floor");
+        }
         if reloaded_below && !client.balance_only {
             self.seen
                 .insert("replay to a client across a reload at or below its block");
@@ -913,11 +1050,18 @@ impl Harness {
         }
         let client = &mut self.clients[i];
         client.live = true;
+        if let Some(from) = from {
+            // The replay names the key's last change again: after a reload it may chain from
+            // a change below `from` rather than from `from` itself.
+            client.last = None;
+            client.known_at = from;
+        }
         for output in &outputs {
-            client.receive(output, Some(tip));
+            client.receive(output, Some(tip), &mut self.seen);
         }
         if !client.balance_only {
-            assert_eq!(client.tip, tip, "the catch-up reaches the tip");
+            let last = self.keys[&key].last_change();
+            assert_eq!(client.last, Some(last), "the catch-up reaches the key's last change");
         }
     }
 
@@ -1110,6 +1254,15 @@ impl Harness {
     fn check_emissions(&mut self, outputs: &[Output], before: &BTreeMap<TrackingKey, Expected>) {
         let after = self.expected_states();
         for (key, model) in &mut self.keys {
+            // Overlays and balances name the key's last change if it has boxes.
+            let last_change = (!model.balance_only).then(|| model.last_change());
+            for output in outputs.iter().filter(|o| o.key() == key) {
+                if let Output::Mempool { last_change: named, .. }
+                | Output::Balance { last_change: named, .. } = output
+                {
+                    assert_eq!(*named, last_change, "{key:?}'s last change");
+                }
+            }
             let (balance, overlay) = &after[key];
             let mempool = outputs.iter().find_map(|o| match o {
                 Output::Mempool { key: k, pending, .. } if k == key => Some(pending),
@@ -1125,7 +1278,7 @@ impl Harness {
             model.overlay = overlay.clone();
 
             let sent = outputs.iter().find_map(|o| match o {
-                Output::Balance { key: k, balance } if k == key => Some(balance),
+                Output::Balance { key: k, balance, .. } if k == key => Some(balance),
                 _ => None,
             });
             match (sent, balance) {
@@ -1283,13 +1436,23 @@ impl Harness {
             })
             .collect();
         assert_eq!(trees, expected_trees, "balance-only trees");
-        // The keys a block walks for its `Block` messages are exactly the keys with boxes.
-        let walked: Vec<&TrackingKey> = self.engine.box_keys.keys().collect();
-        assert_eq!(walked, self.box_keys().iter().collect::<Vec<_>>(), "keys with boxes");
-        for (key, id) in &self.engine.box_keys {
-            assert_eq!(self.engine.ids.get(key), Some(id), "{key:?}'s id");
-        }
+        // The engine's last change of each key with boxes is the model's, and only those keys
+        // have one.
+        let last_changes: BTreeMap<&TrackingKey, BlockRef> = self
+            .engine
+            .last_changes
+            .iter()
+            .map(|(id, block)| (&self.engine.keys[id].key, *block))
+            .collect();
+        let expected: BTreeMap<&TrackingKey, BlockRef> = (self.keys.iter())
+            .filter(|(_, m)| !m.balance_only)
+            .map(|(k, m)| (k, m.last_change()))
+            .collect();
+        assert_eq!(last_changes, expected, "the keys' last changes");
         for delta in self.engine.ring.iter().chain(self.engine.orphans.values()) {
+            for key_id in delta.loaded.iter() {
+                assert!(self.engine.keys.contains_key(key_id), "a load of an untracked key");
+            }
             for key_id in delta.keys.keys().chain(delta.balances.keys()) {
                 assert!(self.engine.keys.contains_key(key_id), "a share of an untracked key");
             }
@@ -1482,7 +1645,8 @@ impl Harness {
         for client in self.clients.iter().filter(|c| c.live) {
             let (balance, overlay) = expected_for(self, &client.key, &utxo, &ids);
             if !client.balance_only {
-                assert_eq!(client.tip, tip);
+                let model = &self.keys[&client.key];
+                assert_eq!(client.last, Some(model.last_change()), "the key's last change");
                 let expected: BTreeMap<BoxId, (u32, Arc<UTxO>)> = oracle
                     .unspent(&client.key, tip.height)
                     .into_iter()
@@ -1639,7 +1803,6 @@ fn random_histories_reach_the_hard_engine_cases() {
         "resync: outside window",
         "resync: fork beyond window",
         "catch-up rolls back an orphaned branch",
-        "replay to a client across a reload at or below its block",
         "page cursor expired",
         "page at an earlier block restores spent boxes",
         "box held by two tracked keys",
@@ -1658,6 +1821,13 @@ fn random_histories_reach_the_hard_engine_cases() {
         "pool box created and spent in the pool",
         "pool box spends a confirmed box",
         "pool box created",
+        "block leaves a key with boxes unchanged",
+        "block changes a key with no overlay or balance after it",
+        "change chained across unchanged blocks",
+        "rollback of a change below an orphan that left the key alone",
+        "resume from a last change below the floor",
+        "resume from below the floor replays the key's changes since",
+        "client learns a last change below where its boxes are known",
     ] {
         assert!(seen.contains(feature), "no random history reached: {feature}");
     }
@@ -1772,6 +1942,7 @@ fn a_block_moves_a_box_between_keys_and_its_rollback_moves_it_back() {
     let (zero, one) = (f.key(0), f.key(1));
     f.load(&zero);
     f.load(&one);
+    let loaded = f.engine.tip().expect("a tip");
     let before = (f.state(&zero), f.state(&one), f.engine.reverse.clone());
 
     let source = sim::testing::box_of(&f.chain, 0);
@@ -1779,19 +1950,13 @@ fn a_block_moves_a_box_between_keys_and_its_rollback_moves_it_back() {
     let output = tx.outputs[0].clone();
     let outputs = f.mine(vec![tx.clone()]);
     let block = f.engine.tip().expect("a tip");
-    let parent_id = f
-        .chain
-        .block(&block.header_id)
-        .expect("mined")
-        .header
-        .parent_id;
     assert_eq!(outputs.len(), 4, "two blocks then two balances");
     assert_eq!(
         find(&outputs, "block", &zero),
         &Output::Block {
             key: zero.clone(),
             block,
-            parent_id,
+            prev: loaded,
             created: vec![],
             spent: vec![Spend { box_id: source, tx_id: tx.id }],
         }
@@ -1801,7 +1966,7 @@ fn a_block_moves_a_box_between_keys_and_its_rollback_moves_it_back() {
         &Output::Block {
             key: one.clone(),
             block,
-            parent_id,
+            prev: loaded,
             created: vec![output.clone()],
             spent: vec![]
         }
@@ -1824,7 +1989,7 @@ fn a_block_moves_a_box_between_keys_and_its_rollback_moves_it_back() {
         &Output::Rollback {
             key: zero.clone(),
             block,
-            parent_id,
+            prev: loaded,
             created: vec![spent_box],
             spent: vec![],
         }
@@ -1834,7 +1999,7 @@ fn a_block_moves_a_box_between_keys_and_its_rollback_moves_it_back() {
         &Output::Rollback {
             key: one.clone(),
             block,
-            parent_id,
+            prev: loaded,
             created: vec![],
             spent: vec![Spend { box_id: output.id, tx_id: tx.id }],
         }
@@ -1915,8 +2080,8 @@ fn a_catch_up_from_a_block_resyncs_a_balance_only_key() {
 fn a_wrong_starting_balance_resyncs_at_an_overspend_in_key_order() {
     let mut f = Fixture::new(Config::default());
     // The first and the last address in key order start from nothing and are overspent; the
-    // ones between are tracked with their boxes, so the resyncs go out before and after
-    // their blocks.
+    // ones between are tracked with their boxes, and the one paid gets its block between the
+    // resyncs.
     let mut trees: Vec<usize> = (0..f.chain.trees().len()).collect();
     trees.sort_by_key(|&t| f.key(t));
     let (first, last) = (trees[0], *trees.last().expect("trees"));
@@ -1936,8 +2101,7 @@ fn a_wrong_starting_balance_resyncs_at_an_overspend_in_key_order() {
     };
     let txs = vec![spend(&mut f, first), spend(&mut f, last)];
     let outputs = f.mine(txs);
-    let mut expected: Vec<(&str, TrackingKey)> =
-        middle.iter().map(|&t| ("block", f.key(t))).collect();
+    let mut expected = vec![("block", f.key(middle[0]))];
     expected.push(("resync", low.clone()));
     expected.push(("resync", high.clone()));
     expected.sort_by(|a, b| a.1.cmp(&b.1));
@@ -2160,12 +2324,13 @@ fn an_untracked_key_is_refused_and_a_balance_only_catch_up_is_the_balance() {
     };
 
     f.load(&zero);
+    let loaded = f.engine.tip();
     let outputs = f.catch_up(&zero, None);
     assert_eq!(kinds(&outputs), [("balance", zero.clone())]);
     let Reply::Balance(Some(balance)) = f.engine.query(Query::Balance(zero.clone())) else {
         panic!("a balance");
     };
-    assert_eq!(outputs, [Output::Balance { key: zero, balance }]);
+    assert_eq!(outputs, [Output::Balance { key: zero, balance, last_change: loaded }]);
 }
 
 /// A token key gets its blocks and overlays but no balance: not on a snapshot, a block, a
@@ -2248,6 +2413,36 @@ fn a_client_from_an_earlier_tracking_period_resyncs() {
     f.load(&zero);
     let outputs = f.catch_up(&zero, Some(client_at));
     assert_eq!(outputs, [Output::ResyncRequired { key: zero, reason: ResyncReason::NotTracked }]);
+}
+
+/// A key untracked and loaded again at the client's last change replays to it: its boxes
+/// there are the same whichever load found them. Random histories rarely reach it, since a
+/// client's last change is usually older than the load.
+#[test]
+fn a_client_resumes_across_a_reload_at_its_last_change() {
+    let mut f = Fixture::new(Config { grace: Duration::ZERO, ..Config::DEFAULT });
+    let zero = f.key(0);
+    f.load(&zero);
+    let source = sim::testing::box_of(&f.chain, 0);
+    let tx = f.chain.transfer(&[source], &f.chain.trees()[1].clone());
+    f.mine(vec![tx]);
+    let last = f.engine.tip().expect("a tip");
+    f.mine(vec![]);
+    assert!(!f.engine.is_tracked(&zero), "idle past the grace period");
+    f.revert();
+    f.load(&zero);
+    assert_eq!(f.engine.tracked_since(&zero), Some(last));
+    f.engine
+        .apply(Event::Subscribed(zero.clone()))
+        .expect("tracked");
+
+    let paid = f
+        .chain
+        .transfer(&[sim::testing::box_of(&f.chain, 1)], &f.chain.trees()[0].clone());
+    f.mine(vec![paid]);
+    let outputs = f.catch_up(&zero, Some(last));
+    let Output::Block { prev, .. } = find(&outputs, "block", &zero) else { unreachable!() };
+    assert_eq!(*prev, last, "{outputs:?}");
 }
 
 /// Pages pinned to an earlier block keep their ids while blocks land between page reads.

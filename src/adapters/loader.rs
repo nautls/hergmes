@@ -124,9 +124,9 @@ pub enum LoadError {
     #[error("the key has more than {max} boxes")]
     TooManyBoxes { max: usize },
     /// The key's boxes and charge would pass the cap on tracked units: the engine refused
-    /// them, or the loader stopped paging at the first page past the room the engine had left, idle keys'
-    /// room counted. It frees up as keys go idle: once a key with no subscribers has gone
-    /// unread for the engine's `evict_after`.
+    /// them, or the loader stopped paging at the first page past the room the engine had
+    /// left, idle keys' room counted. It frees up as keys go idle: once a key with no
+    /// subscribers has gone unread for the engine's `evict_after`.
     #[error(
         "{boxes} more boxes and the key's charge would pass the cap on tracked units, with \
          {tracked} units tracked, {evictable} of them by idle keys"

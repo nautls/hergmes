@@ -159,13 +159,21 @@ pub struct StoredBox {
 }
 
 /// One key's share of a block, net of boxes created and spent within the block.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KeyDelta {
+    /// The block of the key's change before this one (its load block before the first):
+    /// what the key's `Block` and `Rollback` chain to, and its last change once this block
+    /// is orphaned.
+    pub prev: BlockRef,
     pub created: Vec<BoxId>,
     pub spent: Vec<Spend>,
 }
 
 impl KeyDelta {
+    pub fn new(prev: BlockRef) -> Self {
+        Self { prev, created: Vec::new(), spent: Vec::new() }
+    }
+
     pub fn is_empty(&self) -> bool {
         self.created.is_empty() && self.spent.is_empty()
     }
@@ -187,6 +195,9 @@ pub struct BlockDelta {
     pub boxes: HashMap<BoxId, StoredBox>,
     pub keys: HashMap<KeyId, KeyDelta>,
     pub balances: HashMap<KeyId, Change>,
+    /// The keys loaded while this block was the tip: the ones its revert drops, since their
+    /// state was read from it.
+    pub loaded: Vec<KeyId>,
 }
 
 impl BlockDelta {

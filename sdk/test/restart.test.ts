@@ -78,7 +78,7 @@ test("after a restart the SDK reconnects through a dead port and converges on th
     await until(
       () =>
         sub.state.phase === "live" &&
-        (sub === subs[2] || sub.state.view?.at.headerId === tip.headerId) &&
+        (sub === subs[2] || (sub.state.view?.lastChange.height ?? Infinity) <= tip.height) &&
         isDeepStrictEqual(held(), want),
       `${JSON.stringify(sub.key)} on the new chain`,
     ).catch((e: unknown) => {

@@ -109,7 +109,7 @@ impl Serialize for Registers<'_> {
     }
 }
 
-/// The block a page or a streamed balance is as of.
+/// A block on the wire: the one a page or a streamed balance is as of, or a key's change.
 #[derive(Serialize)]
 pub(crate) struct AsOf<'a> {
     height: u32,

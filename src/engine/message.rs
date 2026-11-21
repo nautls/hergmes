@@ -7,9 +7,7 @@ use crate::{
         BlockRef, BoxKey, ChainLink, Spend, StoredBox, Totals, TrackingKey,
         overlay::{PendingDelta, TxDelta},
     },
-    types::ergo::{
-        BoxId, ErgoTree, HeaderId, IndexedBlock, IndexedBox, TxId, UTxO, UnconfirmedTransaction,
-    },
+    types::ergo::{BoxId, ErgoTree, IndexedBlock, IndexedBox, TxId, UTxO, UnconfirmedTransaction},
 };
 
 /// An input to the engine, sent by the adapters.
@@ -260,31 +258,36 @@ pub struct Balance {
 /// A message for the subscribers of one key.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Output {
-    /// A block applied on top of `parent_id`. Every key tracked with its boxes gets one per
-    /// block, empty or not, so its subscribers can check the parent chain. A balance-only key
-    /// gets none, nor a `Rollback`: it has only balance subscribers.
+    /// A block applied, sent to a key tracked with its boxes only when it changes the key's
+    /// boxes. `prev` is the block of the key's change before it (its load
+    /// block before the first), so a subscriber chains a key's changes as it would blocks and
+    /// catches one skipped, without a message for every block. A balance-only key gets none,
+    /// nor a `Rollback`: it has only balance subscribers.
     Block {
         key: TrackingKey,
         block: BlockRef,
-        parent_id: HeaderId,
+        prev: BlockRef,
         created: Vec<Arc<UTxO>>,
         spent: Vec<Spend>,
     },
     /// The inverse of an orphaned block's delta: `created` are the boxes it had spent, with
     /// the heights that included them, and `spent` the boxes it had created (with the tx that
-    /// created them). Afterwards the subscriber is at `parent_id`.
+    /// created them). Sent only for a block that changed the key, which is the subscriber's
+    /// last change; afterwards its last change is `prev`.
     Rollback {
         key: TrackingKey,
         block: BlockRef,
-        parent_id: HeaderId,
+        prev: BlockRef,
         created: Vec<StoredBox>,
         spent: Vec<Spend>,
     },
-    /// The key's whole pending state, replacing the previous one.
-    Mempool { key: TrackingKey, tip_height: u32, pending: Vec<PendingTx> },
+    /// The key's whole pending state, replacing the previous one. `last_change` is the block
+    /// of the key's last change, for a key tracked with its boxes: a subscriber that lacks it
+    /// missed a change.
+    Mempool { key: TrackingKey, pending: Vec<PendingTx>, last_change: Option<BlockRef> },
     /// An address's whole balance, replacing the previous one. Sent when its value changes;
-    /// never for a token key.
-    Balance { key: TrackingKey, balance: Balance },
+    /// never for a token key. `last_change` as for `Mempool`.
+    Balance { key: TrackingKey, balance: Balance, last_change: Option<BlockRef> },
     /// The subscription ended: the client redoes its snapshot, or for a balance-only one,
     /// subscribes again.
     ResyncRequired { key: TrackingKey, reason: ResyncReason },

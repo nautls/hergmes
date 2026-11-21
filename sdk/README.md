@@ -36,10 +36,12 @@ relay.close();
 `{ address }` or `{ tokenId }`.
 
 - With boxes (the default) the SDK reads the key's confirmed boxes, subscribes from that block
-  and applies every block, rollback and mempool change. Its `state.view` has the confirmed boxes,
-  the pending txs as they affect the key, and `spendable`, what a tx can spend now: confirmed
-  boxes and pending outputs no pending tx spends. For an address, `spendableTotals` is the
-  balance's `confirmed + pending`.
+  and applies every block, rollback and mempool change that touches the key. Its `state.view` has
+  the confirmed boxes, the pending txs as they affect the key, and `spendable`, what a tx can
+  spend now: confirmed boxes and pending outputs no pending tx spends. For an address,
+  `spendableTotals` is the balance's `confirmed + pending`. `view.lastChange` is the block of
+  the key's last change: the relay sends a key only the blocks that change it, so the height to
+  show is the relay's, `relay.tip`.
 - With `{ boxes: false }`, an address's balance alone: no snapshot, the lightest subscription.
   Token keys have no balance and always follow boxes.
 
@@ -48,18 +50,18 @@ mempool makes to it. Amounts are `bigint`s, tokens a `Map` from token id to amou
 
 `state.phase` says where the subscription is, and whether `view` and `balance` are current:
 
-| Phase          | Meaning                                                                         |
-| -------------- | ------------------------------------------------------------------------------- |
-| `snapshot`     | reading the key's boxes                                                         |
-| `catching_up`  | subscribed, replaying to the relay's tip                                        |
-| `live`         | following the chain: `view` and `balance` are current                           |
-| `waiting`      | refused or failed for now; `error.retryAfter` says when it starts again         |
-| `rejected`     | refused or failed for good, `error` says why; a later subscribe tries again     |
-| `disconnected` | the socket closed; it resumes from the block it had reached once it opens again |
+| Phase          | Meaning                                                                      |
+| -------------- | ---------------------------------------------------------------------------- |
+| `snapshot`     | reading the key's boxes                                                      |
+| `catching_up`  | subscribed, replaying to the relay's tip                                     |
+| `live`         | following the chain: `view` and `balance` are current                        |
+| `waiting`      | refused or failed for now; `error.retryAfter` says when it starts again      |
+| `rejected`     | refused or failed for good, `error` says why; a later subscribe tries again  |
+| `disconnected` | the socket closed; it resumes from the key's last change once it opens again |
 
 Outside `live`, `view` and `balance` keep their last live values, to show as stale. Recovery is
 the SDK's: after a closed socket it reconnects with a jittered backoff and each key resumes from
-its block, and when the relay asks for a resync, or a message doesn't fit the view, the key reads
+its last change, and when the relay asks for a resync, or a message doesn't fit the view, the key reads
 a new snapshot.
 
 `state` is replaced whole on every change. `onChange(listener)` calls the listener once for the

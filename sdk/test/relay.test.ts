@@ -1,4 +1,5 @@
 import { ensureUTxOBigInt } from "@fleet-sdk/common";
+import { isDeepStrictEqual } from "node:util";
 import { afterAll, afterEach, beforeAll, expect, test, vi } from "vitest";
 import { Relay, type BlockRef, type Subscription } from "../src/index.ts";
 import { SimRelay, until } from "./sim.ts";
@@ -19,8 +20,20 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-const liveAt = (sub: Subscription, tip: BlockRef) => () =>
-  sub.state.phase === "live" && sub.state.view?.at.headerId === tip.headerId;
+/**
+ * Waits until `sub` is live with the oracle's boxes at `tip`, the relay's tip. Only blocks that
+ * change a key reach it, so a view's last change says nothing of the tip: its boxes do.
+ */
+async function liveAt(sub: Subscription, tip: BlockRef, what: string): Promise<void> {
+  const want = (await sim.expected(sub.key)).boxes.map((b) => ensureUTxOBigInt(b));
+  await until(
+    () =>
+      sub.state.phase === "live" &&
+      relay.tip?.headerId === tip.headerId &&
+      isDeepStrictEqual(sub.state.view?.confirmed, want),
+    what,
+  );
+}
 
 /** A block that moves boxes, then a settle: the new tip. */
 async function mine(seed: number): Promise<BlockRef> {
@@ -41,7 +54,7 @@ test("holds on one key share its subscription, which ends with the last", async 
   const first = relay.subscribe(key);
   const second = relay.subscribe(key);
   let tip = await sim.settle();
-  await until(liveAt(second, tip), "the key live");
+  await liveAt(second, tip, "the key live");
   expect(first.state).toBe(second.state);
 
   const changes: string[] = [];
@@ -49,7 +62,7 @@ test("holds on one key share its subscription, which ends with the last", async 
   first.close();
   first.close();
   tip = await mine(1);
-  await until(liveAt(second, tip), "the remaining hold to follow the next block");
+  await liveAt(second, tip, "the remaining hold to follow the next block");
   // Listeners hear of it on the next timer, after `state` changed.
   await until(() => changes.length > 0, "the remaining hold's listener called");
   expect(second.state.view?.confirmed).toEqual(
@@ -72,7 +85,7 @@ test("a box subscription replaces a balance-only one on the same key", async () 
   balanceOnly.onChange((state) => phases.push(state.phase));
   const boxes = relay.subscribe(key);
   const tip = await mine(2);
-  await until(liveAt(boxes, tip), "the box subscription live");
+  await liveAt(boxes, tip, "the box subscription live");
   // The balance-only hold's listeners hear of the replacement too.
   await until(() => phases.at(-1) === "live", "the balance-only hold notified");
   expect(balanceOnly.state).toBe(boxes.state);
@@ -91,10 +104,7 @@ test("a token key always follows boxes", async () => {
   if (!token) throw new Error("no token under the supply limit");
   const sub = relay.subscribe({ tokenId: token.tokenId }, { boxes: false });
   const tip = await sim.settle();
-  await until(
-    () => sub.state.phase === "live" && sub.state.view?.at.headerId === tip.headerId,
-    "the token live",
-  );
+  await liveAt(sub, tip, "the token live");
   expect(sub.state.balance).toBeUndefined();
 });
 
@@ -112,7 +122,7 @@ test("closing the relay ends every subscription", async () => {
   relay = new Relay(sim.url);
   const sub = relay.subscribe({ address: await address(3) });
   const tip = await sim.settle();
-  await until(liveAt(sub, tip), "the key live");
+  await liveAt(sub, tip, "the key live");
   relay.close();
   expect(sub.state.phase).toBe("disconnected");
 });
@@ -147,12 +157,12 @@ test("a hold of an ended subscription does not end the key's next one", async ()
   const key = { address: await address(0) };
   const old = relay.subscribe(key);
   let tip = await sim.settle();
-  await until(liveAt(old, tip), "the key live");
+  await liveAt(old, tip, "the key live");
   relay.close();
   const current = relay.subscribe(key);
   old.close();
   tip = await mine(4);
-  await until(liveAt(current, tip), "the new subscription to follow the next block");
+  await liveAt(current, tip, "the new subscription to follow the next block");
 });
 
 test("a hold closed after its socket dropped opens no socket to unsubscribe", async () => {
@@ -181,7 +191,7 @@ test("a box subscription resumes by itself after its socket dropped, with no sna
   const key = { address: await address(2) };
   const sub = relay.subscribe(key);
   let tip = await sim.settle();
-  await until(liveAt(sub, tip), "the key live");
+  await liveAt(sub, tip, "the key live");
   const snapshots = reads;
   opened.last?.close();
   await until(() => sub.state.phase === "disconnected", "the drop");
@@ -190,7 +200,7 @@ test("a box subscription resumes by itself after its socket dropped, with no sna
   expect(opened.count).toBe(1);
   await until(() => opened.count === 2, "the reconnect");
   tip = await mine(5);
-  await until(liveAt(sub, tip), "the key live again");
+  await liveAt(sub, tip, "the key live again");
   expect(sub.state.view?.confirmed).toEqual(
     (await sim.expected(key)).boxes.map((b) => ensureUTxOBigInt(b)),
   );

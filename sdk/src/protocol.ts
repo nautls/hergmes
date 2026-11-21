@@ -31,15 +31,18 @@ export type ResyncReason =
   | (string & {});
 
 /**
- * A block applied, or an orphaned block undone: `created` and `spent` are the key's boxes it
- * adds and removes (for a rollback, the block's own sides swapped).
+ * A block that changed the key, applied, or orphaned and undone: `created` and `spent` are the
+ * key's boxes it adds and removes (for a rollback, the block's own sides swapped). Only blocks
+ * that change a key are sent to it, so `prev` is the key's change before this one (its load
+ * block before the first): a block chains to the client's last change, and a rollback undoes
+ * it, leaving `prev` as the last change.
  */
 export interface Delta<T extends "block" | "rollback"> {
   type: T;
   key: Key;
   height: number;
   headerId: string;
-  parentId: string;
+  prev: BlockRef;
   created: ConfirmedBox[];
   spent: Spend[];
 }
@@ -50,8 +53,16 @@ export type ServerMessage =
   | { type: "subscribed"; id?: number; key: Key }
   | Delta<"block">
   | Delta<"rollback">
-  | { type: "mempool"; key: Key; tipHeight: number; pending: WirePendingTx[] }
-  | { type: "balance"; key: Key; asOf: BlockRef; confirmed: Assets; pending: Assets }
+  /** `lastChange`, for a key tracked with its boxes, names the key's last change. */
+  | { type: "mempool"; key: Key; lastChange?: BlockRef; pending: WirePendingTx[] }
+  | {
+      type: "balance";
+      key: Key;
+      asOf: BlockRef;
+      lastChange?: BlockRef;
+      confirmed: Assets;
+      pending: Assets;
+    }
   | { type: "resync_required"; id?: number; key: Key; reason: ResyncReason }
   | { type: "rejected"; id?: number; key: Key; reason: string; retryAfter?: number };
 
