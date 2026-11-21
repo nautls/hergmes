@@ -38,7 +38,8 @@ const OPENMETRICS: &str = "application/openmetrics-text; version=1.0.0; charset=
 
 /// Which side refused a request. A WebSocket subscribe loads a key only when it is
 /// balance-only, and then reads the address's balance rather than its boxes, so `ws` counts
-/// what that read meets (`not_ready`, a node failure), apart from REST's.
+/// what that read meets (`not_ready`, a node failure, `capacity_exceeded` when the cap on
+/// tracked units has no room for the address's charge), apart from REST's.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Transport {
     Rest,

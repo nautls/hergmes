@@ -71,8 +71,8 @@ impl Fixture {
                 Arc::new(TokenChecker::new(sim.clone(), 100)),
                 BoxFetcher::new(sim.clone(), cache),
             )
-            .waiting_for(settled),
-            balances: Balances::new(sim.clone(), Default::default()),
+            .waiting_for(settled.clone()),
+            balances: Balances::new(sim.clone(), Default::default()).waiting_for(settled),
             history: History::new(sim.clone(), Default::default()),
             headers: Headers::new(HeaderReader::new(sim.clone(), follower.headers())),
             boxes: Boxes::new(sim.clone()),
@@ -769,16 +769,23 @@ async fn a_load_that_fails_for_now_is_rejected_with_retry_after() {
     assert!(!f.tracked(&f.tree_key(0)).await);
 }
 
-/// The configured keys go first at startup so they take the cap on tracked boxes; a balance
-/// subscription takes none of it, so it does not wait for them.
+/// The configured keys go first at startup so they take the cap on tracked units before
+/// clients can. A balance-only key counts its charge, so a balance subscription waits for
+/// them too: `not_ready` until they settle, tracked once they have.
 #[tokio::test(start_paused = true)]
-async fn a_balance_subscription_does_not_wait_for_the_configured_keys() {
-    let (settled, _pending) = settling(1);
+async fn a_balance_subscription_waits_for_the_configured_keys() {
+    let (settled, pending) = settling(1);
     let f = Fixture::waiting_for(settled).await;
     let mut client = f.connect();
-    client
-        .subscribe(json!({ "address": f.address(0) }), None)
-        .await;
+    let address = json!({ "address": f.address(0) });
+    client.subscribe(address.clone(), None).await;
+    let messages = client.texts().await;
+    assert_eq!(types(&messages), ["rejected"]);
+    assert_eq!(messages[0]["reason"], "not_ready");
+    assert!(!f.tracked(&f.tree_key(0)).await);
+
+    drop(pending);
+    client.subscribe(address, None).await;
     assert_eq!(types(&client.texts().await), ["subscribed", "balance"]);
 }
 

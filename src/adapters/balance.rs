@@ -16,7 +16,7 @@ use tracing::debug;
 use crate::{
     adapters::{EngineGone, EngineHandle, best_full_block, engine_tip},
     clients::{NodeError, NodeSource},
-    engine::{Event, Output, Totals},
+    engine::{Event, Output, Totals, TrackingKey},
     types::ergo::{Balance, ErgoTree},
 };
 
@@ -138,6 +138,13 @@ impl<S: NodeSource> BalanceReader<S> {
     /// balance, the engine at it, and the indexer at its height. A streamed balance keeps a
     /// wrong start until a block spends past it, so a read is taken only at a tip all three
     /// share. Whether the engine took it.
+    ///
+    /// The confirmed balance is the indexer's running total for the address, not a sum of its
+    /// boxes at the read (node 6.0.8, `BlockchainApiRoute.getAddressBalanceTotal` serves
+    /// `IndexedErgoAddress.balanceInfo`, which `ExtraIndexer` keeps with `BalanceInfo.add` and
+    /// `subtract`, and undoes box by box in `ExtraIndexer.removeAfter` on a rollback). So it
+    /// is as of the indexed height, and as right as that total: `subtract` clamps ERG at zero
+    /// and skips a token the total lacks, so a wrong total shows no sign.
     async fn try_track(
         &self,
         engine: &impl EngineHandle,
@@ -159,7 +166,8 @@ impl<S: NodeSource> BalanceReader<S> {
         let event = Event::BalanceLoaded { tree: tree.clone(), as_of: tip, confirmed };
         // `BalanceLoaded` is never an `EngineError`: an off-tip load answers `LoadRejected`.
         let outputs = engine.apply(event).await?.unwrap_or_default();
-        for output in &outputs {
+        let key = TrackingKey::Tree(tree.clone());
+        for output in outputs.iter().filter(|o| *o.key() == key) {
             match *output {
                 Output::LoadRejected { .. } => return Ok(false),
                 Output::CapacityExceeded { tracked, evictable, .. } => {

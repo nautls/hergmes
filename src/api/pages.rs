@@ -158,8 +158,10 @@ impl<S: NodeSource> Pages<S> {
     }
 
     /// Loads `key` for a client: only once the configured keys have settled, and a token
-    /// only after the supply check. A key already tracked is a duplicate the engine ignores.
-    /// Pages and the WebSocket's balance-only subscriptions load through here.
+    /// only after the supply check. A key already tracked is a duplicate the engine ignores,
+    /// unless it is tracked balance-only: its boxes then make it a key with boxes. Pages load
+    /// through here; a balance-only subscription tracks its address from its balance instead
+    /// (`Balances::track`).
     pub async fn load(
         &self,
         engine: &impl EngineHandle,

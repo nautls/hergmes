@@ -142,8 +142,8 @@ async fn run(flag: Option<PathBuf>) -> Result<(), AppError> {
     let api = Arc::new(Api {
         engine: engine.clone(),
         pages: Pages::new(loader.clone(), tokens.clone(), BoxFetcher::new(node.clone(), cache))
-            .waiting_for(settled),
-        balances: Balances::new(node.clone(), Default::default()),
+            .waiting_for(settled.clone()),
+        balances: Balances::new(node.clone(), Default::default()).waiting_for(settled),
         history: History::new(node.clone(), Default::default()),
         headers: Headers::new(headers),
         boxes: Boxes::new(node.clone()),

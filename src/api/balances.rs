@@ -19,6 +19,7 @@ use crate::{
     api::{ApiError, history::pending_txs},
     clients::NodeSource,
     engine::{PendingAt, Query, Reply, Totals, TrackingKey, overlay::PendingDelta},
+    runtime::Settled,
     types::ergo::ErgoTree,
 };
 
@@ -44,11 +45,21 @@ struct Halves {
 pub struct Balances<S> {
     reader: BalanceReader<S>,
     config: Config,
+    /// Whether the configured keys have settled; no key is tracked for a client before.
+    settled: Settled,
 }
 
 impl<S: NodeSource> Balances<S> {
     pub fn new(source: S, config: Config) -> Self {
-        Self { reader: BalanceReader::new(source), config }
+        Self { reader: BalanceReader::new(source), config, settled: Settled::now() }
+    }
+
+    /// Tracks no key for a client until `settled` is, as the page service loads none: a
+    /// balance-only key counts its charge against the cap, and at startup the configured keys
+    /// take the cap before clients can. A balance subscription answers `not_ready` until then.
+    pub fn waiting_for(mut self, settled: Settled) -> Self {
+        self.settled = settled;
+        self
     }
 
     /// The balance of the address guarded by `tree`, from the engine if it is tracked, and
@@ -72,6 +83,9 @@ impl<S: NodeSource> Balances<S> {
     /// balance: one read of the indexer, and no boxes. An address already tracked stays as it
     /// is.
     pub async fn track(&self, engine: &impl EngineHandle, tree: &ErgoTree) -> Result<(), ApiError> {
+        if !self.settled.is_settled() {
+            return Err(ApiError::NotReady { retry_after: self.config.retry });
+        }
         let Err(error) = self.reader.track(engine, tree, self.config).await else {
             return Ok(());
         };

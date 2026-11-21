@@ -367,7 +367,8 @@ impl Engine {
                 // tree: the indexer sends a block's inputs in full, each looked up by its
                 // number (node 6.0.8, `IndexedErgoTransaction.retrieveBody`). That lookup
                 // drops an input it can't find rather than fail, which would leave the totals
-                // too high; a later spend past them, or a load of the key's boxes, finds it.
+                // too high, and nothing here notices: a mismatch is seen only when a change
+                // would take them below zero. A load of the key's boxes replaces them.
                 if let Some(&key_id) = self.balance_trees.get(&input.utxo.ergo_tree) {
                     delta
                         .balances
