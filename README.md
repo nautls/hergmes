@@ -60,7 +60,7 @@ variables instead, without a file: `ERGO_NODE_URL`, `HERGMES_LISTEN_ADDR` and
 | `allow_tokens`                     | omitted: any   | Token ids clients may name                                                        |
 | `box_cache_mb`                     | 128            | Memory for full boxes kept to serve pages, in MiB; 0 disables it                  |
 | `max_boxes_per_key`                | 16383          | Most boxes a key can hold to have its boxes tracked: one node page                |
-| `max_tracked_boxes`                | 2000000        | Most boxes tracked over all keys, each key one more; ~860 MiB resident when full  |
+| `max_tracked_units`                | 2000000        | Most units tracked: a box is one, a key its memory's worth; ~860 MiB resident     |
 | `listen_addr`                      | 127.0.0.1:8080 | IP and port of the REST API and the WebSocket; or `HERGMES_LISTEN_ADDR`           |
 | `allow_origins`                    | `["*"]`        | Browser pages and extensions that may use the API: origins and `"scheme://*"`     |
 | `max_subscriptions_per_connection` | 100            | Most subscriptions one WebSocket connection holds                                 |
@@ -110,12 +110,11 @@ file descriptor, so the relay raises its soft open-file limit to the hard one at
 systemd, from 1,024 to 524,288 by default) and warns if that is below 4,096; set `LimitNOFILE` then.
 An unlimited hard limit leaves the soft one as it is.
 
-Set `metrics_addr` (e.g. `"127.0.0.1:9100"`) to serve Prometheus metrics on `GET /metrics`,
-on an address of its own and never on the public one: tracked keys by kind (`address` with its
-boxes, `balance` for balance-only, `token`), tracked boxes, the ring buffer's and the box cache's
-sizes, cache hits and misses, the boxes idle keys hold and the
-keys evicted, resident memory, and refusals and resyncs by reason. They are counts only and
-name no address or token.
+Set `metrics_addr` (e.g. `"127.0.0.1:9100"`) to serve Prometheus metrics on `GET /metrics`, on an
+address of its own and never on the public one: tracked keys by kind (`address` with its boxes,
+`balance` for balance-only, `token`), tracked boxes and units, the ring buffer's and the box cache's
+sizes, cache hits and misses, the boxes idle keys hold and the keys evicted, resident memory, and
+refusals and resyncs by reason. They are counts only and name no address or token.
 
 Every read and event goes through one engine task, one message at a time. Two histograms show
 whether that task keeps up: `hergmes_engine_inbox_wait_seconds`, how long messages wait for it,
@@ -126,31 +125,35 @@ of it.
 ## Sizing
 
 The defaults fit a relay that shares a machine with its node. Full at the default
-`max_tracked_boxes`, with about 100k keys on 1,000 connections, a mainnet relay held 855 to 861
+`max_tracked_units`, with about 100k keys on 1,000 connections, a mainnet relay held 855 to 861
 MiB resident over 30 hours, about 450 B per tracked box all told. Memory grows about linearly
 with what is tracked and connected:
 
 | What                         | Live memory   | Bounded by                                               |
 | ---------------------------- | ------------- | -------------------------------------------------------- |
-| A tracked box, with its key  | about 170 B   | `max_tracked_boxes`, and `max_boxes_per_key` for one key |
-| A tracked key                | not measured  | `max_tracked_boxes`, as one box each                     |
+| A tracked box, with its key  | about 170 B   | `max_tracked_units`, and `max_boxes_per_key` for one key |
+| A tracked key, besides boxes | about 680 B   | `max_tracked_units`, as the boxes it is worth            |
 | The box cache                | its budget    | `box_cache_mb`                                           |
 | A subscription               | about 2.5 KiB | `max_subscriptions_per_connection`, per connection       |
 | An idle WebSocket connection | about 8 KiB   | the open-file limit                                      |
 
 Resident memory sits above these live figures, by what the allocator keeps.
 
-The cap counts each key as one box more than it holds, so a key holding none (an address tracked for
-its balance alone, or an empty one) still takes room. At the cap, a load first evicts keys with no
-subscribers that have been idle for a minute, least recently active first, and is refused with
-`capacity_exceeded` only if all of them together can't make room. Idle keys would leave after
-`grace_secs` anyway, so they never stand in the way of active ones, and the minute keeps a client's
-key between requests that belong together, such as the pages of one walk. `hergmes_evictable_boxes`
-shows the room they hold, and `hergmes_evicted_keys_total` how many went. A block untracks at most
-50,000 boxes of keys past `grace_secs` (or one key, if it alone holds more), so after a mass
-disconnect they leave over several blocks rather than holding one block for seconds.
+`max_tracked_units` caps what is tracked in units of about one tracked box's live memory. A box
+counts one. A key also takes memory of its own: about 680 B, plus its tree (a contract's can be
+kilobytes) and about 64 B for each token an address holds, and counts, besides its boxes, the units
+that memory is worth, fixed when the key is loaded: about five for an address holding only ERG. So a
+key holding no box (an address tracked for its balance alone, or an empty one) still takes room. At
+the cap, a load first evicts keys with no subscribers that have been idle for a minute, least
+recently active first, and is refused with `capacity_exceeded` only if all of them together can't
+make room. Idle keys would leave after `grace_secs` anyway, so they never stand in the way of active
+ones, and the minute keeps a client's key between requests that belong together, such as the pages
+of one walk. `hergmes_evictable_boxes` shows the room they hold, and `hergmes_evicted_keys_total`
+how many went. A block untracks at most 50,000 boxes of keys past `grace_secs` (or one key, if it
+alone holds more), so after a mass disconnect they leave over several blocks rather than holding one
+block for seconds.
 
-To track more, raise `max_tracked_boxes` and `box_cache_mb` together. At the defaults the cache
+To track more, raise `max_tracked_units` and `box_cache_mb` together. At the defaults the cache
 holds about a tenth of the tracked boxes and answers about 99% of lookups. A larger cap with the
 same cache means more misses, and each miss is a call to the node. Keep the cache at about the
 same share of tracked boxes, then watch `hergmes_box_cache_hits_total` and

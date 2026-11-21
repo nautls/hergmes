@@ -41,14 +41,15 @@ pub struct Config {
     /// client between two requests that belong together (the pages of one walk) keeps its
     /// key.
     pub evict_after: Duration,
-    /// The most boxes tracked over all keys, a box held by two keys counted twice (each is
-    /// an entry of the reverse index), and each key counted as one box more: a key holding
-    /// none (a balance-only key, an empty address) still takes memory, and with no room
-    /// taken their number would have no bound. Checked when a key is loaded, never afterwards: a
-    /// tracked key grows from blocks, and dropping it would break its subscribers. A load
+    /// The most units tracked over all keys. A unit is about the live memory of one tracked
+    /// box: a box counts one, once per key that holds it (each is an entry of the reverse
+    /// index), and a key counts the boxes its own memory is worth (see [`key_charge`]), so a
+    /// key holding none (a balance-only key, an empty address) still takes room, and their
+    /// number is bounded too. Checked when a key is loaded, never afterwards: a tracked key
+    /// grows from blocks, and dropping it would break its subscribers. A load
     /// past it first evicts idle keys (see `Engine::evictable`), which would leave after
     /// the grace period anyway, so idle keys never stand in the way of active ones.
-    pub max_tracked_boxes: usize,
+    pub max_tracked_units: usize,
     /// The most boxes a block untracks for keys idle past the grace period: the first key
     /// always goes, a later one only if it fits, and the rest wait for the next block. A
     /// key's untrack costs about half a microsecond a box (`examples/untrackbench.rs`), so
@@ -65,7 +66,7 @@ impl Config {
         window: 720,
         grace: Duration::from_secs(60 * 60),
         evict_after: Duration::from_secs(60),
-        max_tracked_boxes: 2_000_000,
+        max_tracked_units: 2_000_000,
         untrack_boxes_per_block: 50_000,
     };
 }
@@ -74,6 +75,34 @@ impl Default for Config {
     fn default() -> Self {
         Self::DEFAULT
     }
+}
+
+/// What a tracked box takes, in live bytes: its id in the key's set and in the reverse
+/// index, with its share of the key (`examples/membench.rs`, `engine`, 50 boxes a key).
+const BOX_BYTES: usize = 156;
+/// What a key takes besides its boxes and its tree or token id: its entries in the engine's
+/// and the mempool's maps, its state and its running totals with no token in them
+/// (`examples/membench.rs`, `balance`, less the tree it measures).
+const KEY_BYTES: usize = 680;
+/// What a token in a key's running totals takes, and the least the first one takes: the
+/// totals' map allocates a node holding up to eleven entries for it.
+const TOKEN_BYTES: usize = 64;
+const FIRST_TOKEN_BYTES: usize = 460;
+
+/// What a key counts against the cap on tracked units besides its boxes: the boxes its own
+/// memory is worth, holding `tokens` distinct tokens. Fixed when the key is loaded: tokens it
+/// is paid later are not counted until it is loaded again. Its tree (a contract's can be
+/// kilobytes) is stored once and counted once.
+pub fn key_charge(key: &TrackingKey, tokens: usize) -> usize {
+    let id = match key {
+        TrackingKey::Tree(tree) => tree.0.len(),
+        TrackingKey::Token(id) => id.0.len(),
+    };
+    let tokens = match tokens {
+        0 => 0,
+        n => FIRST_TOKEN_BYTES.max(TOKEN_BYTES * n),
+    };
+    (KEY_BYTES + id + tokens).div_ceil(BOX_BYTES)
 }
 
 /// A tracked key's state.
@@ -101,6 +130,9 @@ struct KeyState {
     /// The pending delta of the last `balance` sent. The confirmed half is `totals`. Always
     /// empty for a token key.
     pending_sent: PendingDelta,
+    /// What the key counts against the cap besides its boxes, fixed at its load (see
+    /// [`key_charge`]).
+    charge: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -115,6 +147,8 @@ pub struct Engine {
     /// The balance-only keys, by tree: how a block's inputs find them, since they hold no
     /// boxes in the reverse index.
     balance_trees: HashMap<ErgoTree, KeyId>,
+    /// The keys' charges, summed: with the reverse index's length, what the cap counts.
+    charges: usize,
     keys: HashMap<KeyId, KeyState>,
     /// The keys with no subscribers, least recently active first, with their box counts:
     /// the ones the idle sweep and eviction look at, in the order they go. Kept apart, counts
@@ -145,6 +179,7 @@ impl Engine {
             next_id: 0,
             ids: BTreeMap::new(),
             balance_trees: HashMap::new(),
+            charges: 0,
             keys: HashMap::new(),
             idle: BTreeMap::new(),
             reverse: BTreeMap::new(),
@@ -239,7 +274,7 @@ impl Engine {
             }
             Query::Tip => Reply::Tip(self.tip),
             Query::Capacity { key, up_to } => {
-                Reply::Capacity((!self.is_tracked(&key)).then(|| self.capacity(up_to)))
+                Reply::Capacity((!self.is_tracked(&key)).then(|| self.capacity(&key, up_to)))
             }
             Query::Chain => Reply::Chain(
                 self.ring
@@ -268,9 +303,13 @@ impl Engine {
             balance_keys,
             token_keys: self.ids.len() - addresses,
             tracked_boxes: self.reverse.len(),
+            tracked_units: self.units(),
             ring_blocks: self.ring.len(),
             ring_boxes: self.ring.iter().map(|d| d.boxes.len()).sum(),
-            evictable_boxes: self.evictable().map(|(_, _, units)| units - 1).sum(),
+            evictable_boxes: self
+                .evictable()
+                .map(|(_, id, units)| units - self.keys[&id].charge)
+                .sum(),
             evicted_keys: self.evicted_keys,
         }
     }
@@ -602,8 +641,17 @@ impl Engine {
         }
         // The loader reads every page at one tip, so a box should come once; one that came
         // twice would be counted twice here, at most a refusal or an eviction too many. An
-        // upgraded key already counts as one.
-        let load = boxes.len() + usize::from(upgraded.is_none());
+        // upgraded key already counts its charge from its balance, which its boxes replace.
+        let tokens = match key {
+            TrackingKey::Tree(_) => (boxes.iter())
+                .flat_map(|b| b.utxo.tokens.iter().filter(|t| t.amount > 0).map(|t| t.id))
+                .collect::<HashSet<_>>()
+                .len(),
+            TrackingKey::Token(_) => 0,
+        };
+        let charge = key_charge(&key, tokens);
+        let was_charged = upgraded.map_or(0, |id| self.keys[&id].charge);
+        let load = boxes.len() + charge.saturating_sub(was_charged);
         if let Some(refused) = self.make_room(&key, load, boxes.len(), upgraded) {
             return vec![refused];
         }
@@ -618,6 +666,8 @@ impl Engine {
                     self.balance_trees.remove(tree);
                 }
                 let was = state.totals.replace(Totals::default());
+                self.charges -= state.charge;
+                state.charge = charge;
                 state.balance_only = false;
                 state.since = as_of;
                 state.loaded_seq = self.seq;
@@ -637,6 +687,7 @@ impl Engine {
                     subscribers: 0,
                     last_seen_ms: self.now_ms,
                     pending_sent: PendingDelta::default(),
+                    charge,
                 };
                 (key_id, state, None)
             }
@@ -654,6 +705,7 @@ impl Engine {
         if state.subscribers == 0 {
             self.idle.insert((self.now_ms, key_id), state.boxes.len());
         }
+        self.charges += charge;
         self.ids.insert(key.clone(), key_id);
         self.keys.insert(key_id, state);
 
@@ -702,7 +754,8 @@ impl Engine {
             debug!(?key, ?as_of, "Balance load of an already tracked key ignored");
             return Vec::new();
         }
-        if let Some(refused) = self.make_room(&key, 1, 0, None) {
+        let charge = key_charge(&key, confirmed.tokens.len());
+        if let Some(refused) = self.make_room(&key, charge, 0, None) {
             return vec![refused];
         }
         debug!(?key, height = as_of.height, "Tracking key balance-only");
@@ -718,7 +771,9 @@ impl Engine {
             subscribers: 0,
             last_seen_ms: self.now_ms,
             pending_sent: PendingDelta::default(),
+            charge,
         };
+        self.charges += charge;
         self.idle.insert((self.now_ms, key_id), 0);
         self.ids.insert(key.clone(), key_id);
         self.balance_trees.insert(tree, key_id);
@@ -738,13 +793,13 @@ impl Engine {
         Vec::new()
     }
 
-    /// What the cap on tracked boxes counts: every tracked box, once per key that holds it,
-    /// and one more per key.
+    /// What the cap on tracked units counts: every tracked box, once per key that holds it,
+    /// and every key's charge.
     fn units(&self) -> usize {
-        self.reverse.len() + self.ids.len()
+        self.reverse.len() + self.charges
     }
 
-    /// Makes room for a load that adds `load` units (its `boxes`, and one for a new key) by
+    /// Makes room for a load that adds `load` units (its `boxes`, and a new key's charge) by
     /// evicting idle keys, least recently active first, never `keeping`. Idle keys are looked
     /// for only past the cap, and only until there is room. A refusal if even all of them
     /// would not make room, and then none is evicted.
@@ -755,7 +810,7 @@ impl Engine {
         boxes: usize,
         keeping: Option<KeyId>,
     ) -> Option<Output> {
-        let (tracked, max) = (self.units(), self.config.max_tracked_boxes);
+        let (tracked, max) = (self.units(), self.config.max_tracked_units);
         let needed = tracked.saturating_add(load).saturating_sub(max);
         if needed == 0 {
             return None;
@@ -789,14 +844,16 @@ impl Engine {
         None
     }
 
-    /// The room for a new key's load of at most `up_to` boxes. Idle keys' room is counted
-    /// only if such a load could pass the cap, and only until it would fit: past that it
-    /// changes no answer. So `evictable` is exact only when the load does not fit; otherwise
-    /// it is at least the room the load needs. With the defaults, idle keys are counted only
-    /// past 1.95M tracked units.
-    fn capacity(&self, up_to: usize) -> Capacity {
-        let (tracked, max) = (self.units(), self.config.max_tracked_boxes);
-        let needed = tracked.saturating_add(up_to + 1).saturating_sub(max);
+    /// The room for a load of `key`, new, of at most `up_to` boxes, charged as holding no
+    /// token: the loader can't know its tokens before its pages, and the check on its load
+    /// counts them. Idle keys' room is counted only if such a load could pass the cap, and
+    /// only until it would fit: past that it changes no answer. So `evictable` is exact only
+    /// when the load does not fit; otherwise it is at least the room the load needs. With the
+    /// defaults, idle keys are counted only past 1.95M tracked units.
+    fn capacity(&self, key: &TrackingKey, up_to: usize) -> Capacity {
+        let (tracked, max) = (self.units(), self.config.max_tracked_units);
+        let charge = key_charge(key, 0);
+        let needed = tracked.saturating_add(up_to + charge).saturating_sub(max);
         let mut evictable = 0;
         if needed > 0 {
             for (_, _, units) in self.evictable() {
@@ -806,11 +863,11 @@ impl Engine {
                 evictable += units;
             }
         }
-        Capacity { tracked, evictable, max }
+        Capacity { tracked, evictable, max, charge }
     }
 
     /// The keys a load may evict, in the order it evicts them, with their last activity and
-    /// the units they hold (their boxes, and one): no subscribers, so no stream breaks, and
+    /// the units they hold (their boxes and their charge): no subscribers, so no stream breaks, and
     /// idle for `evict_after`, so a client between two requests that belong together keeps
     /// its key. Configured keys always have their keeper's subscription. Least recently
     /// active first, then oldest load first.
@@ -821,7 +878,7 @@ impl Engine {
             .take_while(move |&(&(last_seen_ms, _), _)| {
                 self.now_ms.saturating_sub(last_seen_ms) >= after
             })
-            .map(|(&(last_seen_ms, id), &boxes)| (last_seen_ms, id, boxes + 1))
+            .map(|(&(last_seen_ms, id), &boxes)| (last_seen_ms, id, boxes + self.keys[&id].charge))
     }
 
     /// Records activity on a tracked key, and returns its state.
@@ -868,6 +925,7 @@ impl Engine {
             };
             let state = self.keys.remove(&key_id).expect("an id is tracked");
             self.idle.remove(&(state.last_seen_ms, key_id));
+            self.charges -= state.charge;
             if let (true, TrackingKey::Tree(tree)) = (state.balance_only, key) {
                 self.balance_trees.remove(tree);
             }

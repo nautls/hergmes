@@ -188,7 +188,7 @@ mod track {
     #[test]
     fn a_full_cap_refuses_a_balance_load() {
         let chain = new_chain();
-        let mut engine = Engine::new(EngineConfig { max_tracked_boxes: 0, ..Default::default() });
+        let mut engine = Engine::new(EngineConfig { max_tracked_units: 0, ..Default::default() });
         engine
             .apply(Event::BlockApplied(chain.oracle().indexed_block(chain.height())))
             .unwrap();

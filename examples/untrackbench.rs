@@ -100,7 +100,7 @@ fn run(
         untrack_boxes_per_block: budget,
         // Room for every key and the ring's boxes: nothing is evicted, so the sweep alone
         // untracks.
-        max_tracked_boxes: active_keys * active_boxes + idle_keys * idle_boxes + 4 * ring + 16,
+        max_tracked_units: active_keys * active_boxes + idle_keys * idle_boxes + 4 * ring + 16,
         ..Config::DEFAULT
     };
     let grace = config.grace;

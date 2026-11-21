@@ -47,7 +47,7 @@ use std::sync::Arc;
 use hergmes::{
     adapters::{BoxCache, cache::weight},
     api::metrics::resident_memory,
-    engine::{BlockRef, Config, Engine, Event, LoadedBox, Query, Reply, TrackingKey},
+    engine::{BlockRef, Config, Engine, Event, LoadedBox, Query, Reply, TrackingKey, key_charge},
     types::{
         HexBytes,
         ergo::{BlockHeader, IndexedBlock, UnconfirmedTransaction},
@@ -96,8 +96,10 @@ fn resident() -> u64 {
 
 fn engine(keys: usize, boxes_per_key: usize) {
     let boxes = keys * boxes_per_key;
-    // Room for every box and key: the cap counts each key as one box more.
-    let mut engine = Engine::new(Config { max_tracked_boxes: boxes + keys, ..Config::DEFAULT });
+    // Room for every box and key: the cap counts each key's charge besides its boxes.
+    let charge = key_charge(&TrackingKey::Tree(tree(0)), 0);
+    let mut engine =
+        Engine::new(Config { max_tracked_units: boxes + keys * charge, ..Config::DEFAULT });
     let tip = BlockRef { height: 1_000_000, header_id: digest(u64::MAX) };
     let header = BlockHeader {
         id: tip.header_id,

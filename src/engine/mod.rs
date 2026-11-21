@@ -19,4 +19,4 @@ pub use message::{
     Balance, Capacity, EngineError, Event, LoadedBox, Output, PageError, PageIds, PendingAt,
     PendingTx, PendingTxsAt, PoolBox, Query, Reply, ResyncReason, Stats, WithPoolIds,
 };
-pub use state::{Config, Engine};
+pub use state::{Config, Engine, key_charge};

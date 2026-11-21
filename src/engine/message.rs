@@ -26,8 +26,8 @@ pub enum Event {
     KeyLoaded { key: TrackingKey, as_of: BlockRef, boxes: Vec<LoadedBox> },
     /// An address's confirmed balance at `as_of`, read from the indexer, which starts tracking
     /// it balance-only: its totals, moved by each block, and no boxes, so it costs no paging
-    /// and counts nothing against the cap on tracked boxes. Accepted only if `as_of` is the
-    /// current tip; ignored for a key already tracked either way.
+    /// and counts only its charge against the cap on tracked units. Accepted only if `as_of`
+    /// is the current tip; ignored for a key already tracked either way.
     BalanceLoaded { tree: ErgoTree, as_of: BlockRef, confirmed: Totals },
     /// A client subscribed to a key. A key that is not tracked answers `ResyncRequired`: the
     /// transport loads it first.
@@ -83,7 +83,7 @@ pub enum Query {
     Balance(TrackingKey),
     Tip,
     /// The room a load of the key, of at most `up_to` boxes, may take under the cap on
-    /// tracked boxes, or `None` if the key is tracked: a duplicate load is never refused. A
+    /// tracked units, or `None` if the key is tracked: a duplicate load is never refused. A
     /// balance-only key's load of its boxes is checked against the cap when it arrives. Not
     /// activity for the key.
     Capacity {
@@ -153,8 +153,10 @@ pub struct Stats {
     /// Addresses tracked balance-only.
     pub balance_keys: usize,
     pub token_keys: usize,
-    /// One per box and key, as the cap on tracked boxes counts them.
+    /// One per box and key. The cap counts these and the keys' charges, in `tracked_units`.
     pub tracked_boxes: usize,
+    /// What the cap on tracked units counts: `tracked_boxes`, and every key's charge.
+    pub tracked_units: usize,
     /// Blocks in the ring buffer.
     pub ring_blocks: usize,
     /// Full boxes the ring buffer's blocks hold.
@@ -165,17 +167,19 @@ pub struct Stats {
     pub evicted_keys: u64,
 }
 
-/// The units tracked (one per box and key, and one per key), the part of them held by keys a
-/// load may evict, and the cap on them. A new key's load of `n` boxes adds `n + 1` and fits
-/// while `tracked - evictable + n + 1 <= max`: it takes the room it needs from idle keys, or is
-/// refused and evicts none. Idle keys are counted only until the load asked about would fit,
-/// so `evictable` is all of their units only when it does not; otherwise it is at least what
-/// the load needs.
+/// The units tracked (one per box and key, and each key's charge, the boxes its own memory is
+/// worth), the part of them held by keys a load may evict, the cap on them, and the charge of
+/// the key asked about, counted as holding no token. Its load of `n` boxes adds at least
+/// `n + charge` and fits while `tracked - evictable + n + charge <= max`: it takes the room it
+/// needs from idle keys, or is refused and evicts none. Idle keys are counted only until the
+/// load asked about would fit, so `evictable` is all of their units only when it does not;
+/// otherwise it is at least what the load needs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Capacity {
     pub tracked: usize,
     pub evictable: usize,
     pub max: usize,
+    pub charge: usize,
 }
 
 impl Capacity {
@@ -183,7 +187,7 @@ impl Capacity {
         self.tracked
             .saturating_sub(self.evictable)
             .saturating_add(boxes)
-            .saturating_add(1)
+            .saturating_add(self.charge)
             <= self.max
     }
 }
@@ -286,10 +290,10 @@ pub enum Output {
     ResyncRequired { key: TrackingKey, reason: ResyncReason },
     /// A first load pinned to a block other than the tip; the loader retries.
     LoadRejected { key: TrackingKey, as_of: BlockRef },
-    /// A load refused because its `boxes`, and one more for a new key, on top of the `tracked`
-    /// units would pass the cap on tracked boxes, even with the `evictable` ones (held by idle
-    /// keys, counted in `tracked`) gone. Units are boxes and keys (see [`Capacity`]); a
-    /// balance-only load has no boxes. Nothing changed, no key was evicted. It frees up as
+    /// A load refused because its `boxes`, and a new key's charge, on top of the `tracked`
+    /// units would pass the cap on tracked units, even with the `evictable` ones (held by idle
+    /// keys, counted in `tracked`) gone. Units are boxes and keys' charges (see [`Capacity`]);
+    /// a balance-only load has no boxes. Nothing changed, no key was evicted. It frees up as
     /// subscribers leave and their keys go idle.
     CapacityExceeded { key: TrackingKey, tracked: usize, evictable: usize, boxes: usize },
 }

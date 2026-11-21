@@ -585,7 +585,7 @@ fn a_key_over_the_cap_is_too_many_boxes() {
 #[test]
 fn a_key_past_the_total_cap_is_capacity_exceeded() {
     let chain = crate::sim::testing::new_chain();
-    let mut engine = Engine::new(Config { max_tracked_boxes: 1, ..Config::default() });
+    let mut engine = Engine::new(Config { max_tracked_units: 1, ..Config::default() });
     engine
         .apply(Event::BlockApplied(chain.oracle().indexed_block(chain.height())))
         .unwrap();

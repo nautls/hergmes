@@ -60,7 +60,7 @@
 # window_blocks = 720
 
 # Seconds a key with no subscribers stays tracked after its last read or unsubscribe, checked
-# at each block; at least 60. A load past max_tracked_boxes can evict it sooner, once it has
+# at each block; at least 60. A load past max_tracked_units can evict it sooner, once it has
 # been idle for a minute.
 # grace_secs = 3600
 
@@ -73,10 +73,11 @@
 # a large key loads slowly.
 # max_boxes_per_key = 16383
 
-# Most boxes tracked over all keys, each key counting as one box more than it holds, so a key
-# holding none (a balance subscription's, an empty address) still takes room. A load past it
-# first evicts keys with no subscribers that have been idle for a minute, least recently
-# active first, and is refused only if they can't make room. Memory grows about linearly with
-# it: full at the default, with about 100k keys on 1,000 connections, the relay held about
-# 860 MiB resident.
-# max_tracked_boxes = 2000000
+# Most units tracked over all keys. A unit is about the live memory of one tracked box: a box
+# counts one, and a key counts besides its boxes what its own memory is worth (about five for an
+# address holding only ERG, more for a long contract or many tokens), so a key holding none (a
+# balance subscription's, an empty address) still takes room. A load past it first evicts keys
+# with no subscribers that have been idle for a minute, least recently active first, and is
+# refused only if they can't make room. Memory grows about linearly with it: full at the
+# default, with about 100k keys on 1,000 connections, the relay held about 860 MiB resident.
+# max_tracked_units = 2000000

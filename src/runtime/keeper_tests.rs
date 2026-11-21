@@ -169,8 +169,9 @@ async fn room_for_the_small_token() -> (SimChain, Handle, JoinHandle<()>, Manual
     let tip = sim.lock().tip();
     let token_boxes = sim.lock().oracle().load(&small, tip.height).len();
     assert!(token_boxes > 3);
-    // The key counts as one box more than it holds.
-    let config = engine::Config { max_tracked_boxes: token_boxes + 1, ..CONFIG };
+    // The key counts its charge besides its boxes.
+    let config =
+        engine::Config { max_tracked_units: token_boxes + engine::key_charge(&small, 0), ..CONFIG };
     let clock = ManualClock::default();
     let (engine, task) = spawn_with_clock(Engine::new(config), Clock::Manual(clock.clone()));
     sync(&sim, &engine).await;

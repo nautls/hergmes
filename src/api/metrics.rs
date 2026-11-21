@@ -71,6 +71,7 @@ struct Inner {
     resyncs: Family<Resync, Counter>,
     tracked_keys: Family<KeyKind, Gauge>,
     tracked_boxes: Gauge,
+    tracked_units: Gauge,
     ring_blocks: Gauge,
     ring_boxes: Gauge,
     evictable_boxes: Gauge,
@@ -86,8 +87,14 @@ impl Metrics {
         let rejections = Family::<Rejection, Counter>::default();
         let resyncs = Family::<Resync, Counter>::default();
         let tracked_keys = Family::<KeyKind, Gauge>::default();
-        let [tracked_boxes, ring_blocks, ring_boxes, evictable_boxes, resident_memory] =
-            [(); 5].map(|()| Gauge::default());
+        let [
+            tracked_boxes,
+            tracked_units,
+            ring_blocks,
+            ring_boxes,
+            evictable_boxes,
+            resident_memory,
+        ] = [(); 6].map(|()| Gauge::default());
         let evicted_keys = Counter::default();
         // The encoder adds a counter's `_total`.
         registry.register(
@@ -109,6 +116,11 @@ impl Metrics {
             "hergmes_tracked_boxes",
             "Tracked boxes, one per box and key",
             tracked_boxes.clone(),
+        );
+        registry.register(
+            "hergmes_tracked_units",
+            "What the cap on tracked units counts: tracked boxes, and each key's charge",
+            tracked_units.clone(),
         );
         registry.register("hergmes_ring_blocks", "Blocks in the ring buffer", ring_blocks.clone());
         registry.register(
@@ -148,6 +160,7 @@ impl Metrics {
             resyncs,
             tracked_keys,
             tracked_boxes,
+            tracked_units,
             ring_blocks,
             ring_boxes,
             evictable_boxes,
@@ -196,6 +209,7 @@ impl Metrics {
         kind("balance").set(gauge(stats.balance_keys));
         kind("token").set(gauge(stats.token_keys));
         inner.tracked_boxes.set(gauge(stats.tracked_boxes));
+        inner.tracked_units.set(gauge(stats.tracked_units));
         inner.ring_blocks.set(gauge(stats.ring_blocks));
         inner.ring_boxes.set(gauge(stats.ring_boxes));
         inner.evictable_boxes.set(gauge(stats.evictable_boxes));

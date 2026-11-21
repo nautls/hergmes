@@ -53,9 +53,9 @@ pub enum TrackError {
     /// The node, the indexer and the engine were not at one tip in any attempt.
     #[error("the engine and the indexer did not meet at the node's tip in {attempts} attempts")]
     NotSettled { attempts: u32 },
-    /// The engine is at its cap on tracked boxes, where a balance-only key counts as one, and
-    /// no idle key could make room. It frees up as keys go idle.
-    #[error("the cap on tracked boxes is reached: {tracked} tracked, {evictable} evictable")]
+    /// The engine is at its cap on tracked units, where a balance-only key counts its charge,
+    /// and no idle key could make room. It frees up as keys go idle.
+    #[error("the cap on tracked units is reached: {tracked} tracked, {evictable} evictable")]
     CapacityExceeded { tracked: usize, evictable: usize },
     #[error(transparent)]
     Node(#[from] NodeError),

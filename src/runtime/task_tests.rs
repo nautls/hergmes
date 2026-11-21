@@ -648,7 +648,7 @@ async fn a_load_past_the_cap_goes_back_to_its_caller() {
     let mut chain = new_chain();
     chain.mine(0, 2, 1);
     let sim = SimChain::new(chain);
-    let (engine, _task) = spawn(Engine::new(Config { max_tracked_boxes: 1, ..CONFIG }));
+    let (engine, _task) = spawn(Engine::new(Config { max_tracked_units: 1, ..CONFIG }));
     let tip = sim.lock().tip();
     BlockConsumer::new(sim.clone())
         .sync(&engine, tip)

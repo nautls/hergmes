@@ -570,7 +570,7 @@ fn log(outputs: &[Output]) {
             Output::CapacityExceeded { key, tracked, evictable, boxes } => {
                 info!(
                     ?key,
-                    tracked, evictable, boxes, "Load refused: the cap on tracked boxes is reached"
+                    tracked, evictable, boxes, "Load refused: the cap on tracked units is reached"
                 );
             }
             Output::Mempool { key, pending, .. } => {

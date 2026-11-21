@@ -17,12 +17,13 @@ use crate::{
 
 /// Small enough that random histories reach the window, idle, cap and untrack budget edges:
 /// reorgs go up to 5 blocks deep, `Advance` moves the clock up to [`MAX_ADVANCE_SECS`] at a
-/// time, and the simulator's keys hold about twice the cap.
+/// time, and two or three of the simulator's keys fill the cap, each counting its charge
+/// (five to eight boxes) and two to four boxes.
 const CONFIG: Config = Config {
     window: 4,
     grace: Duration::from_secs(3),
     evict_after: Duration::from_secs(2),
-    max_tracked_boxes: 14,
+    max_tracked_units: 20,
     untrack_boxes_per_block: 3,
 };
 const MAX_ADVANCE_SECS: u8 = 2;
@@ -99,6 +100,8 @@ struct KeyModel {
     since: BlockRef,
     /// Tracked for its balance alone, with no boxes.
     balance_only: bool,
+    /// What it counts against the cap besides its boxes, from the tokens it held at its load.
+    charge: usize,
     /// The clock at the key's last activity, in ms.
     last_seen: u64,
     subscribers: u32,
@@ -305,6 +308,16 @@ impl Harness {
             Some(m) if m.balance_only => 0,
             _ => oracle.unspent(key, height).len(),
         }
+    }
+
+    /// `key`'s charge against the cap if loaded at `height`, on the node's chain: from the
+    /// distinct tokens an address holds there, none for a token key.
+    fn charge_at(&self, key: &TrackingKey, height: u32) -> usize {
+        let tokens = match key {
+            TrackingKey::Tree(_) => self.chain.oracle().totals(key, height).tokens.len(),
+            TrackingKey::Token(_) => 0,
+        };
+        key_charge(key, tokens)
     }
 
     /// The keys tracked with their boxes, in key order.
@@ -561,6 +574,7 @@ impl Harness {
             .map(crate::engine::LoadedBox::from)
             .collect::<Vec<_>>();
         let count = boxes.len();
+        let charge = self.charge_at(key, as_of.height);
         let before = self.expected_states();
         let tracked = self.keys.get(key).map(|m| m.balance_only);
         let outputs = self.feed(Event::KeyLoaded { key: key.clone(), as_of, boxes });
@@ -573,9 +587,11 @@ impl Harness {
             self.keys.get_mut(key).expect("tracked").last_seen = self.now;
         } else if tracked == Some(true) {
             // A balance-only key takes its boxes, keeping its subscribers, last balance and
-            // overlay; its totals are the oracle's either way, so no balance goes out. It
-            // already counts as one.
-            if !self.make_room(key, count, count, as_of.height, &outputs) {
+            // overlay; its totals are the oracle's either way, so no balance goes out. It is
+            // charged again, from its boxes' tokens, and already counts its old charge.
+            let was_charged = self.keys[key].charge;
+            let load = count + charge.saturating_sub(was_charged);
+            if !self.make_room(key, load, count, as_of.height, &outputs) {
                 self.check_emissions(&outputs, &before);
                 return;
             }
@@ -583,6 +599,7 @@ impl Harness {
             // no client has its boxes from before.
             let model = self.keys.get_mut(key).expect("tracked");
             model.since = as_of;
+            model.charge = charge;
             model.balance_only = false;
             model.last_seen = self.now;
             self.seen.insert("balance-only key upgraded to boxes");
@@ -591,7 +608,7 @@ impl Harness {
                     .insert("balance-only key with subscribers upgraded to boxes");
             }
         } else {
-            if !self.make_room(key, count + 1, count, as_of.height, &outputs) {
+            if !self.make_room(key, count + charge, count, as_of.height, &outputs) {
                 self.check_emissions(&outputs, &before);
                 return;
             }
@@ -601,6 +618,7 @@ impl Harness {
                 epoch: self.next_epoch,
                 since: as_of,
                 balance_only: false,
+                charge,
                 last_seen: self.now,
                 subscribers: 0,
                 balance,
@@ -629,7 +647,8 @@ impl Harness {
             model.last_seen = self.now;
             self.seen.insert("balance load of a tracked key ignored");
         } else {
-            if !self.make_room(&key, 1, 0, as_of.height, &outputs) {
+            let charge = self.charge_at(&key, as_of.height);
+            if !self.make_room(&key, charge, 0, as_of.height, &outputs) {
                 self.seen.insert("balance load refused at the cap");
                 self.check_emissions(&outputs, &before);
                 return;
@@ -643,6 +662,7 @@ impl Harness {
                 epoch: self.next_epoch,
                 since: as_of,
                 balance_only: true,
+                charge,
                 last_seen: self.now,
                 subscribers: 0,
                 balance,
@@ -667,9 +687,9 @@ impl Harness {
         outputs: &[Output],
     ) -> bool {
         let oracle = self.oracle();
-        let held = |k: &TrackingKey| self.held(&oracle, k, height) + 1;
+        let held = |k: &TrackingKey| self.held(&oracle, k, height) + self.keys[k].charge;
         let tracked: usize = self.keys.keys().map(held).sum();
-        if tracked + load <= CONFIG.max_tracked_boxes {
+        if tracked + load <= CONFIG.max_tracked_units {
             return true;
         }
         let evict_after = CONFIG.evict_after.as_millis() as u64;
@@ -682,7 +702,7 @@ impl Harness {
             .map(|(k, m)| (m.last_seen, m.epoch, k.clone(), held(k)))
             .collect();
         let room: usize = idle.iter().map(|i| i.3).sum();
-        if tracked - room + load > CONFIG.max_tracked_boxes {
+        if tracked - room + load > CONFIG.max_tracked_units {
             let refused =
                 Output::CapacityExceeded { key: key.clone(), tracked, evictable: room, boxes };
             assert_eq!(outputs, [refused], "refused, and nothing else changed");
@@ -695,7 +715,7 @@ impl Harness {
         idle.sort();
         let mut left = tracked;
         for (_, _, evicted, units) in idle {
-            if left + load <= CONFIG.max_tracked_boxes {
+            if left + load <= CONFIG.max_tracked_units {
                 self.seen.insert("idle key kept: the load fit without it");
                 break;
             }
@@ -1161,6 +1181,7 @@ impl Harness {
             balance_keys,
             token_keys: self.keys.len() - addresses,
             tracked_boxes: boxes,
+            tracked_units: boxes + self.keys.values().map(|m| m.charge).sum::<usize>(),
             ring_blocks: self.ring_len as usize,
             ring_boxes,
             evictable_boxes,
@@ -1276,32 +1297,34 @@ impl Harness {
         // when the load can't fit. Counting stops once it would, so the room is then at
         // least what the load needs.
         let untracked = TrackingKey::Token(Digest([0xff; 32]));
-        let max = CONFIG.max_tracked_boxes;
+        let max = CONFIG.max_tracked_units;
         for key in self.keys.keys() {
             let query = Query::Capacity { key: key.clone(), up_to: 0 };
             let Reply::Capacity(capacity) = self.engine.query(query) else { unreachable!() };
             assert_eq!(capacity, None, "room for {key:?}, tracked");
         }
-        // The cap counts every key as one box more than it holds.
-        let units = boxes + self.keys.len();
-        let evictable_keys = (self.keys.values())
+        // The cap counts every key's charge besides its boxes.
+        let units = boxes + self.keys.values().map(|m| m.charge).sum::<usize>();
+        let evictable_charges: usize = (self.keys.values())
             .filter(|m| {
                 m.subscribers == 0
                     && self.now - m.last_seen >= CONFIG.evict_after.as_millis() as u64
             })
-            .count();
-        let evictable_units = evictable_boxes + evictable_keys;
+            .map(|m| m.charge)
+            .sum();
+        let evictable_units = evictable_boxes + evictable_charges;
+        let charge = key_charge(&untracked, 0);
         for up_to in 0..=2 * max {
             let query = Query::Capacity { key: untracked.clone(), up_to };
             let Reply::Capacity(Some(capacity)) = self.engine.query(query) else {
                 panic!("room for an untracked key");
             };
-            assert_eq!((capacity.tracked, capacity.max), (units, max));
-            let fits = units - evictable_units + up_to < max;
+            assert_eq!((capacity.tracked, capacity.max, capacity.charge), (units, max, charge));
+            let fits = units - evictable_units + up_to + charge <= max;
             assert_eq!(capacity.fits(up_to), fits, "room for {up_to}");
             if fits {
                 assert!(capacity.evictable <= evictable_units);
-                assert!(units - capacity.evictable + up_to < max);
+                assert!(units - capacity.evictable + up_to + charge <= max);
             } else {
                 assert_eq!(capacity.evictable, evictable_units, "the whole room, for {up_to}");
             }
@@ -1913,8 +1936,15 @@ fn stats_count_keys_by_kind_boxes_and_the_ring() {
     f.load(&one);
     let boxes = f.engine.reverse.len();
     assert!(boxes > 0);
-    let loaded =
-        Stats { tip, address_keys: 2, tracked_boxes: boxes, ring_blocks: 1, ..Stats::default() };
+    let units = cost(&f, &zero).1 + cost(&f, &one).1;
+    let loaded = Stats {
+        tip,
+        address_keys: 2,
+        tracked_boxes: boxes,
+        tracked_units: units,
+        ring_blocks: 1,
+        ..Stats::default()
+    };
     assert_eq!(stats(&mut f), loaded, "a load adds nothing to the ring");
 
     // One box moves from key 0 to key 1: the spent box and the created one, each stored once.
@@ -2308,54 +2338,55 @@ fn the_boxes_query_answers_from_the_ring_only() {
     assert!(boxes(&mut f, vec![created.id, source]).is_empty());
 }
 
-/// The cap on tracked boxes: a load that reaches it exactly is taken, one box more is
+/// What loading `key` at the chain's tip counts against the cap: its boxes, and its charge
+/// from the tokens it holds there. And the charge the room a loader reads counts for it, with
+/// no token, since the loader reads the room before the pages.
+fn cost(probe: &Fixture, key: &TrackingKey) -> (usize, usize, usize) {
+    let height = probe.chain.height();
+    let boxes = probe.chain.oracle().load(key, height).len();
+    // A token key has no totals: only an address is charged for its tokens.
+    let tokens = match key {
+        TrackingKey::Tree(_) => probe.chain.oracle().totals(key, height).tokens.len(),
+        TrackingKey::Token(_) => 0,
+    };
+    (boxes, boxes + key_charge(key, tokens), key_charge(key, 0))
+}
+
+/// The cap on tracked boxes: a load that reaches it exactly is taken, one unit more is
 /// refused and changes nothing. A duplicate load is ignored even at the cap, and a load off
 /// the tip is rejected before the cap is looked at.
 #[test]
 fn a_load_past_the_cap_on_tracked_boxes_is_refused() {
     let probe = Fixture::new(Config::default());
-    let sizes: Vec<usize> = (0..3)
-        .map(|t| {
-            probe
-                .chain
-                .oracle()
-                .load(&probe.key(t), probe.chain.height())
-                .len()
-        })
-        .collect();
-    assert!(sizes.iter().all(|&n| n > 0), "{sizes:?}");
-    // Each key counts as one box more than it holds.
-    let cap = sizes[0] + sizes[1] + 2;
+    let [(b0, c0, _), (b1, c1, _), (b2, _, r2)] = [0, 1, 2].map(|t| cost(&probe, &probe.key(t)));
+    assert!(b0 > 0 && b1 > 0 && b2 > 0);
+    let cap = c0 + c1;
 
-    let mut f = Fixture::new(Config { max_tracked_boxes: cap - 1, ..Config::default() });
+    let mut f = Fixture::new(Config { max_tracked_units: cap - 1, ..Config::default() });
     let [zero, one] = [0, 1].map(|t| f.key(t));
     f.load(&zero);
-    let refused = Output::CapacityExceeded {
-        key: one.clone(),
-        tracked: sizes[0] + 1,
-        evictable: 0,
-        boxes: sizes[1],
-    };
+    let refused =
+        Output::CapacityExceeded { key: one.clone(), tracked: c0, evictable: 0, boxes: b1 };
     assert_eq!(f.load(&one), [refused]);
     assert!(!f.engine.is_tracked(&one));
-    assert_eq!(f.engine.reverse.len(), sizes[0], "nothing changed");
+    assert_eq!(f.engine.reverse.len(), b0, "nothing changed");
 
-    let mut f = Fixture::new(Config { max_tracked_boxes: cap, ..Config::default() });
+    let mut f = Fixture::new(Config { max_tracked_units: cap, ..Config::default() });
     let [zero, one, two] = [0, 1, 2].map(|t| f.key(t));
     f.load(&zero);
     let outputs = f.load(&one);
     assert!(f.engine.is_tracked(&one), "exactly at the cap: {outputs:?}");
     assert_eq!(f.load(&zero), [], "a duplicate is ignored");
     // The room a loader reads before paging: none for a tracked key, which is never refused.
-    let full = Capacity { tracked: cap, evictable: 0, max: cap };
-    let room = |key: &TrackingKey| Query::Capacity { key: key.clone(), up_to: sizes[2] };
+    let full = Capacity { tracked: cap, evictable: 0, max: cap, charge: r2 };
+    let room = |key: &TrackingKey| Query::Capacity { key: key.clone(), up_to: b2 };
     assert_eq!(f.engine.query(room(&two)), Reply::Capacity(Some(full)));
     assert_eq!(f.engine.query(room(&zero)), Reply::Capacity(None));
     assert!(!full.fits(0), "even a key with no boxes takes room");
-    let one_left = Capacity { tracked: cap - 1, ..full };
-    assert!(one_left.fits(0) && !one_left.fits(1));
+    let left = Capacity { tracked: cap - r2, ..full };
+    assert!(left.fits(0) && !left.fits(1));
     let refused =
-        Output::CapacityExceeded { key: two.clone(), tracked: cap, evictable: 0, boxes: sizes[2] };
+        Output::CapacityExceeded { key: two.clone(), tracked: cap, evictable: 0, boxes: b2 };
     assert_eq!(f.load(&two), [refused]);
 
     f.chain.mine(1, 1, 3);
@@ -2371,23 +2402,24 @@ fn a_load_past_the_cap_on_tracked_boxes_is_refused() {
 #[test]
 fn a_load_past_the_cap_evicts_idle_keys_least_recently_active_first() {
     let probe = Fixture::new(Config::default());
-    let height = probe.chain.height();
-    let size = |key: &TrackingKey| probe.chain.oracle().load(key, height).len();
-    let [zero, one, two, three] = [0, 1, 2, 3].map(|t| probe.key(t));
-    let [s0, s1, s2, s3] = [&zero, &one, &two, &three].map(size);
-    assert!(s3 <= s1, "key 3 fits in key 1's room");
-    let big = probe
-        .chain
-        .keys()
-        .into_iter()
-        .find(|k| size(k) > s0)
-        .expect("a key larger than key 0");
-    // Each key counts as one box more than it holds.
-    let cap = s0 + s1 + s2 + 3;
+    // Key 0 the cheapest key, and `big` the costliest: too large for the room key 3 leaves
+    // and key 0's together, even counted with no token.
+    let mut keys = probe.chain.keys();
+    keys.sort_by_key(|k| cost(&probe, k).1);
+    let zero = keys[0].clone();
+    let big = keys.last().expect("keys").clone();
+    let [one, two, three] = [1, 2, 3].map(|t| probe.key(t));
+    let [(_, c0, _), (_, c1, _), (_, c2, _), (b3, c3, r3)] =
+        [&zero, &one, &two, &three].map(|k| cost(&probe, k));
+    assert!(c3 <= c1, "key 3 fits in key 1's room");
+    let (b, _, r) = cost(&probe, &big);
+    assert!(b + r > c1 - c3 + c0, "big fits in neither");
+    let (big_boxes, _, big_charge) = cost(&probe, &big);
+    let cap = c0 + c1 + c2;
 
-    let mut f = Fixture::new(Config { max_tracked_boxes: cap, ..Config::default() });
+    let mut f = Fixture::new(Config { max_tracked_units: cap, ..Config::default() });
     let room = |f: &mut Fixture, key: &TrackingKey| {
-        let up_to = size(key);
+        let up_to = cost(&probe, key).0;
         match f.engine.query(Query::Capacity { key: key.clone(), up_to }) {
             Reply::Capacity(Some(capacity)) => capacity,
             other => panic!("{other:?}"),
@@ -2402,9 +2434,10 @@ fn a_load_past_the_cap_evicts_idle_keys_least_recently_active_first() {
         f.load(key);
     }
     // Just loaded: none has been idle for `evict_after` yet.
-    assert_eq!(room(&mut f, &three), Capacity { tracked: cap, evictable: 0, max: cap });
+    let full = Capacity { tracked: cap, evictable: 0, max: cap, charge: r3 };
+    assert_eq!(room(&mut f, &three), full);
     let refused =
-        Output::CapacityExceeded { key: three.clone(), tracked: cap, evictable: 0, boxes: s3 };
+        Output::CapacityExceeded { key: three.clone(), tracked: cap, evictable: 0, boxes: b3 };
     assert_eq!(f.load(&three), [refused]);
 
     // Key 0 read a block later, key 2 subscribed two blocks later: only key 1, idle since its
@@ -2417,8 +2450,8 @@ fn a_load_past_the_cap_evicts_idle_keys_least_recently_active_first() {
         .apply(Event::Subscribed(two.clone()))
         .expect("tracked");
     let capacity = room(&mut f, &three);
-    assert_eq!(capacity, Capacity { tracked: cap, evictable: s1 + 1, max: cap });
-    assert!(capacity.fits(s3));
+    assert_eq!(capacity, Capacity { evictable: c1, ..full });
+    assert!(capacity.fits(b3));
     let outputs = f.load(&three);
     assert!(f.engine.is_tracked(&three), "{outputs:?}");
     assert_eq!(tracked(&f), [true, false, true, true], "key 1 alone made room");
@@ -2426,14 +2459,15 @@ fn a_load_past_the_cap_evicts_idle_keys_least_recently_active_first() {
 
     // Key 0 is the only idle key left, and too small for `big`: refused, key 0 kept.
     let capacity = room(&mut f, &big);
-    assert_eq!(capacity.evictable, s0 + 1, "key 3 just loaded, key 2 subscribed");
-    assert!(!capacity.fits(size(&big)));
+    assert_eq!(capacity.evictable, c0, "key 3 just loaded, key 2 subscribed");
+    assert_eq!(capacity.charge, big_charge);
+    assert!(!capacity.fits(big_boxes));
     let held = f.engine.units();
     let refused = Output::CapacityExceeded {
         key: big.clone(),
         tracked: held,
-        evictable: s0 + 1,
-        boxes: size(&big),
+        evictable: c0,
+        boxes: big_boxes,
     };
     assert_eq!(f.load(&big), [refused]);
     assert_eq!(tracked(&f), [true, false, true, true], "nothing evicted");
@@ -2447,13 +2481,11 @@ fn a_load_past_the_cap_evicts_idle_keys_least_recently_active_first() {
 #[test]
 fn the_room_counts_idle_keys_only_when_a_load_could_need_them() {
     let probe = Fixture::new(Config::default());
-    let height = probe.chain.height();
     let [zero, one, two] = [0, 1, 2].map(|t| probe.key(t));
-    let [s0, s1, s2] = [&zero, &one, &two].map(|k| probe.chain.oracle().load(k, height).len());
-    // Each key counts as one box more than it holds.
-    let cap = s0 + s1 + s2 + 3;
+    let [(_, c0, _), (_, c1, _), (_, c2, r2)] = [&zero, &one, &two].map(|k| cost(&probe, k));
+    let cap = c0 + c1 + c2;
 
-    let mut f = Fixture::new(Config { max_tracked_boxes: cap, ..Config::default() });
+    let mut f = Fixture::new(Config { max_tracked_units: cap, ..Config::default() });
     f.load(&zero);
     f.load(&one);
     f.mine(vec![]);
@@ -2464,11 +2496,14 @@ fn the_room_counts_idle_keys_only_when_a_load_could_need_them() {
         Reply::Capacity(Some(capacity)) => capacity,
         other => panic!("{other:?}"),
     };
-    let tracked = s0 + s1 + 2;
-    assert_eq!(room(&mut f, s2), Capacity { tracked, evictable: 0, max: cap }, "fits as it is");
-    let near = Capacity { tracked, evictable: s0 + 1, max: cap };
-    assert_eq!(room(&mut f, s2 + 1), near, "key 0, loaded first, makes the one box of room");
-    let past = Capacity { tracked, evictable: s0 + s1 + 2, max: cap };
+    let tracked = c0 + c1;
+    // The most boxes key 2, counted with no token, fits without evicting.
+    let fits = cap - tracked - r2;
+    let at = Capacity { tracked, evictable: 0, max: cap, charge: r2 };
+    assert_eq!(room(&mut f, fits), at, "fits as it is");
+    let near = Capacity { evictable: c0, ..at };
+    assert_eq!(room(&mut f, fits + 1), near, "key 0, loaded first, makes the one box of room");
+    let past = Capacity { evictable: c0 + c1, ..at };
     assert_eq!(room(&mut f, cap + 1), past, "both keys, and still no room");
 }
 

@@ -59,7 +59,7 @@ pub mod keys {
     pub const ALLOW_TOKENS: &str = "allow_tokens";
     pub const BOX_CACHE_MB: &str = "box_cache_mb";
     pub const MAX_BOXES_PER_KEY: &str = "max_boxes_per_key";
-    pub const MAX_TRACKED_BOXES: &str = "max_tracked_boxes";
+    pub const MAX_TRACKED_UNITS: &str = "max_tracked_units";
     pub const MAX_SUBSCRIPTIONS_PER_CONNECTION: &str = "max_subscriptions_per_connection";
     pub const LISTEN_ADDR: &str = "listen_addr";
     pub const ALLOW_ORIGINS: &str = "allow_origins";
@@ -98,7 +98,7 @@ struct File {
     allow_tokens: Option<Vec<String>>,
     box_cache_mb: Option<u64>,
     max_boxes_per_key: Option<usize>,
-    max_tracked_boxes: Option<usize>,
+    max_tracked_units: Option<usize>,
     listen_addr: Option<SocketAddr>,
     /// Omitted, every origin is allowed, as with `["*"]`.
     allow_origins: Option<Vec<String>>,
@@ -262,10 +262,10 @@ impl Config {
                 // Not a setting either: it bounds a block's time, which no deployment wants
                 // longer.
                 untrack_boxes_per_block: engine_defaults.untrack_boxes_per_block,
-                max_tracked_boxes: at_least_one(
-                    keys::MAX_TRACKED_BOXES,
-                    file.max_tracked_boxes,
-                    engine_defaults.max_tracked_boxes,
+                max_tracked_units: at_least_one(
+                    keys::MAX_TRACKED_UNITS,
+                    file.max_tracked_units,
+                    engine_defaults.max_tracked_units,
                 )?,
             },
             follower: follower::Config {

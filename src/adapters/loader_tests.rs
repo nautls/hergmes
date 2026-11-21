@@ -349,7 +349,7 @@ fn a_key_over_the_per_key_cap_is_remembered_for_a_while() {
     assert_eq!(sim.calls().len(), 2 * calls, "paged again once it expired");
 
     let chain = new_chain();
-    let mut engine = Engine::new(EngineConfig { max_tracked_boxes: 1, ..EngineConfig::default() });
+    let mut engine = Engine::new(EngineConfig { max_tracked_units: 1, ..EngineConfig::default() });
     engine
         .apply(Event::BlockApplied(chain.oracle().indexed_block(chain.height())))
         .unwrap();
@@ -368,7 +368,7 @@ fn a_key_over_the_per_key_cap_is_remembered_for_a_while() {
 #[test]
 fn a_load_past_the_cap_on_tracked_boxes_is_refused_and_seeds_nothing() {
     let chain = new_chain();
-    let mut engine = Engine::new(EngineConfig { max_tracked_boxes: 1, ..EngineConfig::default() });
+    let mut engine = Engine::new(EngineConfig { max_tracked_units: 1, ..EngineConfig::default() });
     engine
         .apply(Event::BlockApplied(chain.oracle().indexed_block(chain.height())))
         .unwrap();
@@ -387,10 +387,10 @@ fn a_load_past_the_cap_on_tracked_boxes_is_refused_and_seeds_nothing() {
     assert!(cache.boxes().is_empty(), "nothing from a refused load");
 }
 
-/// An engine with room for one new key of `room` boxes: the key counts as one more.
-fn engine_with_room(chain: &Chain, room: usize) -> Mutex<Engine> {
-    let max_tracked_boxes = room + 1;
-    let mut engine = Engine::new(EngineConfig { max_tracked_boxes, ..EngineConfig::default() });
+/// An engine with room for `key`, new, holding `room` boxes and no token: its charge on top.
+fn engine_with_room(chain: &Chain, room: usize, key: &TrackingKey) -> Mutex<Engine> {
+    let max_tracked_units = room + crate::engine::key_charge(key, 0);
+    let mut engine = Engine::new(EngineConfig { max_tracked_units, ..EngineConfig::default() });
     engine
         .apply(Event::BlockApplied(chain.oracle().indexed_block(chain.height())))
         .unwrap();
@@ -405,7 +405,7 @@ fn a_load_past_the_room_left_stops_paging() {
     let key = TrackingKey::Token(crate::sim::token_id("small-100"));
     for (room, reads) in [(0, 1), (2, 3)] {
         let chain = new_chain();
-        let engine = engine_with_room(&chain, room);
+        let engine = engine_with_room(&chain, room, &key);
         let sim = SimChain::new(chain);
         let loader = Loader::new(sim.clone(), Config { page_limit: 1, ..Config::default() });
         let error = ready(loader.load(&engine, &key)).unwrap_err();
@@ -420,9 +420,9 @@ fn a_load_past_the_room_left_stops_paging() {
 
     // A key with no box fits a full engine.
     let chain = new_chain();
-    let engine = engine_with_room(&chain, 0);
-    let sim = SimChain::new(chain);
     let empty = TrackingKey::Tree(crate::types::HexBytes::from(vec![0x00, 0x08, 0xcd]));
+    let engine = engine_with_room(&chain, 0, &empty);
+    let sim = SimChain::new(chain);
     let loader = Loader::new(sim.clone(), Config { page_limit: 1, ..Config::default() });
     assert!(matches!(ready(loader.load(&engine, &empty)), Ok((_, 0))));
 }
@@ -433,7 +433,7 @@ fn a_load_past_the_room_left_stops_paging() {
 fn a_tracked_key_is_not_refused_for_room() {
     let key = TrackingKey::Token(crate::sim::token_id("small-100"));
     let chain = new_chain();
-    let engine = engine_with_room(&chain, 4);
+    let engine = engine_with_room(&chain, 4, &key);
     let sim = SimChain::new(chain);
     let loader = || Loader::new(sim.clone(), Config { page_limit: 1, ..Config::default() });
     assert!(matches!(ready(loader().load(&engine, &key)), Ok((_, 4))));

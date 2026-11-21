@@ -41,7 +41,7 @@ fn defaults(config: &Config) {
     assert_eq!(config.follower, follower::Config::default());
     assert_eq!(config.loader, loader::Config::default());
     assert_eq!(config.loader.max_boxes, 16_383);
-    assert_eq!(config.engine.max_tracked_boxes, 2_000_000);
+    assert_eq!(config.engine.max_tracked_units, 2_000_000);
     assert_eq!(config.token_supply_limit, SUPPLY_LIMIT);
     assert_eq!(config.box_cache_bytes, 128 * 1024 * 1024);
     assert_eq!(config.listen_addr.to_string(), "127.0.0.1:8080", "loopback until chosen");
@@ -124,7 +124,7 @@ fn every_setting_is_read() {
         allow_tokens = ["{TOKEN}"]
         box_cache_mb = 3
         max_boxes_per_key = 40
-        max_tracked_boxes = 900
+        max_tracked_units = 900
         listen_addr = "0.0.0.0:9000"
         metrics_addr = "127.0.0.1:9100"
         max_subscriptions_per_connection = 8
@@ -134,7 +134,7 @@ fn every_setting_is_read() {
     let engine = engine::Config {
         window: 30,
         grace: Duration::from_secs(60),
-        max_tracked_boxes: 900,
+        max_tracked_units: 900,
         ..engine::Config::DEFAULT
     };
     assert_eq!(config.engine, engine);
@@ -208,7 +208,7 @@ fn bad_values_name_their_key() {
         (keys::ALLOW_TOKENS, "[\"abcd\"]"),
         (keys::BOX_CACHE_MB, &i64::MAX.to_string()),
         (keys::MAX_BOXES_PER_KEY, "0"),
-        (keys::MAX_TRACKED_BOXES, "0"),
+        (keys::MAX_TRACKED_UNITS, "0"),
         (keys::MAX_SUBSCRIPTIONS_PER_CONNECTION, "0"),
     ] {
         assert_eq!(invalid_key(config(&format!("{key} = {value}"))), key, "{key} = {value}");
@@ -226,7 +226,7 @@ fn mistyped_values_name_their_key() {
         ("track_addresses", &format!("\"{MAINNET}\"")),
         ("allow_tokens", "\"none\""),
         ("box_cache_mb", "-1"),
-        ("max_tracked_boxes", "-5"),
+        ("max_tracked_units", "-5"),
         ("listen_addr", "\"localhost:8080\""),
         ("listen_addr", "\"127.0.0.1\""),
         ("listen_addr", "\"127.0.0.1:65536\""),
@@ -463,7 +463,7 @@ fn the_named_keys_are_the_file_keys() {
         keys::ALLOW_TOKENS,
         keys::BOX_CACHE_MB,
         keys::MAX_BOXES_PER_KEY,
-        keys::MAX_TRACKED_BOXES,
+        keys::MAX_TRACKED_UNITS,
         keys::MAX_SUBSCRIPTIONS_PER_CONNECTION,
         keys::LISTEN_ADDR,
         keys::ALLOW_ORIGINS,

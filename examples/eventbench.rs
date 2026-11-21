@@ -82,7 +82,7 @@ fn median(mut v: Vec<f64>) -> f64 {
 
 fn run(keys: usize) {
     let mut engine =
-        Engine::new(Config { max_tracked_boxes: keys * 10 + 1_000, ..Config::DEFAULT });
+        Engine::new(Config { max_tracked_units: keys * 10 + 1_000, ..Config::DEFAULT });
     engine
         .apply(Event::BlockApplied(block(FIRST, &[])))
         .expect("the first block");
