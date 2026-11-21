@@ -355,10 +355,7 @@ impl Engine {
             tracked_units: self.units(),
             ring_blocks: self.ring.len(),
             ring_boxes: self.ring.iter().map(|d| d.boxes.len()).sum(),
-            evictable_boxes: self
-                .evictable()
-                .map(|(_, id, units)| units - self.keys[&id].charge)
-                .sum(),
+            evictable_boxes: self.evictable_boxes().map(|(_, boxes)| boxes).sum(),
             evicted_keys: self.evicted_keys,
         }
     }
@@ -958,13 +955,21 @@ impl Engine {
     /// its key. Configured keys always have their keeper's subscription. Least recently
     /// active first, then oldest load first.
     fn evictable(&self) -> impl Iterator<Item = (u64, KeyId, usize)> {
+        self.evictable_boxes()
+            .map(|((last_seen_ms, id), boxes)| (last_seen_ms, id, boxes + self.keys[&id].charge))
+    }
+
+    /// The keys a load may evict, as [`Self::evictable`] has them, with their box counts
+    /// alone: read from the idle index, so the metrics' sum over every idle key looks up no
+    /// key state.
+    fn evictable_boxes(&self) -> impl Iterator<Item = ((u64, KeyId), usize)> {
         let after = millis(self.config.evict_after);
         self.idle
             .iter()
             .take_while(move |&(&(last_seen_ms, _), _)| {
                 self.now_ms.saturating_sub(last_seen_ms) >= after
             })
-            .map(|(&(last_seen_ms, id), &boxes)| (last_seen_ms, id, boxes + self.keys[&id].charge))
+            .map(|(&key, &boxes)| (key, boxes))
     }
 
     /// Records activity on a tracked key, and returns its state.
