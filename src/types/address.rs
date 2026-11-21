@@ -151,7 +151,7 @@ impl Address {
             other => return Err(AddressError::UnsupportedType(other)),
         };
 
-        Ok(Self { network, ergo_tree: HexBytes(ergo_tree) })
+        Ok(Self { network, ergo_tree: HexBytes::from(ergo_tree) })
     }
 
     pub fn network(&self) -> Network {

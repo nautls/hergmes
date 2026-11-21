@@ -14,7 +14,7 @@ const OTHER: u8 = 8;
 const TOKEN: u8 = 9;
 
 fn owner() -> TrackingKey {
-    TrackingKey::Tree(HexBytes(vec![OWNER]))
+    TrackingKey::Tree(HexBytes::from(vec![OWNER]))
 }
 
 fn order(confirmed: &[u8], mempool: &[UnconfirmedTransaction]) -> Vec<u8> {
@@ -134,7 +134,7 @@ fn a_keys_overlay_lists_only_txs_and_boxes_matching_it() {
     assert_eq!(holders.len(), 1);
     assert_eq!(holders[0].created.len(), 1, "a box holding the token twice is listed once");
     let keys: Vec<TrackingKey> = keys_of(&mempool[0].outputs[1]).collect();
-    assert_eq!(keys, vec![TrackingKey::Tree(HexBytes(vec![OTHER])), token]);
+    assert_eq!(keys, vec![TrackingKey::Tree(HexBytes::from(vec![OTHER])), token]);
 }
 
 #[test]
@@ -211,7 +211,7 @@ fn valued(n: u8, owner: u8, value: u64, tokens: &[(u8, u64)]) -> UTxO {
 }
 
 fn owner_tree() -> ErgoTree {
-    HexBytes(vec![OWNER])
+    HexBytes::from(vec![OWNER])
 }
 
 #[test]
@@ -231,7 +231,7 @@ fn a_tx_delta_nets_the_change_returned_to_the_address() {
     assert_eq!(delta.tokens, BTreeMap::from([(digest(TOKEN), -2)]));
 
     // The receiver sees the other side.
-    let other = HexBytes(vec![OTHER]);
+    let other = HexBytes::from(vec![OTHER]);
     let delta = tx_delta(&other, &tx.inputs, &tx.outputs).expect("pays the other");
     assert_eq!(delta.nano_ergs, 11);
     assert_eq!(delta.tokens, BTreeMap::from([(digest(TOKEN), 2)]));

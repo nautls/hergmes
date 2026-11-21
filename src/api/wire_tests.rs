@@ -15,7 +15,7 @@ const ABOVE_2_53: u64 = 9_007_199_254_740_993;
 fn utxo() -> UTxO {
     UTxO {
         id: digest(1),
-        ergo_tree: HexBytes(vec![0x00, 0x08, 0xcd]),
+        ergo_tree: HexBytes::from(vec![0x00, 0x08, 0xcd]),
         creation_height: 7,
         value: ABOVE_2_53,
         tokens: vec![
@@ -23,8 +23,8 @@ fn utxo() -> UTxO {
             Token { id: digest(3), amount: 1 },
         ],
         registers: NonMandatoryRegisters {
-            r4: Some(HexBytes(vec![0x0e, 0x01])),
-            r6: Some(HexBytes(vec![0x04, 0x02])),
+            r4: Some(HexBytes::from(vec![0x0e, 0x01])),
+            r6: Some(HexBytes::from(vec![0x04, 0x02])),
             ..Default::default()
         },
         index: 3,

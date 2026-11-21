@@ -20,7 +20,7 @@ const FEE_TESTNET: &str = "Bf1X9JgQTUtgntaer91B24n6kP8L2kqEiQqNf1z97BKo9UbnW3WRP
 fn utxo(n: u8) -> Arc<UTxO> {
     Arc::new(UTxO {
         id: digest(n),
-        ergo_tree: HexBytes(vec![0x00, 0x08, 0xcd]),
+        ergo_tree: HexBytes::from(vec![0x00, 0x08, 0xcd]),
         creation_height: 7,
         value: 1_000_000,
         tokens: vec![Token { id: digest(9), amount: 5 }],

@@ -258,7 +258,7 @@ fn tracked_keys_are_trees_and_tokens_on_the_node_network() {
     assert_eq!(
         keys,
         vec![
-            TrackingKey::Tree(crate::types::HexBytes(hex::decode(MAINNET_TREE).unwrap())),
+            TrackingKey::Tree(crate::types::HexBytes::from(hex::decode(MAINNET_TREE).unwrap())),
             TrackingKey::Token(NFT.parse().unwrap()),
         ],
         "each key once"
@@ -320,7 +320,7 @@ fn the_key_policy_admits_the_configured_keys_and_follows_the_rules() {
     for key in &keys {
         assert!(policy.admits(key), "{key:?} is configured");
     }
-    let p2pk = TrackingKey::Tree(crate::types::HexBytes(hex::decode(MAINNET_TREE).unwrap()));
+    let p2pk = TrackingKey::Tree(crate::types::HexBytes::from(hex::decode(MAINNET_TREE).unwrap()));
     assert!(!policy.admits(&p2pk), "denied");
     assert!(!policy.admits(&TrackingKey::Token(TOKEN.parse().unwrap())), "no token listed");
 }

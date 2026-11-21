@@ -425,7 +425,7 @@ mod node {
         ));
         let mut other = hex::decode(sample("ergoTree")).unwrap();
         *other.last_mut().unwrap() ^= 1;
-        let key = TrackingKey::Tree(HexBytes(other));
+        let key = TrackingKey::Tree(HexBytes::from(other));
         let kept = tokio::spawn({
             let key = key.clone();
             async move { keeper.keep(key, settling(1).1.pop().unwrap()).await }

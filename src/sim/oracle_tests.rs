@@ -143,7 +143,7 @@ fn a_keys_overlay_lists_only_txs_and_boxes_matching_it() {
     ];
     let confirmed: HashSet<BoxId> = [digest(1), digest(2)].into();
 
-    let owner = overlay(&confirmed, &mempool, &TrackingKey::Tree(HexBytes(vec![OWNER])));
+    let owner = overlay(&confirmed, &mempool, &TrackingKey::Tree(HexBytes::from(vec![OWNER])));
     assert_eq!(
         owner,
         vec![PendingTx {

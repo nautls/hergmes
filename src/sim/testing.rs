@@ -54,7 +54,7 @@ pub fn box_of(chain: &Chain, index: usize) -> BoxId {
 /// A tree no sim box is ever sent to: genesis pays only the chain's own trees, and random txs
 /// pay only them too.
 pub fn unused_tree() -> ErgoTree {
-    HexBytes(vec![0x10, 0x01, 0x01])
+    HexBytes::from(vec![0x10, 0x01, 0x01])
 }
 
 /// `len` ops from the real strategy, the same on every run.
@@ -130,7 +130,7 @@ pub fn digest(n: u8) -> HashDigest {
 pub fn utxo(n: u8, tx: u8, owner: u8, tokens: &[(u8, u64)]) -> UTxO {
     UTxO {
         id: digest(n),
-        ergo_tree: HexBytes(vec![owner]),
+        ergo_tree: HexBytes::from(vec![owner]),
         creation_height: 1,
         value: 1,
         tokens: tokens

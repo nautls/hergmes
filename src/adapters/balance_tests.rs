@@ -43,7 +43,7 @@ async fn reader(heights: &[u32]) -> (MockServer, BalanceReader<NodeClient>) {
 }
 
 fn tree() -> ErgoTree {
-    HexBytes(hex::decode(sample("ergoTree")).unwrap())
+    HexBytes::from(hex::decode(sample("ergoTree")).unwrap())
 }
 
 #[tokio::test]

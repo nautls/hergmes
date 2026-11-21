@@ -14,7 +14,7 @@ const NFT: &str = "20fa2bf23962cdf51b07722d6237c0c7b8a44f78856c0f7ec308dc1ef1a92
 
 #[test]
 fn an_address_is_its_tree_on_the_nodes_network_only() {
-    let tree = TrackingKey::Tree(HexBytes(hex::decode(FEE_CONTRACT).unwrap()));
+    let tree = TrackingKey::Tree(HexBytes::from(hex::decode(FEE_CONTRACT).unwrap()));
     assert_eq!(address_key(FEE_MAINNET, Network::Mainnet, &open()), Ok(tree.clone()));
     assert_eq!(address_key(FEE_TESTNET, Network::Testnet, &open()), Ok(tree));
     // The same tree, so the same key: only the network tells them apart.

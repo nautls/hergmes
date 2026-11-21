@@ -887,7 +887,7 @@ mod recorded {
     };
 
     fn tree() -> ErgoTree {
-        HexBytes(hex::decode(sample("ergoTree")).unwrap())
+        HexBytes::from(hex::decode(sample("ergoTree")).unwrap())
     }
 
     /// A tx's change for the sample address, summed from the raw JSON.

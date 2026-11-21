@@ -22,7 +22,7 @@ const NFT: &str = "20fa2bf23962cdf51b07722d6237c0c7b8a44f78856c0f7ec308dc1ef1a92
 const TOKEN: &str = "8c27dd9d8a35aac1e3167d58858c0a8b4059b277da790552e37eba22df9b9035";
 
 fn tree(hex: &str) -> TrackingKey {
-    TrackingKey::Tree(HexBytes(hex::decode(hex).unwrap()))
+    TrackingKey::Tree(HexBytes::from(hex::decode(hex).unwrap()))
 }
 
 fn token(id: &str) -> TrackingKey {

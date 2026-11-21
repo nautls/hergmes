@@ -41,7 +41,7 @@ pub fn digest(n: u64) -> Digest<32> {
 pub fn tree(n: u64) -> HexBytes {
     let mut bytes = vec![0x00, 0x08, 0xcd, 0x02];
     bytes.extend_from_slice(&digest(n).0);
-    HexBytes(bytes)
+    HexBytes::from(bytes)
 }
 
 /// A plain box: ERG only, no tokens and no registers, the smallest a box gets.

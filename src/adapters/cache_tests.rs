@@ -13,10 +13,10 @@ use crate::{
 
 /// Box `n`, with a tree, registers and tokens of the given sizes.
 fn sized(n: u8, tree: usize, registers: [usize; 6], tokens: usize) -> UTxO {
-    let bytes = |len: usize| (len > 0).then(|| HexBytes(vec![0; len]));
+    let bytes = |len: usize| (len > 0).then(|| HexBytes::from(vec![0; len]));
     let [r4, r5, r6, r7, r8, r9] = registers.map(bytes);
     UTxO {
-        ergo_tree: HexBytes(vec![1; tree]),
+        ergo_tree: HexBytes::from(vec![1; tree]),
         registers: NonMandatoryRegisters { r4, r5, r6, r7, r8, r9 },
         tokens: (0..tokens)
             .map(|t| Token { id: digest(t as u8), amount: 1 })

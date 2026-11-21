@@ -26,7 +26,7 @@ fn digest(hex: &str) -> HashDigest {
 }
 
 fn sample_tree() -> ErgoTree {
-    HexBytes(hex::decode(sample("ergoTree")).unwrap())
+    HexBytes::from(hex::decode(sample("ergoTree")).unwrap())
 }
 
 fn assert_not_found(name: &str) {
@@ -551,8 +551,8 @@ mod source {
     #[tokio::test]
     async fn unspent_empty_or_404_is_an_empty_set() {
         let (server, node) = node().await;
-        let empty = HexBytes(vec![0x01]);
-        let missing = HexBytes(vec![0x02]);
+        let empty = HexBytes::from(vec![0x01]);
+        let missing = HexBytes::from(vec![0x02]);
         let token = digest(&"ab".repeat(32));
         Mock::given(body_json("01"))
             .respond_with(recorded("unspent_by_ergo_tree_empty"))

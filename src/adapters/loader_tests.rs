@@ -422,7 +422,7 @@ fn a_load_past_the_room_left_stops_paging() {
     let chain = new_chain();
     let engine = engine_with_room(&chain, 0);
     let sim = SimChain::new(chain);
-    let empty = TrackingKey::Tree(crate::types::HexBytes(vec![0x00, 0x08, 0xcd]));
+    let empty = TrackingKey::Tree(crate::types::HexBytes::from(vec![0x00, 0x08, 0xcd]));
     let loader = Loader::new(sim.clone(), Config { page_limit: 1, ..Config::default() });
     assert!(matches!(ready(loader.load(&engine, &empty)), Ok((_, 0))));
 }
@@ -845,7 +845,7 @@ mod node {
         let loader = Loader::new(client, Config::default());
         let mut other = hex::decode(sample("ergoTree")).unwrap();
         *other.last_mut().unwrap() ^= 1;
-        let key = TrackingKey::Tree(HexBytes(other));
+        let key = TrackingKey::Tree(HexBytes::from(other));
         let error = loader.try_load(&engine, &key).await.unwrap_err();
         assert!(matches!(error, LoadError::Mismatch { .. }), "{error:?}");
         assert!(!engine.lock().unwrap().is_tracked(&key));
@@ -865,7 +865,7 @@ mod node {
         let client = NodeClient::new(reqwest::Client::new(), &server.uri(), Network::Mainnet);
         let config = Config { give_up_after: Duration::ZERO, ..Config::default() };
         let loader = Loader::new(client, config);
-        let key = TrackingKey::Tree(HexBytes(hex::decode(sample("ergoTree")).unwrap()));
+        let key = TrackingKey::Tree(HexBytes::from(hex::decode(sample("ergoTree")).unwrap()));
         let error = loader.load(&engine, &key).await.unwrap_err();
         assert!(
             matches!(

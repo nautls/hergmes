@@ -354,7 +354,7 @@ const OWNER: u8 = 7;
 const OTHER: u8 = 8;
 
 fn key(owner: u8) -> TrackingKey {
-    TrackingKey::Tree(HexBytes(vec![owner]))
+    TrackingKey::Tree(HexBytes::from(vec![owner]))
 }
 
 fn at(height: u32) -> BlockRef {

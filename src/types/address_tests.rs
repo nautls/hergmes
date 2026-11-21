@@ -72,7 +72,7 @@ const INVALID: &[&str] = &[
 ];
 
 fn tree(hex: &str) -> ErgoTree {
-    HexBytes(::hex::decode(hex).unwrap())
+    HexBytes::from(::hex::decode(hex).unwrap())
 }
 
 #[test]

@@ -83,7 +83,7 @@ fn hash(parts: &[&[u8]]) -> HashDigest {
 fn make_tree(index: usize, script: bool) -> ErgoTree {
     let seed = hash(&[b"tree", &(index as u64).to_be_bytes()]);
     let head: &[u8] = if script { &[0x10, 0x01, 0x04, 0x00] } else { &[0x00, 0x08, 0xcd, 0x02] };
-    HexBytes([head, &seed.0].concat())
+    HexBytes::from([head, &seed.0].concat())
 }
 
 /// A transaction in a block or in the mempool, with full input boxes.

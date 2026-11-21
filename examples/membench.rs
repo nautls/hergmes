@@ -3,7 +3,7 @@
 //!
 //! ```sh
 //! cargo run --release --example membench -- engine <keys> <boxes-per-key>
-//! cargo run --release --example membench -- balance <keys>
+//! cargo run --release --example membench -- balance <keys> [<tokens-per-key> [<tree-bytes>]]
 //! cargo run --release --example membench -- cache <boxes>
 //! cargo run --release --features sim --example membench -- connections <connections> [<keys>]
 //! ```
@@ -16,9 +16,13 @@
 //! `engine` also prints what a load and a scrape's `Query::Stats` take on average, in
 //! microseconds: both must stay flat, or nearly, as the keys grow.
 //!
-//! `balance` tracks synthetic addresses balance-only, each holding ERG and two tokens, and
-//! reports the growth per key and what an empty block then takes, in microseconds: a block
-//! walks every key, so that time grows with them.
+//! `balance` tracks synthetic addresses balance-only, each holding ERG and `<tokens-per-key>`
+//! distinct tokens (default two), and reports the growth per key and what an empty block then
+//! takes, in microseconds: a block walks every key, so that time grows with them. A key's
+//! running totals keep one entry per token it holds, so runs at several token counts give
+//! the cost of a key with none and the cost of each token. Its trees are P2PK ones (36
+//! bytes) unless `<tree-bytes>` asks for longer ones, as a contract's (P2S) are: the engine
+//! keeps a key's tree in several places, so their length counts more than once.
 //!
 //! `connections` opens WebSocket connections to the relay over a `SimChain`, served in this
 //! process, and reports what each one costs the relay; with `<keys>`, each connection then
@@ -44,7 +48,10 @@ use hergmes::{
     adapters::{BoxCache, cache::weight},
     api::metrics::resident_memory,
     engine::{BlockRef, Config, Engine, Event, LoadedBox, Query, Reply, TrackingKey},
-    types::ergo::{BlockHeader, IndexedBlock, UnconfirmedTransaction},
+    types::{
+        HexBytes,
+        ergo::{BlockHeader, IndexedBlock, UnconfirmedTransaction},
+    },
 };
 use support::{digest, plain_box, tree};
 
@@ -63,7 +70,11 @@ fn main() {
     };
     match args.first().map(String::as_str) {
         Some("engine") => engine(number(1), number(2)),
-        Some("balance") => balance(number(1)),
+        Some("balance") => balance(
+            number(1),
+            args.get(2).map_or(2, |_| number(2)),
+            args.get(3).map_or(0, |_| number(3)),
+        ),
         Some("cache") => cache(number(1)),
         Some("connections") => connections(number(1), args.get(2).map_or(0, |_| number(2))),
         _ => usage(),
@@ -72,7 +83,7 @@ fn main() {
 
 fn usage() -> ! {
     eprintln!(
-        "usage: membench engine <keys> <boxes-per-key> | membench balance <keys> \
+        "usage: membench engine <keys> <boxes-per-key> | membench balance <keys> [tokens-per-key [tree-bytes]] \
          | membench cache <boxes> \
          | membench connections <connections> [keys-per-connection] (with --features sim)"
     );
@@ -85,7 +96,8 @@ fn resident() -> u64 {
 
 fn engine(keys: usize, boxes_per_key: usize) {
     let boxes = keys * boxes_per_key;
-    let mut engine = Engine::new(Config { max_tracked_boxes: boxes, ..Config::DEFAULT });
+    // Room for every box and key: the cap counts each key as one box more.
+    let mut engine = Engine::new(Config { max_tracked_boxes: boxes + keys, ..Config::DEFAULT });
     let tip = BlockRef { height: 1_000_000, header_id: digest(u64::MAX) };
     let header = BlockHeader {
         id: tip.header_id,
@@ -146,8 +158,20 @@ fn engine(keys: usize, boxes_per_key: usize) {
     );
 }
 
-fn balance(keys: usize) {
+fn balance(keys: usize, tokens: usize, tree_bytes: usize) {
     use hergmes::engine::Totals;
+
+    // A P2PK tree, padded to `tree_bytes` with bytes that keep every key's tree distinct.
+    let tree = |k: u64| {
+        let mut bytes = tree(k).0.to_vec();
+        let mut n = 0;
+        while bytes.len() < tree_bytes {
+            bytes.extend_from_slice(&digest(k ^ (n << 48)).0);
+            n += 1;
+        }
+        bytes.truncate(tree_bytes.max(36));
+        HexBytes::from(bytes)
+    };
 
     let mut engine = Engine::new(Config::DEFAULT);
     let header = |height: u32| BlockHeader {
@@ -166,8 +190,11 @@ fn balance(keys: usize) {
     let loading = std::time::Instant::now();
     for k in 0..keys {
         let mut confirmed = Totals { nano_ergs: 1_000_000_000 + k as u64, ..Totals::default() };
-        confirmed.tokens.insert(digest(1 << 40 | k as u64), 5);
-        confirmed.tokens.insert(digest(2 << 40 | k as u64), 7);
+        for t in 0..tokens {
+            confirmed
+                .tokens
+                .insert(digest((t as u64 + 1) << 40 | k as u64), 5 + t as u64);
+        }
         let event = Event::BalanceLoaded { tree: tree(k as u64), as_of: tip, confirmed };
         let outputs = engine.apply(event).expect("a load is never an error");
         assert!(outputs.is_empty(), "tracked: {outputs:?}");
@@ -191,8 +218,9 @@ fn balance(keys: usize) {
     let block_micros = started.elapsed().as_micros() / blocks;
     let grown = after.saturating_sub(before);
     println!(
-        "balance keys={keys} rss_before={before} rss_after={after} grown={grown} \
+        "balance keys={keys} tokens_per_key={tokens} tree_bytes={} rss_before={before} rss_after={after} grown={grown} \
          bytes_per_key={:.1} load_micros={load_micros} empty_block_micros={block_micros}",
+        tree(0).0.len(),
         grown as f64 / keys as f64
     );
 }

@@ -7,7 +7,7 @@ use super::*;
 use crate::types::HexBytes;
 
 fn tree(bytes: &[u8]) -> TrackingKey {
-    TrackingKey::Tree(HexBytes(bytes.to_vec()))
+    TrackingKey::Tree(HexBytes::from(bytes.to_vec()))
 }
 
 fn cursor(height: u32, inclusion_height: u32) -> Cursor {

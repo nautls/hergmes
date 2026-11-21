@@ -1,5 +1,6 @@
 use std::fmt::{self, Debug, Display, Formatter};
 use std::str::FromStr;
+use std::sync::Arc;
 
 use hex::{FromHex, ToHex};
 use serde::de::Error;
@@ -71,9 +72,17 @@ impl<const N: usize> Serialize for Digest<N> {
     }
 }
 
-/// A byte vector represented as a hex string in serialization.
+/// Bytes represented as a hex string in serialization. Shared, not owned: a clone is a
+/// reference count, so an ErgoTree the engine indexes under several maps is stored once, and
+/// a contract's tree (often kilobytes) is not paid for per map.
 #[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct HexBytes(pub Vec<u8>);
+pub struct HexBytes(pub Arc<[u8]>);
+
+impl From<Vec<u8>> for HexBytes {
+    fn from(bytes: Vec<u8>) -> Self {
+        Self(bytes.into())
+    }
+}
 
 impl Display for HexBytes {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
@@ -100,7 +109,7 @@ impl<'de> Deserialize<'de> for HexBytes {
     {
         let hex_str = String::deserialize(deserializer)?;
         let bytes = Vec::from_hex(&hex_str).map_err(D::Error::custom)?;
-        Ok(HexBytes(bytes))
+        Ok(HexBytes::from(bytes))
     }
 }
 
