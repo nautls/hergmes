@@ -525,9 +525,10 @@ async fn unsubscribe(engine: &Handle, id: SubscriptionId) -> Step {
         .map_err(|EngineGone| End::EngineGone)
 }
 
-/// Subscribes to `key` from `from`. A balance-only subscription loads the key if it is not
-/// tracked, then subscribes again; one with `from` never loads: its catch-up needs deltas
-/// only a key tracked since `from` has, so the client redoes its snapshot, which loads.
+/// Subscribes to `key` from `from`. A balance-only subscription tracks an address that is not
+/// tracked balance-only, from one read of its balance and with no boxes, then subscribes
+/// again; one with `from` never loads: its catch-up needs deltas only a key tracked with its
+/// boxes since `from` has, so the client redoes its snapshot, which loads them.
 async fn subscribe<S: NodeSource>(
     api: &Api<S, Handle>,
     key: &TrackingKey,
@@ -545,7 +546,12 @@ async fn subscribe<S: NodeSource>(
         Opened::Resync(ResyncReason::NotTracked) if from.is_none() => {}
         opened => return opened,
     }
-    match api.pages.load(&api.engine, key).await {
+    let tracked = match key {
+        TrackingKey::Tree(tree) => api.balances.track(&api.engine, tree).await,
+        // Refused before it gets here: a token has no balance.
+        TrackingKey::Token(_) => api.pages.load(&api.engine, key).await,
+    };
+    match tracked {
         Ok(()) => once().await,
         Err(ApiError::EngineGone(_)) => Opened::EngineGone,
         Err(error) => Opened::Rejected(error),

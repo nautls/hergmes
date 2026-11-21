@@ -23,7 +23,12 @@ export interface WirePendingTx {
 
 /** Why the relay asks a client to take a new snapshot. A relay newer than this SDK may send others. */
 export type ResyncReason =
-  "outside_window" | "fork_beyond_window" | "not_tracked" | "slow_consumer" | (string & {});
+  | "outside_window"
+  | "fork_beyond_window"
+  | "not_tracked"
+  | "slow_consumer"
+  | "balance_mismatch"
+  | (string & {});
 
 /**
  * A block applied, or an orphaned block undone: `created` and `spent` are the key's boxes it

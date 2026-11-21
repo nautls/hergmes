@@ -118,6 +118,7 @@ impl Message {
                 Event::BlockReverted(_) => "apply_revert",
                 Event::MempoolSnapshot { .. } => "apply_mempool",
                 Event::KeyLoaded { .. } => "apply_load",
+                Event::BalanceLoaded { .. } => "apply_balance_load",
                 Event::Subscribed(_) => "apply_subscribed",
                 Event::Unsubscribed(_) => "apply_unsubscribed",
             },

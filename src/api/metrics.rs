@@ -37,8 +37,8 @@ use crate::{
 const OPENMETRICS: &str = "application/openmetrics-text; version=1.0.0; charset=utf-8";
 
 /// Which side refused a request. A WebSocket subscribe loads a key only when it is
-/// balance-only, so `too_many_boxes` under `ws` counts the balance subscriptions to
-/// addresses over the per-key cap, apart from REST's.
+/// balance-only, and then reads the address's balance rather than its boxes, so `ws` counts
+/// what that read meets (`not_ready`, a node failure), apart from REST's.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Transport {
     Rest,
@@ -100,7 +100,11 @@ impl Metrics {
             "resync_required messages sent to WebSocket clients, by reason",
             resyncs.clone(),
         );
-        registry.register("hergmes_tracked_keys", "Tracked keys, by kind", tracked_keys.clone());
+        registry.register(
+            "hergmes_tracked_keys",
+            "Tracked keys, by kind: addresses with their boxes, addresses balance-only, tokens",
+            tracked_keys.clone(),
+        );
         registry.register(
             "hergmes_tracked_boxes",
             "Tracked boxes, one per box and key",
@@ -171,6 +175,7 @@ impl Metrics {
             ResyncReason::ForkBeyondWindow => "fork_beyond_window",
             ResyncReason::NotTracked => "not_tracked",
             ResyncReason::SlowConsumer => "slow_consumer",
+            ResyncReason::BalanceMismatch => "balance_mismatch",
         };
         self.0.resyncs.get_or_create(&Resync { reason }).inc();
     }
@@ -188,6 +193,7 @@ impl Metrics {
         let inner = &self.0;
         let kind = |kind| inner.tracked_keys.get_or_create(&KeyKind { kind });
         kind("address").set(gauge(stats.address_keys));
+        kind("balance").set(gauge(stats.balance_keys));
         kind("token").set(gauge(stats.token_keys));
         inner.tracked_boxes.set(gauge(stats.tracked_boxes));
         inner.ring_blocks.set(gauge(stats.ring_blocks));

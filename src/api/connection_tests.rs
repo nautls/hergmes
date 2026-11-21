@@ -489,18 +489,29 @@ async fn a_live_subscription_follows_a_reorg() {
     assert!(!messages.iter().any(|m| m["type"] == "balance"), "a token key has no balance");
 }
 
+/// A balance-only subscription tracks the address from one read of its balance, with no
+/// boxes: no page of the node's, so an address of any size can be followed.
 #[tokio::test(start_paused = true)]
 async fn a_balance_only_subscription_loads_the_key_and_gets_only_balances() {
     let mut f = Fixture::new().await;
     let key = f.tree_key(2);
     assert!(!f.tracked(&key).await);
     let mut client = f.connect();
+    let before = f.sim.calls().len();
     client
         .subscribe(json!({ "address": f.address(2) }), None)
         .await;
     let catch_up = client.texts().await;
     assert_eq!(types(&catch_up), ["subscribed", "balance"]);
     assert!(f.tracked(&key).await, "loaded");
+    let calls = f.sim.calls()[before..].to_vec();
+    assert!(calls.contains(&Endpoint::ConfirmedBalance), "{calls:?}");
+    assert!(!calls.contains(&Endpoint::UnspentByErgoTree), "no page: {calls:?}");
+    let expected = {
+        let chain = f.sim.lock();
+        chain.oracle().totals(&key, chain.height())
+    };
+    assert_eq!(catch_up[1]["confirmed"]["nanoErgs"], json!(expected.nano_ergs.to_string()));
     let tip = f.sim.lock().tip();
     assert_eq!(catch_up[1]["asOf"], json!({ "height": tip.height, "headerId": tip.header_id }));
 
@@ -738,22 +749,37 @@ async fn refused_keys_are_rejected_and_the_connection_carries_on() {
     assert_eq!(count("rest", "invalid_address"), 0);
 }
 
-/// A load that fails for now is `rejected` with the wait: here, the configured keys have not
-/// settled.
+/// A load that fails for now is `rejected` with the wait: here, the engine stays a block
+/// behind the node, so no balance is read at its tip.
 #[tokio::test(start_paused = true)]
 async fn a_load_that_fails_for_now_is_rejected_with_retry_after() {
-    let (settled, _pending) = settling(1);
-    let f = Fixture::waiting_for(settled).await;
+    let f = Fixture::new().await;
+    f.sim.lock().mine(0, 1, 1);
     let mut client = f.connect();
     client
         .subscribe_as(3, json!({ "address": f.address(0) }), None)
         .await;
+    // Its attempts, a second apart.
+    sleep(Duration::from_secs(3)).await;
     let messages = client.texts().await;
     assert_eq!(messages.len(), 1);
     assert_eq!(messages[0]["reason"], "not_ready");
     assert_eq!(messages[0]["retryAfter"], 1);
     assert_eq!(messages[0]["id"], 3, "a refusal after the load carries the id");
     assert!(!f.tracked(&f.tree_key(0)).await);
+}
+
+/// The configured keys go first at startup so they take the cap on tracked boxes; a balance
+/// subscription takes none of it, so it does not wait for them.
+#[tokio::test(start_paused = true)]
+async fn a_balance_subscription_does_not_wait_for_the_configured_keys() {
+    let (settled, _pending) = settling(1);
+    let f = Fixture::waiting_for(settled).await;
+    let mut client = f.connect();
+    client
+        .subscribe(json!({ "address": f.address(0) }), None)
+        .await;
+    assert_eq!(types(&client.texts().await), ["subscribed", "balance"]);
 }
 
 #[tokio::test(start_paused = true)]
@@ -1337,16 +1363,16 @@ async fn a_replace_during_a_load_does_not_restart_it() {
     let subscribe = |id| ClientMessage::Subscribe { key: echo.clone(), from: None, id: Some(id) };
 
     f.sim
-        .set_latency(Endpoint::UnspentByErgoTree, Duration::from_secs(10));
+        .set_latency(Endpoint::ConfirmedBalance, Duration::from_secs(10));
     connection.on_message(subscribe(1)).await.unwrap();
-    while count(&f, Endpoint::UnspentByErgoTree) == 0 {
+    while count(&f, Endpoint::ConfirmedBalance) == 0 {
         tokio::task::yield_now().await;
     }
-    // The load is reading its page.
+    // The load is reading the balance.
     connection.on_message(subscribe(2)).await.unwrap();
     finish(&mut connection).await;
 
-    assert_eq!(count(&f, Endpoint::UnspentByErgoTree), 1, "one load");
+    assert_eq!(count(&f, Endpoint::ConfirmedBalance), 1, "one load");
     let messages = written(&mut from_server);
     assert_eq!(types(&messages), ["subscribed", "balance"]);
     assert_eq!(messages[0]["id"], 2, "only the newest subscribe is answered");

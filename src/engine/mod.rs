@@ -11,7 +11,7 @@ pub mod overlay;
 mod state;
 
 pub use block::{
-    BlockDelta, BlockRef, BoxKey, ChainLink, KeyDelta, KeyId, Spend, StoredBox, Totals,
+    BlockDelta, BlockRef, BoxKey, ChainLink, Change, KeyDelta, KeyId, Spend, StoredBox, Totals,
 };
 pub use key::TrackingKey;
 pub use mempool::Mempool;

@@ -10,6 +10,7 @@ use std::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
+    time::Duration,
 };
 
 use proptest::{prelude::*, sample::Index};
@@ -95,8 +96,10 @@ enum Op {
     Tick,
     /// The indexer ends any recovery and catches up.
     Settle,
-    /// The loader tracks an address, as a page request or a subscription would.
+    /// The loader tracks an address with its boxes, as a page request would.
     Load(Index),
+    /// The balance service tracks an address balance-only, as a balance subscription would.
+    Track(Index),
     /// A balance read. With `tick`, the follower ticks while the service waits between
     /// attempts, as it does in the running relay.
     Read {
@@ -114,6 +117,7 @@ fn op() -> impl Strategy<Value = Op> {
         5 => Just(Op::Tick),
         1 => Just(Op::Settle),
         2 => any::<Index>().prop_map(Op::Load),
+        2 => any::<Index>().prop_map(Op::Track),
         6 => (any::<Index>(), any::<bool>()).prop_map(|(key, tick)| Op::Read { key, tick }),
         1 => any::<Index>().prop_map(Op::BothPaths),
     ]
@@ -134,6 +138,9 @@ struct Seen {
     used_by_count: bool,
     unused: bool,
     used_without_count: bool,
+    balance_only_tracked: bool,
+    balance_only_not_ready: bool,
+    balance_only_read: bool,
 }
 
 /// What the node and the engine looked like just before a read.
@@ -180,6 +187,10 @@ impl Harness {
                 let key = self.key(key);
                 self.load(&key).await;
             }
+            Op::Track(key) => {
+                let key = self.key(key);
+                self.track(&key).await;
+            }
             Op::Read { key, tick } => {
                 let key = self.key(key);
                 self.read(&key, *tick).await;
@@ -214,6 +225,30 @@ impl Harness {
         let catch_up = Query::CatchUp { key, from: None };
         self.engine.query(catch_up).await.expect("a running engine");
         true
+    }
+
+    /// Tracks the address balance-only and takes its balance as its subscriber would. Every
+    /// later read of it checks the running totals against the oracle's, so a start read at
+    /// another block than the engine's tip would show there.
+    async fn track(&mut self, tree: &ErgoTree) {
+        let key = TrackingKey::Tree(tree.clone());
+        let before = self.before();
+        match self.balances.track(&self.engine, tree).await {
+            Ok(()) => {
+                assert!(self.engine.is_tracked(&key));
+                let catch_up = Query::CatchUp { key, from: None };
+                self.engine.query(catch_up).await.expect("a running engine");
+                self.seen.balance_only_tracked = true;
+            }
+            Err(ApiError::NotReady { retry_after }) => {
+                assert_eq!(retry_after, CONFIG.retry);
+                self.seen.balance_only_not_ready = true;
+            }
+            Err(ApiError::NodeUnavailable { .. }) => {
+                assert!(before.recovering, "a 503 comes only from a recovering indexer");
+            }
+            Err(error) => panic!("unexpected track error for {key:?}: {error}"),
+        }
     }
 
     fn box_counts(&self) -> usize {
@@ -306,6 +341,13 @@ impl Harness {
         if tracked {
             assert_eq!(balance.confirmed, confirmed, "{key:?}'s running totals at {tip:?}");
             self.seen.tracked = true;
+            self.seen.balance_only_read |=
+                self.engine.engine.lock().unwrap().query(Query::Page {
+                    key: key.clone(),
+                    at: None,
+                    after: None,
+                    limit: 0,
+                }) == Reply::Page(Err(crate::engine::PageError::NotTracked));
             self.seen.tracked_pending |= pending != PendingDelta::default();
             if let Some(streamed) = self.engine.streamed.lock().unwrap().get(key) {
                 assert_eq!(
@@ -461,6 +503,9 @@ fn random_histories_reach_the_hard_balance_cases() {
         all.used_by_count |= seen.used_by_count;
         all.unused |= seen.unused;
         all.used_without_count |= seen.used_without_count;
+        all.balance_only_tracked |= seen.balance_only_tracked;
+        all.balance_only_not_ready |= seen.balance_only_not_ready;
+        all.balance_only_read |= seen.balance_only_read;
     }
     let Seen {
         tracked,
@@ -475,6 +520,9 @@ fn random_histories_reach_the_hard_balance_cases() {
         used_by_count,
         unused,
         used_without_count,
+        balance_only_tracked,
+        balance_only_not_ready,
+        balance_only_read,
     } = all;
     for (name, reached) in [
         ("a tracked read", tracked),
@@ -489,6 +537,9 @@ fn random_histories_reach_the_hard_balance_cases() {
         ("a zero balance used by the indexer's count", used_by_count),
         ("an unused address", unused),
         ("a used balance with no count", used_without_count),
+        ("an address tracked balance-only", balance_only_tracked),
+        ("a balance-only track not ready", balance_only_not_ready),
+        ("a balance-only address read from its running totals", balance_only_read),
     ] {
         assert!(reached, "random histories never reached {name}");
     }
@@ -786,7 +837,7 @@ async fn a_block_between_the_halves_is_caught() {
 #[test]
 fn the_nodes_balance_becomes_totals() {
     let id = |n| crate::sim::testing::digest(n);
-    let balance = ergo::Balance {
+    let balance = crate::types::ergo::Balance {
         nano_ergs: 7,
         tokens: vec![
             TokenBalance { token_id: id(1), amount: 2 },

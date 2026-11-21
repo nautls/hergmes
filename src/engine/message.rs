@@ -22,7 +22,13 @@ pub enum Event {
     /// The whole mempool, and the tip read alongside it.
     MempoolSnapshot { txs: Arc<[UnconfirmedTransaction]>, observed_tip: BlockRef },
     /// A key's first load. Accepted only if `as_of` is the current tip; it then starts tracking.
+    /// A load of a balance-only key makes it a key with boxes.
     KeyLoaded { key: TrackingKey, as_of: BlockRef, boxes: Vec<LoadedBox> },
+    /// An address's confirmed balance at `as_of`, read from the indexer, which starts tracking
+    /// it balance-only: its totals, moved by each block, and no boxes, so it costs no paging
+    /// and counts nothing against the cap on tracked boxes. Accepted only if `as_of` is the
+    /// current tip; ignored for a key already tracked either way.
+    BalanceLoaded { tree: ErgoTree, as_of: BlockRef, confirmed: Totals },
     /// A client subscribed to a key. A key that is not tracked answers `ResyncRequired`: the
     /// transport loads it first.
     Subscribed(TrackingKey),
@@ -77,7 +83,8 @@ pub enum Query {
     Balance(TrackingKey),
     Tip,
     /// The room a load of the key, of at most `up_to` boxes, may take under the cap on
-    /// tracked boxes, or `None` if the key is tracked: a duplicate load is never refused. Not
+    /// tracked boxes, or `None` if the key is tracked: a duplicate load is never refused. A
+    /// balance-only key's load of its boxes is checked against the cap when it arrives. Not
     /// activity for the key.
     Capacity {
         key: TrackingKey,
@@ -96,7 +103,8 @@ pub enum Query {
     MempoolSnapshot,
     /// The messages that bring a client from `from` to the tip: replayed blocks or
     /// rollbacks, then the overlay and the balance, or a resync. Without `from` (a
-    /// balance-only subscription), only the balance. A token key gets no balance.
+    /// balance-only subscription), only the balance. A token key gets no balance. A
+    /// balance-only key has no deltas to replay, so a catch-up with `from` resyncs.
     CatchUp {
         key: TrackingKey,
         from: Option<BlockRef>,
@@ -140,7 +148,10 @@ pub enum PoolBox {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Stats {
     pub tip: Option<BlockRef>,
+    /// Addresses tracked with their boxes.
     pub address_keys: usize,
+    /// Addresses tracked balance-only.
+    pub balance_keys: usize,
     pub token_keys: usize,
     /// One per box and key, as the cap on tracked boxes counts them.
     pub tracked_boxes: usize,
@@ -154,11 +165,12 @@ pub struct Stats {
     pub evicted_keys: u64,
 }
 
-/// The boxes tracked, one per box and key, the part of them held by keys a load may evict,
-/// and the cap on them. A load of `n` boxes fits while `tracked - evictable + n <= max`: it
-/// takes the room it needs from idle keys, or is refused and evicts none. Idle keys are
-/// counted only until the load asked about would fit, so `evictable` is all of their boxes
-/// only when it does not; otherwise it is at least what the load needs.
+/// The units tracked (one per box and key, and one per key), the part of them held by keys a
+/// load may evict, and the cap on them. A new key's load of `n` boxes adds `n + 1` and fits
+/// while `tracked - evictable + n + 1 <= max`: it takes the room it needs from idle keys, or is
+/// refused and evicts none. Idle keys are counted only until the load asked about would fit,
+/// so `evictable` is all of their units only when it does not; otherwise it is at least what
+/// the load needs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Capacity {
     pub tracked: usize,
@@ -171,6 +183,7 @@ impl Capacity {
         self.tracked
             .saturating_sub(self.evictable)
             .saturating_add(boxes)
+            .saturating_add(1)
             <= self.max
     }
 }
@@ -243,8 +256,9 @@ pub struct Balance {
 /// A message for the subscribers of one key.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Output {
-    /// A block applied on top of `parent_id`. Every tracked key gets one per block, empty or
-    /// not, so its subscribers can check the parent chain.
+    /// A block applied on top of `parent_id`. Every key tracked with its boxes gets one per
+    /// block, empty or not, so its subscribers can check the parent chain. A balance-only key
+    /// gets none, nor a `Rollback`: it has only balance subscribers.
     Block {
         key: TrackingKey,
         block: BlockRef,
@@ -272,10 +286,11 @@ pub enum Output {
     ResyncRequired { key: TrackingKey, reason: ResyncReason },
     /// A first load pinned to a block other than the tip; the loader retries.
     LoadRejected { key: TrackingKey, as_of: BlockRef },
-    /// A first load refused because its `boxes` on top of the `tracked` ones would pass the
-    /// cap on tracked boxes, even with the `evictable` ones (held by idle keys, counted in
-    /// `tracked`) gone. Nothing changed, no key was evicted. It frees up as subscribers leave
-    /// and their keys go idle.
+    /// A load refused because its `boxes`, and one more for a new key, on top of the `tracked`
+    /// units would pass the cap on tracked boxes, even with the `evictable` ones (held by idle
+    /// keys, counted in `tracked`) gone. Units are boxes and keys (see [`Capacity`]); a
+    /// balance-only load has no boxes. Nothing changed, no key was evicted. It frees up as
+    /// subscribers leave and their keys go idle.
     CapacityExceeded { key: TrackingKey, tracked: usize, evictable: usize, boxes: usize },
 }
 
@@ -314,4 +329,7 @@ pub enum ResyncReason {
     /// The key is not tracked, or was not tracked over the client's blocks.
     NotTracked,
     SlowConsumer,
+    /// A balance-only key's totals could not take a block's change: the confirmed balance it
+    /// started from was not the one at its load block. Subscribing again reads it anew.
+    BalanceMismatch,
 }

@@ -59,8 +59,8 @@ variables instead, without a file: `ERGO_NODE_URL`, `HERGMES_LISTEN_ADDR` and
 | `deny_addresses`                   | `[]`           | Addresses clients may not name; deny wins over allow                              |
 | `allow_tokens`                     | omitted: any   | Token ids clients may name                                                        |
 | `box_cache_mb`                     | 128            | Memory for full boxes kept to serve pages, in MiB; 0 disables it                  |
-| `max_boxes_per_key`                | 16383          | Most boxes an address or token can have to be tracked: one node page              |
-| `max_tracked_boxes`                | 2000000        | Most boxes tracked over all keys; about 860 MiB resident when full                |
+| `max_boxes_per_key`                | 16383          | Most boxes a key can hold to have its boxes tracked: one node page                |
+| `max_tracked_boxes`                | 2000000        | Most boxes tracked over all keys, each key one more; ~860 MiB resident when full  |
 | `listen_addr`                      | 127.0.0.1:8080 | IP and port of the REST API and the WebSocket; or `HERGMES_LISTEN_ADDR`           |
 | `allow_origins`                    | `["*"]`        | Browser pages and extensions that may use the API: origins and `"scheme://*"`     |
 | `max_subscriptions_per_connection` | 100            | Most subscriptions one WebSocket connection holds                                 |
@@ -111,8 +111,9 @@ systemd, from 1,024 to 524,288 by default) and warns if that is below 4,096; set
 An unlimited hard limit leaves the soft one as it is.
 
 Set `metrics_addr` (e.g. `"127.0.0.1:9100"`) to serve Prometheus metrics on `GET /metrics`,
-on an address of its own and never on the public one: tracked keys by kind, tracked boxes, the
-ring buffer's and the box cache's sizes, cache hits and misses, the boxes idle keys hold and the
+on an address of its own and never on the public one: tracked keys by kind (`address` with its
+boxes, `balance` for balance-only, `token`), tracked boxes, the ring buffer's and the box cache's
+sizes, cache hits and misses, the boxes idle keys hold and the
 keys evicted, resident memory, and refusals and resyncs by reason. They are counts only and
 name no address or token.
 
@@ -132,20 +133,22 @@ with what is tracked and connected:
 | What                         | Live memory   | Bounded by                                               |
 | ---------------------------- | ------------- | -------------------------------------------------------- |
 | A tracked box, with its key  | about 170 B   | `max_tracked_boxes`, and `max_boxes_per_key` for one key |
+| A tracked key                | not measured  | `max_tracked_boxes`, as one box each                     |
 | The box cache                | its budget    | `box_cache_mb`                                           |
 | A subscription               | about 2.5 KiB | `max_subscriptions_per_connection`, per connection       |
 | An idle WebSocket connection | about 8 KiB   | the open-file limit                                      |
 
 Resident memory sits above these live figures, by what the allocator keeps.
 
-At the cap, a load first evicts keys with no subscribers that have been idle for a minute, least
-recently active first, and is refused with `capacity_exceeded` only if all of them together
-can't make room. Idle keys would leave after `grace_secs` anyway, so they never stand in the way
-of active ones, and the minute keeps a client's key between requests that belong together, such
-as the pages of one walk. `hergmes_evictable_boxes` shows the room they hold, and
-`hergmes_evicted_keys_total` how many went. A block untracks at most 50,000 boxes of keys past
-`grace_secs` (or one key, if it alone holds more), so after a mass disconnect they leave over
-several blocks rather than holding one block for seconds.
+The cap counts each key as one box more than it holds, so a key holding none (an address tracked for
+its balance alone, or an empty one) still takes room. At the cap, a load first evicts keys with no
+subscribers that have been idle for a minute, least recently active first, and is refused with
+`capacity_exceeded` only if all of them together can't make room. Idle keys would leave after
+`grace_secs` anyway, so they never stand in the way of active ones, and the minute keeps a client's
+key between requests that belong together, such as the pages of one walk. `hergmes_evictable_boxes`
+shows the room they hold, and `hergmes_evicted_keys_total` how many went. A block untracks at most
+50,000 boxes of keys past `grace_secs` (or one key, if it alone holds more), so after a mass
+disconnect they leave over several blocks rather than holding one block for seconds.
 
 To track more, raise `max_tracked_boxes` and `box_cache_mb` together. At the defaults the cache
 holds about a tenth of the tracked boxes and answers about 99% of lookups. A larger cap with the
@@ -247,18 +250,21 @@ only the last tip. Clients send JSON text:
 A subscribe that takes effect is answered with `subscribed`. A subscription with `from` (a page's
 `asOf`) then replays the blocks since, or rolls back to the fork point, and sends the current
 `mempool` overlay and, for an address, its `balance`; `block`, `rollback`, `mempool` and `balance`
-messages follow live. One without `from` gets only `balance` messages, and loads the address if no
-one tracks it. Subscribing again to a key replaces its subscription, even if the new subscribe is
-refused; after a replace or an unsubscribe, a key's messages before the next `subscribed` belong to
-the old subscription. A subscribe's answer (`subscribed`, `rejected` or `resync_required`) carries
-its `id`, an integer the client picks: an older subscribe's answer can arrive after the client sent
-a newer message for the key, so a client drops the key's messages until the answer with its latest
-`id` (or, sending no ids, waits for a key's answer before its next message).
+messages follow live. One without `from` gets only `balance` messages; if no one tracks the address,
+the relay reads its balance once and keeps it current from each block, with no boxes, so it takes an
+address of any size. Subscribing again to a key replaces its subscription, even if the new subscribe
+is refused; after a replace or an unsubscribe, a key's messages before the next `subscribed` belong
+to the old subscription. A subscribe's answer (`subscribed`, `rejected` or `resync_required`)
+carries its `id`, an integer the client picks: an older subscribe's answer can arrive after the
+client sent a newer message for the key, so a client drops the key's messages until the answer with
+its latest `id` (or, sending no ids, waits for a key's answer before its next message).
 
 A refused subscribe gets `rejected`, with REST's error codes, `retryAfter` (seconds) where REST
 would send `Retry-After`, and two codes of its own: `too_many_subscriptions` and `from_required`
 (a token has no balance). `resync_required` means: take a new snapshot, or for a balance-only
-subscription, subscribe again.
+subscription, subscribe again. Its `reason` is one of `outside_window`, `fork_beyond_window`,
+`not_tracked`, `slow_consumer` and `balance_mismatch` (a block spent more than the balance read
+at the start held).
 
 The server pings every 30 s, so proxies' idle timeouts never close a quiet subscription, and
 closes a connection that leaves two pings unanswered (close code 1008, `pings unanswered`). A

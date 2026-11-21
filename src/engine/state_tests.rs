@@ -11,7 +11,7 @@ use crate::{
     sim::{self, Chain, Oracle, SimConfig, SimOp, reference_delta, strategy},
     types::{
         Digest,
-        ergo::{TxId, UnconfirmedTransaction},
+        ergo::{ErgoTree, TxId, UnconfirmedTransaction},
     },
 };
 
@@ -22,7 +22,7 @@ const CONFIG: Config = Config {
     window: 4,
     grace: Duration::from_secs(3),
     evict_after: Duration::from_secs(2),
-    max_tracked_boxes: 12,
+    max_tracked_boxes: 14,
     untrack_boxes_per_block: 3,
 };
 const MAX_ADVANCE_SECS: u8 = 2;
@@ -41,8 +41,12 @@ enum Op {
     Snapshot,
     /// The loader loads a key at the node's tip.
     Load(Index),
+    /// The balance loader tracks an address balance-only, from its confirmed balance at the
+    /// node's tip.
+    LoadBalance(Index),
     /// A new client: a snapshot through pages (or none, for a balance-only one), a
-    /// subscription, and its catch-up.
+    /// subscription, and its catch-up. A balance-only client of an untracked address loads
+    /// its balance, a client with boxes of a key without them loads them.
     Subscribe {
         key: Index,
         balance_only: bool,
@@ -74,6 +78,7 @@ fn op() -> impl Strategy<Value = Op> {
         2 => Just(Op::SyncOne),
         4 => Just(Op::Snapshot),
         2 => any::<Index>().prop_map(Op::Load),
+        2 => any::<Index>().prop_map(Op::LoadBalance),
         4 => (any::<Index>(), any::<bool>())
             .prop_map(|(key, balance_only)| Op::Subscribe { key, balance_only }),
         1 => any::<Index>().prop_map(Op::Unsubscribe),
@@ -92,6 +97,8 @@ struct KeyModel {
     /// Counts loads, so a client can tell whether the key stayed tracked since its snapshot.
     epoch: u64,
     since: BlockRef,
+    /// Tracked for its balance alone, with no boxes.
+    balance_only: bool,
     /// The clock at the key's last activity, in ms.
     last_seen: u64,
     subscribers: u32,
@@ -248,6 +255,11 @@ impl Harness {
                 let key = self.pick_key(key);
                 self.load(&key);
             }
+            Op::LoadBalance(key) => {
+                if let TrackingKey::Tree(tree) = self.pick_key(key) {
+                    self.load_balance(tree);
+                }
+            }
             Op::Subscribe { key, balance_only } => {
                 let key = self.pick_key(key);
                 self.subscribe(key, *balance_only);
@@ -284,6 +296,21 @@ impl Harness {
             }
         }
         self.check();
+    }
+
+    /// The boxes `key` holds in the engine at `height` by the model: none if it is
+    /// balance-only.
+    fn held(&self, oracle: &Oracle, key: &TrackingKey, height: u32) -> usize {
+        match self.keys.get(key) {
+            Some(m) if m.balance_only => 0,
+            _ => oracle.unspent(key, height).len(),
+        }
+    }
+
+    /// The keys tracked with their boxes, in key order.
+    fn box_keys(&self) -> Vec<TrackingKey> {
+        let keys = self.keys.iter().filter(|(_, m)| !m.balance_only);
+        keys.map(|(k, _)| k.clone()).collect()
     }
 
     fn pick_key(&self, index: &Index) -> TrackingKey {
@@ -325,12 +352,26 @@ impl Harness {
             .oracle_at(&block.header_id)
             .indexed_block(block.height);
         let before = self.expected_states();
+        let box_keys = self.box_keys();
         let in_block = in_block_spends(&indexed);
+        let moves_balance_only = self.keys.iter().any(|(k, m)| {
+            m.balance_only
+                && indexed.transactions.iter().any(|tx| {
+                    tx.inputs
+                        .iter()
+                        .chain(&tx.outputs)
+                        .any(|b| k.matches(&b.utxo))
+                })
+        });
         let outputs = self.feed(Event::BlockApplied(indexed));
+        if moves_balance_only {
+            self.seen.insert("block moves a balance-only key's totals");
+        }
         self.fed.push(block);
         self.ring_len = (self.ring_len + 1).min(CONFIG.window);
 
-        // Every tracked key gets the block, in key order, and nothing else at rank 0.
+        // Every key tracked with its boxes gets the block, in key order, and nothing else at
+        // rank 0: a balance-only key gets none.
         let blocks: Vec<&TrackingKey> = outputs
             .iter()
             .filter_map(|o| match o {
@@ -344,7 +385,7 @@ impl Harness {
                 _ => None,
             })
             .collect();
-        assert_eq!(blocks, before.keys().collect::<Vec<_>>());
+        assert_eq!(blocks, box_keys.iter().collect::<Vec<_>>());
         if outputs.iter().any(|o| {
             matches!(o, Output::Block { created, spent, .. }
             if created.iter().any(|b| in_block.contains(&b.id))
@@ -381,7 +422,7 @@ impl Harness {
             .keys
             .iter()
             .filter(|(_, m)| m.subscribers == 0 && now - m.last_seen > grace)
-            .map(|(k, m)| (m.last_seen, m.epoch, k.clone(), oracle.unspent(k, block.height).len()))
+            .map(|(k, m)| (m.last_seen, m.epoch, k.clone(), self.held(&oracle, k, block.height)))
             .collect();
         idle.sort();
         let mut untracked = 0;
@@ -411,6 +452,15 @@ impl Harness {
 
     fn revert_block(&mut self, block: BlockRef) {
         let before = self.expected_states();
+        let undoes_balance_only = self.keys.iter().any(|(k, m)| {
+            m.balance_only
+                && m.since != block
+                && self
+                    .engine
+                    .ring
+                    .back()
+                    .is_some_and(|d| d.balances.contains_key(&self.engine.ids[k]))
+        });
         let outputs = self.feed(Event::BlockReverted(block));
         self.fed.pop();
         self.reverted.push(block);
@@ -464,7 +514,11 @@ impl Harness {
                 _ => None,
             })
             .collect();
-        assert_eq!(rollbacks, self.keys.keys().collect::<Vec<_>>());
+        assert_eq!(rollbacks, self.box_keys().iter().collect::<Vec<_>>());
+        if undoes_balance_only {
+            self.seen
+                .insert("rollback undoes a balance-only key's change");
+        }
         self.check_emissions(&outputs, &before);
     }
 
@@ -508,17 +562,36 @@ impl Harness {
             .collect::<Vec<_>>();
         let count = boxes.len();
         let before = self.expected_states();
-        let tracked = self.keys.contains_key(key);
+        let tracked = self.keys.get(key).map(|m| m.balance_only);
         let outputs = self.feed(Event::KeyLoaded { key: key.clone(), as_of, boxes });
         if self.engine.tip() != Some(as_of) {
             assert_eq!(outputs, vec![Output::LoadRejected { key: key.clone(), as_of }]);
             self.seen.insert("load rejected");
             return;
         }
-        if tracked {
+        if tracked == Some(false) {
             self.keys.get_mut(key).expect("tracked").last_seen = self.now;
+        } else if tracked == Some(true) {
+            // A balance-only key takes its boxes, keeping its subscribers, last balance and
+            // overlay; its totals are the oracle's either way, so no balance goes out. It
+            // already counts as one.
+            if !self.make_room(key, count, count, as_of.height, &outputs) {
+                self.check_emissions(&outputs, &before);
+                return;
+            }
+            // The same key, so the same epoch: its id, which orders idle keys, stays too, and
+            // no client has its boxes from before.
+            let model = self.keys.get_mut(key).expect("tracked");
+            model.since = as_of;
+            model.balance_only = false;
+            model.last_seen = self.now;
+            self.seen.insert("balance-only key upgraded to boxes");
+            if model.subscribers > 0 {
+                self.seen
+                    .insert("balance-only key with subscribers upgraded to boxes");
+            }
         } else {
-            if !self.make_room(key, count, as_of.height, &outputs) {
+            if !self.make_room(key, count + 1, count, as_of.height, &outputs) {
                 self.check_emissions(&outputs, &before);
                 return;
             }
@@ -527,6 +600,7 @@ impl Harness {
             let model = KeyModel {
                 epoch: self.next_epoch,
                 since: as_of,
+                balance_only: false,
                 last_seen: self.now,
                 subscribers: 0,
                 balance,
@@ -537,38 +611,80 @@ impl Harness {
         self.check_emissions(&outputs, &before);
     }
 
-    /// The cap on tracked boxes, for a load of `count` boxes at `height`: past it, the idle
+    /// The balance loader: the address's confirmed balance at the node's tip.
+    fn load_balance(&mut self, tree: ErgoTree) {
+        let key = TrackingKey::Tree(tree.clone());
+        let as_of = self.chain.tip();
+        let confirmed = self.chain.oracle().totals(&key, as_of.height);
+        let before = self.expected_states();
+        let event = Event::BalanceLoaded { tree, as_of, confirmed };
+        let outputs = self.feed(event);
+        if self.engine.tip() != Some(as_of) {
+            assert_eq!(outputs, vec![Output::LoadRejected { key, as_of }]);
+            self.seen.insert("balance load rejected");
+            return;
+        }
+        if let Some(model) = self.keys.get_mut(&key) {
+            assert_eq!(outputs, vec![]);
+            model.last_seen = self.now;
+            self.seen.insert("balance load of a tracked key ignored");
+        } else {
+            if !self.make_room(&key, 1, 0, as_of.height, &outputs) {
+                self.seen.insert("balance load refused at the cap");
+                self.check_emissions(&outputs, &before);
+                return;
+            }
+            // Nothing is decided again: a balance-only key's boxes are taken on the source's
+            // word.
+            assert_eq!(outputs, vec![]);
+            let (balance, overlay) = self.expected(&key);
+            self.next_epoch += 1;
+            let model = KeyModel {
+                epoch: self.next_epoch,
+                since: as_of,
+                balance_only: true,
+                last_seen: self.now,
+                subscribers: 0,
+                balance,
+                overlay,
+            };
+            self.keys.insert(key, model);
+        }
+        self.check_emissions(&outputs, &before);
+    }
+
+    /// The cap on tracked boxes, for a load adding `load` units (its `boxes`, and one for a
+    /// new key) at `height`. Every key counts its boxes and one more. Past the cap, the idle
     /// keys (no subscribers, idle for `evict_after`) go, least recently active and then
     /// oldest load first, until the load fits. If even all of them would not make room, the
     /// load is refused and none goes. Returns whether the load is taken.
     fn make_room(
         &mut self,
         key: &TrackingKey,
-        count: usize,
+        load: usize,
+        boxes: usize,
         height: u32,
         outputs: &[Output],
     ) -> bool {
         let oracle = self.oracle();
-        let held = |k: &TrackingKey| oracle.unspent(k, height).len();
+        let held = |k: &TrackingKey| self.held(&oracle, k, height) + 1;
         let tracked: usize = self.keys.keys().map(held).sum();
-        if tracked + count <= CONFIG.max_tracked_boxes {
+        if tracked + load <= CONFIG.max_tracked_boxes {
             return true;
         }
         let evict_after = CONFIG.evict_after.as_millis() as u64;
         let mut idle: Vec<(u64, u64, TrackingKey, usize)> = self
             .keys
             .iter()
-            .filter(|(_, m)| m.subscribers == 0 && self.now - m.last_seen >= evict_after)
+            .filter(|(k, m)| {
+                m.subscribers == 0 && self.now - m.last_seen >= evict_after && *k != key
+            })
             .map(|(k, m)| (m.last_seen, m.epoch, k.clone(), held(k)))
             .collect();
         let room: usize = idle.iter().map(|i| i.3).sum();
-        if tracked - room + count > CONFIG.max_tracked_boxes {
-            let refused = Output::CapacityExceeded {
-                key: key.clone(),
-                tracked,
-                evictable: room,
-                boxes: count,
-            };
+        if tracked - room + load > CONFIG.max_tracked_boxes {
+            let refused =
+                Output::CapacityExceeded { key: key.clone(), tracked, evictable: room, boxes };
             assert_eq!(outputs, [refused], "refused, and nothing else changed");
             self.seen.insert("load refused at the cap");
             if room > 0 {
@@ -578,14 +694,14 @@ impl Harness {
         }
         idle.sort();
         let mut left = tracked;
-        for (_, _, evicted, boxes) in idle {
-            if left + count <= CONFIG.max_tracked_boxes {
+        for (_, _, evicted, units) in idle {
+            if left + load <= CONFIG.max_tracked_boxes {
                 self.seen.insert("idle key kept: the load fit without it");
                 break;
             }
             self.keys.remove(&evicted);
             self.evicted += 1;
-            left -= boxes;
+            left -= units;
             self.seen.insert("idle key evicted for a load");
         }
         true
@@ -618,7 +734,7 @@ impl Harness {
         let tip = self.engine.tip();
         for output in outputs
             .iter()
-            .filter(|o| !matches!(o, Output::LoadRejected { .. }))
+            .filter(|o| !matches!(o, Output::LoadRejected { .. } | Output::CapacityExceeded { .. }))
         {
             for client in self
                 .clients
@@ -632,11 +748,18 @@ impl Harness {
     }
 
     fn subscribe(&mut self, key: TrackingKey, balance_only: bool) {
-        if !self.engine.is_tracked(&key) {
-            self.load(&key);
-            if !self.engine.is_tracked(&key) {
-                return;
+        let with_boxes = |h: &Self| h.keys.get(&key).is_some_and(|m| !m.balance_only);
+        match (&key, balance_only) {
+            (TrackingKey::Tree(tree), true) if !self.keys.contains_key(&key) => {
+                self.load_balance(tree.clone());
             }
+            (_, true) if !self.keys.contains_key(&key) => self.load(&key),
+            (_, false) if !with_boxes(self) => self.load(&key),
+            _ => {}
+        }
+        let tracked = self.engine.is_tracked(&key);
+        if !tracked || (!balance_only && !with_boxes(self)) {
+            return;
         }
         let tip = self.tip();
         let mut client = Client {
@@ -719,12 +842,14 @@ impl Harness {
         // on the main chain at or above the new load: the key's boxes there are the same
         // whichever load found them. Eviction can untrack and reload a key within a block.
         let model = &self.keys[&key];
-        let reloaded_below = client.epoch != model.epoch
+        let reloaded_below = !model.balance_only
+            && client.epoch != model.epoch
             && self.fed.contains(&client.tip)
             && client.tip.height >= model.since.height.max(self.floor());
         let expect_replay = client.balance_only
             || reloaded_below
             || (client.epoch == model.epoch
+                && !model.balance_only
                 && self
                     .fork_point(client.tip)
                     .is_some_and(|f| f.height >= self.floor()));
@@ -738,11 +863,16 @@ impl Harness {
         };
         if let [Output::ResyncRequired { reason, .. }] = outputs[..] {
             assert!(!expect_replay, "resync ({reason:?}) where a replay was possible");
+            if model.balance_only {
+                self.seen
+                    .insert("resync: a client with boxes of a balance-only key");
+            }
             self.seen.insert(match reason {
                 ResyncReason::OutsideWindow => "resync: outside window",
                 ResyncReason::ForkBeyondWindow => "resync: fork beyond window",
                 ResyncReason::NotTracked => "resync: not tracked",
                 ResyncReason::SlowConsumer => unreachable!("the engine has no consumers"),
+                ResyncReason::BalanceMismatch => unreachable!("the oracle's balances are right"),
             });
             // The transport ends the subscription.
             assert!(self.feed(Event::Unsubscribed(key.clone())).is_empty());
@@ -807,7 +937,8 @@ impl Harness {
 
     fn page(&mut self, key: &TrackingKey, at: BlockRef, limit: usize) {
         let result = self.pages(key, at, limit);
-        let Some(model) = self.keys.get_mut(key) else {
+        let Some(model) = self.keys.get_mut(key).filter(|m| !m.balance_only) else {
+            // A balance-only key's boxes are not tracked, and a read of them is no activity.
             assert_eq!(result, Err(PageError::NotTracked));
             return;
         };
@@ -838,7 +969,7 @@ impl Harness {
             panic!("a with-pool reply");
         };
         let (tip, now) = (self.tip(), self.now);
-        let Some(model) = self.keys.get_mut(key) else {
+        let Some(model) = self.keys.get_mut(key).filter(|m| !m.balance_only) else {
             assert_eq!(reply, None);
             return;
         };
@@ -1008,10 +1139,11 @@ impl Harness {
             .keys()
             .filter(|key| matches!(key, TrackingKey::Tree(_)))
             .count();
+        let balance_keys = self.keys.values().filter(|m| m.balance_only).count();
         let boxes: usize = self
             .keys
             .keys()
-            .map(|key| oracle.unspent(key, tip.height).len())
+            .map(|key| self.held(&oracle, key, tip.height))
             .sum();
         let ring_boxes: usize = self.engine.ring.iter().map(|d| d.boxes.len()).sum();
         let evictable_boxes: usize = self
@@ -1021,11 +1153,12 @@ impl Harness {
                 m.subscribers == 0
                     && self.now - m.last_seen >= CONFIG.evict_after.as_millis() as u64
             })
-            .map(|(key, _)| oracle.unspent(key, tip.height).len())
+            .map(|(key, _)| self.held(&oracle, key, tip.height))
             .sum();
         let expected = Stats {
             tip: Some(tip),
-            address_keys: addresses,
+            address_keys: addresses - balance_keys,
+            balance_keys,
             token_keys: self.keys.len() - addresses,
             tracked_boxes: boxes,
             ring_blocks: self.ring_len as usize,
@@ -1041,7 +1174,13 @@ impl Harness {
         let mut reverse = BTreeMap::new();
         for (key, &key_id) in &self.engine.ids {
             let state = &self.engine.keys[&key_id];
-            let expected: BTreeSet<BoxKey> = oracle.unspent(key, tip.height).into_keys().collect();
+            let balance_only = self.keys[key].balance_only;
+            assert_eq!(state.balance_only, balance_only, "{key:?} balance-only");
+            let expected: BTreeSet<BoxKey> = if balance_only {
+                BTreeSet::new()
+            } else {
+                oracle.unspent(key, tip.height).into_keys().collect()
+            };
             assert_eq!(state.boxes, expected, "{key:?}'s set");
             let totals =
                 matches!(key, TrackingKey::Tree(_)).then(|| oracle.totals(key, tip.height));
@@ -1076,7 +1215,7 @@ impl Harness {
             .iter()
             .filter(|(_, m)| m.subscribers == 0)
             .map(|(key, m)| {
-                let boxes = oracle.unspent(key, tip.height).len();
+                let boxes = self.held(&oracle, key, tip.height);
                 ((m.last_seen, self.engine.ids[key]), boxes)
             })
             .collect();
@@ -1100,8 +1239,23 @@ impl Harness {
             with_overlay,
             "keys with an overlay"
         );
+        // The balance-only keys are found by their trees, and only they.
+        let trees: BTreeMap<&ErgoTree, KeyId> = self
+            .engine
+            .balance_trees
+            .iter()
+            .map(|(t, id)| (t, *id))
+            .collect();
+        let expected_trees: BTreeMap<&ErgoTree, KeyId> = (self.keys.iter())
+            .filter(|(_, m)| m.balance_only)
+            .map(|(k, _)| match k {
+                TrackingKey::Tree(t) => (t, self.engine.ids[k]),
+                TrackingKey::Token(_) => panic!("a balance-only token key"),
+            })
+            .collect();
+        assert_eq!(trees, expected_trees, "balance-only trees");
         for delta in self.engine.ring.iter().chain(self.engine.orphans.values()) {
-            for key_id in delta.keys.keys() {
+            for key_id in delta.keys.keys().chain(delta.balances.keys()) {
                 assert!(self.engine.keys.contains_key(key_id), "a share of an untracked key");
             }
             let named: HashSet<BoxId> = delta
@@ -1123,19 +1277,33 @@ impl Harness {
         // least what the load needs.
         let untracked = TrackingKey::Token(Digest([0xff; 32]));
         let max = CONFIG.max_tracked_boxes;
+        for key in self.keys.keys() {
+            let query = Query::Capacity { key: key.clone(), up_to: 0 };
+            let Reply::Capacity(capacity) = self.engine.query(query) else { unreachable!() };
+            assert_eq!(capacity, None, "room for {key:?}, tracked");
+        }
+        // The cap counts every key as one box more than it holds.
+        let units = boxes + self.keys.len();
+        let evictable_keys = (self.keys.values())
+            .filter(|m| {
+                m.subscribers == 0
+                    && self.now - m.last_seen >= CONFIG.evict_after.as_millis() as u64
+            })
+            .count();
+        let evictable_units = evictable_boxes + evictable_keys;
         for up_to in 0..=2 * max {
             let query = Query::Capacity { key: untracked.clone(), up_to };
             let Reply::Capacity(Some(capacity)) = self.engine.query(query) else {
                 panic!("room for an untracked key");
             };
-            assert_eq!((capacity.tracked, capacity.max), (boxes, max));
-            let fits = boxes - evictable_boxes + up_to <= max;
+            assert_eq!((capacity.tracked, capacity.max), (units, max));
+            let fits = units - evictable_units + up_to < max;
             assert_eq!(capacity.fits(up_to), fits, "room for {up_to}");
             if fits {
-                assert!(capacity.evictable <= evictable_boxes);
-                assert!(boxes - capacity.evictable + up_to <= max);
+                assert!(capacity.evictable <= evictable_units);
+                assert!(units - capacity.evictable + up_to < max);
             } else {
-                assert_eq!(capacity.evictable, evictable_boxes, "the whole room, for {up_to}");
+                assert_eq!(capacity.evictable, evictable_units, "the whole room, for {up_to}");
             }
         }
 
@@ -1196,8 +1364,15 @@ impl Harness {
         // Every tracked key's view with the pool is the reference one, and an address's sums to its
         // balance: the overlay applied to the boxes, or to the totals, gives the same assets.
         // Read without `Query::WithPool`, which would count as activity.
-        let keys: Vec<TrackingKey> = self.keys.keys().cloned().collect();
-        for key in &keys {
+        for key in self
+            .keys
+            .iter()
+            .filter(|(_, m)| m.balance_only)
+            .map(|(k, _)| k)
+        {
+            assert_eq!(self.engine.with_pool(key, usize::MAX), None, "{key:?} has no view");
+        }
+        for key in &self.box_keys() {
             let view = self
                 .engine
                 .with_pool(key, usize::MAX)
@@ -1414,6 +1589,14 @@ fn random_histories_reach_the_hard_engine_cases() {
         "ring ran out",
         "key dropped with its load block",
         "load rejected",
+        "balance load rejected",
+        "balance load of a tracked key ignored",
+        "balance load refused at the cap",
+        "block moves a balance-only key's totals",
+        "rollback undoes a balance-only key's change",
+        "balance-only key upgraded to boxes",
+        "balance-only key with subscribers upgraded to boxes",
+        "resync: a client with boxes of a balance-only key",
         "resync: not tracked",
         "resync: outside window",
         "resync: fork beyond window",
@@ -1619,6 +1802,98 @@ fn a_block_moves_a_box_between_keys_and_its_rollback_moves_it_back() {
         }
     );
     assert_eq!((f.state(&zero), f.state(&one), f.engine.reverse.clone()), before);
+}
+
+impl Fixture {
+    /// Tracks `key` balance-only from `confirmed`, at the tip.
+    fn load_balance(&mut self, key: &TrackingKey, confirmed: Totals) -> Vec<Output> {
+        let TrackingKey::Tree(tree) = key else { panic!("an address") };
+        let as_of = self.chain.tip();
+        self.engine
+            .apply(Event::BalanceLoaded { tree: tree.clone(), as_of, confirmed })
+            .expect("no error")
+    }
+
+    /// `key`'s balance at the tip, by the oracle.
+    fn totals(&self, key: &TrackingKey) -> Totals {
+        self.chain.oracle().totals(key, self.chain.height())
+    }
+}
+
+/// A balance-only key follows a block's change and its rollback with no boxes at all: no
+/// `Block` or `Rollback` for it, nothing in the reverse index or kept in the ring.
+#[test]
+fn a_balance_only_key_follows_blocks_and_rollbacks_without_boxes() {
+    let mut f = Fixture::new(Config::default());
+    let (zero, one) = (f.key(0), f.key(1));
+    let (was_zero, was_one) = (f.totals(&zero), f.totals(&one));
+    assert!(f.load_balance(&zero, was_zero.clone()).is_empty());
+    assert!(f.load_balance(&one, was_one.clone()).is_empty());
+
+    // Both balances, in key order.
+    let mut balances = [("balance", zero.clone()), ("balance", one.clone())];
+    balances.sort();
+    let source = sim::testing::box_of(&f.chain, 0);
+    let tx = f.chain.transfer(&[source], &f.chain.trees()[1].clone());
+    let outputs = f.mine(vec![tx]);
+    assert_eq!(kinds(&outputs), balances);
+    assert_eq!(f.state(&zero), (BTreeSet::new(), Some(f.totals(&zero))));
+    assert_eq!(f.state(&one), (BTreeSet::new(), Some(f.totals(&one))));
+    assert_ne!(f.totals(&zero), was_zero);
+    assert!(f.engine.reverse.is_empty());
+    let tip = f.engine.ring.back().expect("the block");
+    assert!(tip.boxes.is_empty() && tip.keys.is_empty() && tip.balances.len() == 2);
+
+    let outputs = f.revert();
+    assert_eq!(kinds(&outputs), balances);
+    assert_eq!(f.state(&zero), (BTreeSet::new(), Some(was_zero)));
+    assert_eq!(f.state(&one), (BTreeSet::new(), Some(was_one)));
+}
+
+/// A balance-only key has no deltas, so a client with boxes that asks to catch up from a
+/// block is sent to its snapshot, even from the block the key was loaded at, where a key
+/// with boxes would replay nothing.
+#[test]
+fn a_catch_up_from_a_block_resyncs_a_balance_only_key() {
+    let mut f = Fixture::new(Config::default());
+    let zero = f.key(0);
+    let tip = f.engine.tip().expect("a tip");
+    f.load_balance(&zero, f.totals(&zero));
+    assert_eq!(
+        f.catch_up(&zero, Some(tip)),
+        [Output::ResyncRequired { key: zero.clone(), reason: ResyncReason::NotTracked }]
+    );
+    assert!(matches!(&f.catch_up(&zero, None)[..], [Output::Balance { .. }]));
+    let page = Query::Page { key: zero.clone(), at: None, after: None, limit: 10 };
+    assert_eq!(f.engine.query(page), Reply::Page(Err(PageError::NotTracked)));
+    let with_pool = Query::WithPool { key: zero.clone(), limit: 10 };
+    assert_eq!(f.engine.query(with_pool), Reply::WithPool(None));
+}
+
+/// A balance-only key that started from a wrong balance resyncs when a block spends more
+/// than it holds, and is untracked; one that never meets such a block keeps it, and a load
+/// of its boxes corrects it, sending the balance its boxes give.
+#[test]
+fn a_wrong_starting_balance_resyncs_at_an_overspend_and_a_load_corrects_it() {
+    let mut f = Fixture::new(Config::default());
+    let (zero, one) = (f.key(0), f.key(1));
+    f.load_balance(&zero, Totals::default());
+    let short = Totals { nano_ergs: f.totals(&one).nano_ergs - 1, ..f.totals(&one) };
+    f.load_balance(&one, short);
+
+    let source = sim::testing::box_of(&f.chain, 0);
+    let tx = f.chain.transfer(&[source], &f.chain.trees()[2].clone());
+    let outputs = f.mine(vec![tx]);
+    let reason = ResyncReason::BalanceMismatch;
+    assert_eq!(outputs, [Output::ResyncRequired { key: zero.clone(), reason }]);
+    assert!(!f.engine.is_tracked(&zero));
+    assert!(f.engine.ring.iter().all(|d| d.balances.is_empty()));
+
+    let outputs = f.load(&one);
+    let Output::Balance { balance, .. } = find(&outputs, "balance", &one) else { unreachable!() };
+    assert_eq!(balance.confirmed, f.totals(&one));
+    assert_eq!(f.state(&one).1, Some(f.totals(&one)));
+    assert!(!f.engine.keys[&f.engine.ids[&one]].balance_only);
 }
 
 /// The sizes the metrics report, on a small case: the ring's boxes are the full boxes its
@@ -2049,14 +2324,15 @@ fn a_load_past_the_cap_on_tracked_boxes_is_refused() {
         })
         .collect();
     assert!(sizes.iter().all(|&n| n > 0), "{sizes:?}");
-    let cap = sizes[0] + sizes[1];
+    // Each key counts as one box more than it holds.
+    let cap = sizes[0] + sizes[1] + 2;
 
     let mut f = Fixture::new(Config { max_tracked_boxes: cap - 1, ..Config::default() });
     let [zero, one] = [0, 1].map(|t| f.key(t));
     f.load(&zero);
     let refused = Output::CapacityExceeded {
         key: one.clone(),
-        tracked: sizes[0],
+        tracked: sizes[0] + 1,
         evictable: 0,
         boxes: sizes[1],
     };
@@ -2075,7 +2351,9 @@ fn a_load_past_the_cap_on_tracked_boxes_is_refused() {
     let room = |key: &TrackingKey| Query::Capacity { key: key.clone(), up_to: sizes[2] };
     assert_eq!(f.engine.query(room(&two)), Reply::Capacity(Some(full)));
     assert_eq!(f.engine.query(room(&zero)), Reply::Capacity(None));
-    assert!(full.fits(0) && !full.fits(1));
+    assert!(!full.fits(0), "even a key with no boxes takes room");
+    let one_left = Capacity { tracked: cap - 1, ..full };
+    assert!(one_left.fits(0) && !one_left.fits(1));
     let refused =
         Output::CapacityExceeded { key: two.clone(), tracked: cap, evictable: 0, boxes: sizes[2] };
     assert_eq!(f.load(&two), [refused]);
@@ -2104,7 +2382,8 @@ fn a_load_past_the_cap_evicts_idle_keys_least_recently_active_first() {
         .into_iter()
         .find(|k| size(k) > s0)
         .expect("a key larger than key 0");
-    let cap = s0 + s1 + s2;
+    // Each key counts as one box more than it holds.
+    let cap = s0 + s1 + s2 + 3;
 
     let mut f = Fixture::new(Config { max_tracked_boxes: cap, ..Config::default() });
     let room = |f: &mut Fixture, key: &TrackingKey| {
@@ -2138,7 +2417,7 @@ fn a_load_past_the_cap_evicts_idle_keys_least_recently_active_first() {
         .apply(Event::Subscribed(two.clone()))
         .expect("tracked");
     let capacity = room(&mut f, &three);
-    assert_eq!(capacity, Capacity { tracked: cap, evictable: s1, max: cap });
+    assert_eq!(capacity, Capacity { tracked: cap, evictable: s1 + 1, max: cap });
     assert!(capacity.fits(s3));
     let outputs = f.load(&three);
     assert!(f.engine.is_tracked(&three), "{outputs:?}");
@@ -2147,18 +2426,18 @@ fn a_load_past_the_cap_evicts_idle_keys_least_recently_active_first() {
 
     // Key 0 is the only idle key left, and too small for `big`: refused, key 0 kept.
     let capacity = room(&mut f, &big);
-    assert_eq!(capacity.evictable, s0, "key 3 just loaded, key 2 subscribed");
+    assert_eq!(capacity.evictable, s0 + 1, "key 3 just loaded, key 2 subscribed");
     assert!(!capacity.fits(size(&big)));
-    let held = f.engine.reverse.len();
+    let held = f.engine.units();
     let refused = Output::CapacityExceeded {
         key: big.clone(),
         tracked: held,
-        evictable: s0,
+        evictable: s0 + 1,
         boxes: size(&big),
     };
     assert_eq!(f.load(&big), [refused]);
     assert_eq!(tracked(&f), [true, false, true, true], "nothing evicted");
-    assert_eq!(f.engine.reverse.len(), held);
+    assert_eq!(f.engine.units(), held);
     assert_eq!(evicted(&mut f), 1);
 }
 
@@ -2171,7 +2450,8 @@ fn the_room_counts_idle_keys_only_when_a_load_could_need_them() {
     let height = probe.chain.height();
     let [zero, one, two] = [0, 1, 2].map(|t| probe.key(t));
     let [s0, s1, s2] = [&zero, &one, &two].map(|k| probe.chain.oracle().load(k, height).len());
-    let cap = s0 + s1 + s2;
+    // Each key counts as one box more than it holds.
+    let cap = s0 + s1 + s2 + 3;
 
     let mut f = Fixture::new(Config { max_tracked_boxes: cap, ..Config::default() });
     f.load(&zero);
@@ -2184,12 +2464,11 @@ fn the_room_counts_idle_keys_only_when_a_load_could_need_them() {
         Reply::Capacity(Some(capacity)) => capacity,
         other => panic!("{other:?}"),
     };
-    let tracked = s0 + s1;
+    let tracked = s0 + s1 + 2;
     assert_eq!(room(&mut f, s2), Capacity { tracked, evictable: 0, max: cap }, "fits as it is");
-    assert!(s0 > 0, "key 0 makes room");
-    let near = Capacity { tracked, evictable: s0, max: cap };
+    let near = Capacity { tracked, evictable: s0 + 1, max: cap };
     assert_eq!(room(&mut f, s2 + 1), near, "key 0, loaded first, makes the one box of room");
-    let past = Capacity { tracked, evictable: s0 + s1, max: cap };
+    let past = Capacity { tracked, evictable: s0 + s1 + 2, max: cap };
     assert_eq!(room(&mut f, cap + 1), past, "both keys, and still no room");
 }
 

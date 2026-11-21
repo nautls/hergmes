@@ -17,7 +17,7 @@ use crate::{
         Reply, ResyncReason, Spend, Stats, StoredBox, Totals, TrackingKey, WithPoolIds,
         overlay::{self, PendingDelta},
     },
-    types::ergo::{BoxId, HeaderId, IndexedBlock, UTxO},
+    types::ergo::{BoxId, ErgoTree, HeaderId, IndexedBlock, UTxO},
 };
 
 /// How far back the engine can serve, how long it keeps idle keys, and how many boxes it
@@ -42,7 +42,9 @@ pub struct Config {
     /// key.
     pub evict_after: Duration,
     /// The most boxes tracked over all keys, a box held by two keys counted twice (each is
-    /// an entry of the reverse index). Checked when a key is loaded, never afterwards: a
+    /// an entry of the reverse index), and each key counted as one box more: a key holding
+    /// none (a balance-only key, an empty address) still takes memory, and with no room
+    /// taken their number would have no bound. Checked when a key is loaded, never afterwards: a
     /// tracked key grows from blocks, and dropping it would break its subscribers. A load
     /// past it first evicts idle keys (see `Engine::evictable`), which would leave after
     /// the grace period anyway, so idle keys never stand in the way of active ones.
@@ -78,11 +80,16 @@ impl Default for Config {
 #[derive(Debug, Clone)]
 struct KeyState {
     key: TrackingKey,
-    /// The key's unspent boxes at the tip.
+    /// The key's unspent boxes at the tip. Always empty for a balance-only key.
     boxes: BTreeSet<BoxKey>,
     /// An address's running totals. A token key has none: summed over its holders' boxes, a
     /// balance means nothing, so no block pays for keeping it.
     totals: Option<Totals>,
+    /// An address tracked for its balance alone: its totals start from the indexer's balance
+    /// and move with each block's change, with no boxes. Its subscribers are all
+    /// balance-only, so it gets no `Block` or `Rollback`; a load of its boxes makes it a key
+    /// with boxes.
+    balance_only: bool,
     /// The block the key was loaded at. Ring entries up to it have no share for the key.
     since: BlockRef,
     /// The engine's block count when the key was loaded (see [`BlockDelta::seq`]).
@@ -105,6 +112,9 @@ pub struct Engine {
     next_id: u32,
     /// Tracked keys, in the order messages go out in.
     ids: BTreeMap<TrackingKey, KeyId>,
+    /// The balance-only keys, by tree: how a block's inputs find them, since they hold no
+    /// boxes in the reverse index.
+    balance_trees: HashMap<ErgoTree, KeyId>,
     keys: HashMap<KeyId, KeyState>,
     /// The keys with no subscribers, least recently active first, with their box counts:
     /// the ones the idle sweep and eviction look at, in the order they go. Kept apart, counts
@@ -134,6 +144,7 @@ impl Engine {
             seq: 0,
             next_id: 0,
             ids: BTreeMap::new(),
+            balance_trees: HashMap::new(),
             keys: HashMap::new(),
             idle: BTreeMap::new(),
             reverse: BTreeMap::new(),
@@ -159,6 +170,12 @@ impl Engine {
         self.ids.contains_key(key)
     }
 
+    /// Whether `key` is tracked balance-only: a key whose boxes a page or a load sees as not
+    /// tracked.
+    fn is_balance_only(&self, key: &TrackingKey) -> bool {
+        matches!(key, TrackingKey::Tree(tree) if self.balance_trees.contains_key(tree))
+    }
+
     /// The block a tracked key was loaded at: pages pinned below it expire.
     #[cfg(test)]
     pub fn tracked_since(&self, key: &TrackingKey) -> Option<BlockRef> {
@@ -173,7 +190,7 @@ impl Engine {
             Event::BlockApplied(block) => self.block_applied(&block)?,
             Event::BlockReverted(block) => self.block_reverted(block)?,
             Event::MempoolSnapshot { txs, observed_tip } => {
-                let confirmed = Confirmed::new(&self.ids, &self.reverse);
+                let confirmed = Confirmed::new(&self.ids, &self.balance_trees, &self.reverse);
                 let mut outputs = self
                     .mempool
                     .apply_snapshot(txs, observed_tip, self.tip, |b| confirmed.check(b));
@@ -181,6 +198,9 @@ impl Engine {
                 outputs
             }
             Event::KeyLoaded { key, as_of, boxes } => self.key_loaded(key, as_of, boxes),
+            Event::BalanceLoaded { tree, as_of, confirmed } => {
+                self.balance_loaded(tree, as_of, confirmed)
+            }
             Event::Subscribed(key) => match self.seen(&key, |n| n + 1) {
                 Some(_) => Vec::new(),
                 None => vec![Output::ResyncRequired { key, reason: ResyncReason::NotTracked }],
@@ -199,7 +219,9 @@ impl Engine {
         match query {
             Query::Page { key, at, after, limit } => Reply::Page(self.page(&key, at, after, limit)),
             Query::WithPool { key, limit } => {
-                self.touch(&key);
+                if !self.is_balance_only(&key) {
+                    self.touch(&key);
+                }
                 Reply::WithPool(self.with_pool(&key, limit))
             }
             Query::Overlay(key) => Reply::Overlay(self.mempool.overlay(&key)),
@@ -234,19 +256,21 @@ impl Engine {
     }
 
     fn stats(&self) -> Stats {
-        let address_keys = self
+        let addresses = self
             .ids
             .keys()
             .filter(|key| matches!(key, TrackingKey::Tree(_)))
             .count();
+        let balance_keys = self.balance_trees.len();
         Stats {
             tip: self.tip,
-            address_keys,
-            token_keys: self.ids.len() - address_keys,
+            address_keys: addresses - balance_keys,
+            balance_keys,
+            token_keys: self.ids.len() - addresses,
             tracked_boxes: self.reverse.len(),
             ring_blocks: self.ring.len(),
             ring_boxes: self.ring.iter().map(|d| d.boxes.len()).sum(),
-            evictable_boxes: self.evictable().map(|(_, _, boxes)| boxes).sum(),
+            evictable_boxes: self.evictable().map(|(_, _, units)| units - 1).sum(),
             evicted_keys: self.evicted_keys,
         }
     }
@@ -265,6 +289,7 @@ impl Engine {
             seq: self.seq,
             boxes: HashMap::new(),
             keys: HashMap::new(),
+            balances: HashMap::new(),
         };
         let mut before: BTreeMap<KeyId, Totals> = BTreeMap::new();
         let mut mined = HashSet::new();
@@ -299,21 +324,36 @@ impl Engine {
                         }
                     }
                 }
+                // A balance-only key holds no boxes, so its spends are found by the input's
+                // tree: the indexer sends a block's inputs in full, each looked up by its
+                // number (node 6.0.8, `IndexedErgoTransaction.retrieveBody`). That lookup
+                // drops an input it can't find rather than fail, which would leave the totals
+                // too high; a later spend past them, or a load of the key's boxes, finds it.
+                if let Some(&key_id) = self.balance_trees.get(&input.utxo.ergo_tree) {
+                    delta
+                        .balances
+                        .entry(key_id)
+                        .or_default()
+                        .add(&input.utxo, -1);
+                }
             }
             for output in &tx.outputs {
                 let holders: Vec<KeyId> = overlay::keys_of(&output.utxo)
                     .filter_map(|k| self.ids.get(&k).copied())
                     .collect();
-                if holders.is_empty() {
-                    continue;
-                }
                 let id = output.utxo.id;
-                let stored = StoredBox {
-                    inclusion_height: block_ref.height,
-                    utxo: Arc::new(output.utxo.clone()),
-                };
+                let mut held = false;
                 for key_id in holders {
                     let state = self.keys.get_mut(&key_id).expect("an id is tracked");
+                    if state.balance_only {
+                        delta
+                            .balances
+                            .entry(key_id)
+                            .or_default()
+                            .add(&output.utxo, 1);
+                        continue;
+                    }
+                    held = true;
                     state
                         .boxes
                         .insert(BoxKey { inclusion_height: block_ref.height, box_id: id });
@@ -324,11 +364,32 @@ impl Engine {
                     self.reverse.insert((id, key_id), block_ref.height);
                     delta.keys.entry(key_id).or_default().created.push(id);
                 }
-                delta.boxes.insert(id, stored);
+                if held {
+                    let utxo = Arc::new(output.utxo.clone());
+                    delta
+                        .boxes
+                        .insert(id, StoredBox { inclusion_height: block_ref.height, utxo });
+                }
             }
         }
         // Boxes created and spent within the block are in no delta.
         delta.keys.retain(|_, d| !d.is_empty());
+        delta.balances.retain(|_, c| !c.is_empty());
+        // A change a balance-only key's totals can't take: their start was wrong.
+        let mut mismatched = BTreeSet::new();
+        for (&key_id, change) in &delta.balances {
+            let state = self.keys.get_mut(&key_id).expect("an id is tracked");
+            let totals = state.totals.as_mut().expect("an address has totals");
+            match totals.apply(change, 1) {
+                Some(moved) => {
+                    before.insert(key_id, std::mem::replace(totals, moved));
+                }
+                None => {
+                    mismatched.insert(key_id);
+                }
+            }
+        }
+        delta.balances.retain(|id, _| !mismatched.contains(id));
         for &key_id in delta.keys.keys() {
             self.recount(key_id);
         }
@@ -345,7 +406,17 @@ impl Engine {
         delta.boxes.retain(|id, _| referenced.contains(id));
 
         let mut outputs = Vec::new();
+        let mut dropped = Vec::new();
         for (key, key_id) in &self.ids {
+            if mismatched.contains(key_id) {
+                let reason = ResyncReason::BalanceMismatch;
+                outputs.push(Output::ResyncRequired { key: key.clone(), reason });
+                dropped.push(key.clone());
+                continue;
+            }
+            if self.keys[key_id].balance_only {
+                continue;
+            }
             let key_delta = delta.keys.get(key_id);
             outputs.push(Output::Block {
                 key: key.clone(),
@@ -364,6 +435,7 @@ impl Engine {
         self.tip = Some(block_ref);
         let floor = self.floor();
         self.orphans.retain(|_, o| o.block.height > floor);
+        self.untrack(&dropped);
 
         // Untrack idle keys before deciding the overlays: their boxes are no longer checked.
         // Least recently active first, within the block's budget.
@@ -397,7 +469,7 @@ impl Engine {
         self.untrack(&idle);
         before.retain(|id, _| self.keys.contains_key(id));
 
-        let confirmed = Confirmed::new(&self.ids, &self.reverse);
+        let confirmed = Confirmed::new(&self.ids, &self.balance_trees, &self.reverse);
         outputs.extend(
             self.mempool
                 .block_applied(block_ref, &mined, &spent, |b| confirmed.check(b)),
@@ -441,6 +513,17 @@ impl Engine {
                 dropped.push(key.clone());
                 continue;
             }
+            if state.balance_only {
+                let Some(change) = delta.balances.get(&key_id) else {
+                    continue;
+                };
+                let totals = state.totals.as_mut().expect("an address has totals");
+                let moved = totals
+                    .apply(change, -1)
+                    .expect("undoing a change gives back the totals it was applied to");
+                before.insert(key_id, std::mem::replace(totals, moved));
+                continue;
+            }
             let key_delta = delta.keys.get(&key_id);
             if let Some(d) = key_delta {
                 changed.push(key_id);
@@ -474,11 +557,12 @@ impl Engine {
         for key_id in changed {
             self.recount(key_id);
         }
-        self.untrack(&dropped);
 
         let parent = delta.parent();
         self.tip = Some(parent);
         self.orphans.insert(block.header_id, delta);
+        // After the block is an orphan, so its share for a key upgraded at it goes too.
+        self.untrack(&dropped);
         outputs.extend(self.mempool.block_reverted(parent));
         self.push_balances(&before, &mut outputs);
         Ok(outputs)
@@ -508,54 +592,54 @@ impl Engine {
         if self.tip != Some(as_of) {
             return vec![Output::LoadRejected { key, as_of }];
         }
-        if self.touch(&key).is_some() {
+        // A balance-only key takes its boxes and keeps its subscribers.
+        let upgraded = self.ids.get(&key).copied();
+        if upgraded.is_some() && !self.is_balance_only(&key) {
             // Another load of a tracked key, from a racing loader: the engine's state is newer.
+            self.touch(&key);
             debug!(?key, ?as_of, "Load of an already tracked key ignored");
             return Vec::new();
         }
-        // The reverse index holds one entry per tracked box and key: the total. Idle keys are
-        // looked for only past the cap, and only until there is room. The loader reads every
-        // page at one tip, so a box should come once; one that came twice would be counted
-        // twice here, at most a refusal or an eviction too many.
-        let (tracked, max) = (self.reverse.len(), self.config.max_tracked_boxes);
-        let needed = tracked.saturating_add(boxes.len()).saturating_sub(max);
-        if needed > 0 {
-            let (mut evictable, mut chosen) = (0, Vec::new());
-            for (last_seen_ms, key_id, boxes) in self.evictable() {
-                if evictable >= needed {
-                    break;
-                }
-                evictable += boxes;
-                chosen.push((last_seen_ms, key_id));
-            }
-            if evictable < needed {
-                let boxes = boxes.len();
-                return vec![Output::CapacityExceeded { key, tracked, evictable, boxes }];
-            }
-            let evicted: Vec<TrackingKey> = chosen
-                .into_iter()
-                .map(|(last_seen_ms, key_id)| {
-                    let evicted = self.keys[&key_id].key.clone();
-                    let idle_ms = self.now_ms - last_seen_ms;
-                    debug!(?evicted, idle_ms, for_key = ?key, "Evicting idle key for a load");
-                    evicted
-                })
-                .collect();
-            self.untrack(&evicted);
-            self.evicted_keys += evicted.len() as u64;
+        // The loader reads every page at one tip, so a box should come once; one that came
+        // twice would be counted twice here, at most a refusal or an eviction too many. An
+        // upgraded key already counts as one.
+        let load = boxes.len() + usize::from(upgraded.is_none());
+        if let Some(refused) = self.make_room(&key, load, boxes.len(), upgraded) {
+            return vec![refused];
         }
         debug!(?key, height = as_of.height, boxes = boxes.len(), "Tracking key");
-        let key_id = KeyId(self.next_id);
-        self.next_id += 1;
-        let mut state = KeyState {
-            key: key.clone(),
-            boxes: BTreeSet::new(),
-            totals: matches!(key, TrackingKey::Tree(_)).then(Totals::default),
-            since: as_of,
-            loaded_seq: self.seq,
-            subscribers: 0,
-            last_seen_ms: self.now_ms,
-            pending_sent: PendingDelta::default(),
+        let (key_id, mut state, was) = match upgraded {
+            Some(key_id) => {
+                let mut state = self.keys.remove(&key_id).expect("an id is tracked");
+                if state.subscribers == 0 {
+                    self.idle.remove(&(state.last_seen_ms, key_id));
+                }
+                if let TrackingKey::Tree(tree) = &key {
+                    self.balance_trees.remove(tree);
+                }
+                let was = state.totals.replace(Totals::default());
+                state.balance_only = false;
+                state.since = as_of;
+                state.loaded_seq = self.seq;
+                state.last_seen_ms = self.now_ms;
+                (key_id, state, was)
+            }
+            None => {
+                let key_id = KeyId(self.next_id);
+                self.next_id += 1;
+                let state = KeyState {
+                    key: key.clone(),
+                    boxes: BTreeSet::new(),
+                    totals: matches!(key, TrackingKey::Tree(_)).then(Totals::default),
+                    balance_only: false,
+                    since: as_of,
+                    loaded_seq: self.seq,
+                    subscribers: 0,
+                    last_seen_ms: self.now_ms,
+                    pending_sent: PendingDelta::default(),
+                };
+                (key_id, state, None)
+            }
         };
         for b in &boxes {
             debug_assert!(key.matches(&b.utxo), "the loader checks every box");
@@ -567,13 +651,80 @@ impl Engine {
                 self.reverse.insert((b.utxo.id, key_id), b.inclusion_height);
             }
         }
-        self.idle.insert((self.now_ms, key_id), state.boxes.len());
+        if state.subscribers == 0 {
+            self.idle.insert((self.now_ms, key_id), state.boxes.len());
+        }
         self.ids.insert(key.clone(), key_id);
         self.keys.insert(key_id, state);
 
         // The key's boxes are now checked against its set, which can leave txs out.
-        let confirmed = Confirmed::new(&self.ids, &self.reverse);
+        let confirmed = Confirmed::new(&self.ids, &self.balance_trees, &self.reverse);
         let mut outputs = self.mempool.redecide(|b| confirmed.check(b));
+        if upgraded.is_none() {
+            self.mempool.track(key.clone());
+            let delta = self
+                .mempool
+                .tracked_delta(&key)
+                .cloned()
+                .unwrap_or_default();
+            self.keys
+                .get_mut(&key_id)
+                .expect("just inserted")
+                .pending_sent = delta;
+        }
+        // Only the keys whose overlay the re-decision changed can have a new balance: a
+        // pending delta moves only with its overlay, and the loaded key's was just set. A
+        // walk of every key here made each load cost as much as there are keys, and a
+        // restart's reload of all of them quadratic. An upgraded key's subscribers have its
+        // balance from its totals, which its boxes replaced.
+        let mut changed: BTreeSet<TrackingKey> = outputs.iter().map(|o| o.key().clone()).collect();
+        if was.is_some() {
+            changed.insert(key.clone());
+        }
+        for k in &changed {
+            let before = if *k == key { was.as_ref() } else { None };
+            self.push_balance(k, before, &mut outputs);
+        }
+        outputs
+    }
+
+    fn balance_loaded(
+        &mut self,
+        tree: ErgoTree,
+        as_of: BlockRef,
+        confirmed: Totals,
+    ) -> Vec<Output> {
+        let key = TrackingKey::Tree(tree.clone());
+        if self.tip != Some(as_of) {
+            return vec![Output::LoadRejected { key, as_of }];
+        }
+        if self.touch(&key).is_some() {
+            debug!(?key, ?as_of, "Balance load of an already tracked key ignored");
+            return Vec::new();
+        }
+        if let Some(refused) = self.make_room(&key, 1, 0, None) {
+            return vec![refused];
+        }
+        debug!(?key, height = as_of.height, "Tracking key balance-only");
+        let key_id = KeyId(self.next_id);
+        self.next_id += 1;
+        let state = KeyState {
+            key: key.clone(),
+            boxes: BTreeSet::new(),
+            totals: Some(confirmed),
+            balance_only: true,
+            since: as_of,
+            loaded_seq: self.seq,
+            subscribers: 0,
+            last_seen_ms: self.now_ms,
+            pending_sent: PendingDelta::default(),
+        };
+        self.idle.insert((self.now_ms, key_id), 0);
+        self.ids.insert(key.clone(), key_id);
+        self.balance_trees.insert(tree, key_id);
+        self.keys.insert(key_id, state);
+        // No overlay is decided again: a balance-only key's boxes are not checked against a
+        // set, as for an untracked key.
         self.mempool.track(key.clone());
         let delta = self
             .mempool
@@ -584,42 +735,85 @@ impl Engine {
             .get_mut(&key_id)
             .expect("just inserted")
             .pending_sent = delta;
-        // Only the keys whose overlay the re-decision changed can have a new balance: a
-        // pending delta moves only with its overlay, and the loaded key's was just set. A
-        // walk of every key here made each load cost as much as there are keys, and a
-        // restart's reload of all of them quadratic.
-        let changed: Vec<TrackingKey> = outputs.iter().map(|o| o.key().clone()).collect();
-        for key in &changed {
-            self.push_balance(key, None, &mut outputs);
-        }
-        outputs
+        Vec::new()
     }
 
-    /// The room for a load of at most `up_to` boxes. Idle keys' room is counted only if such
-    /// a load could pass the cap, and only until it would fit: past that it changes no
-    /// answer. So `evictable` is exact only when the load does not fit; otherwise it is at
-    /// least the room the load needs. With the defaults, idle keys are counted only past
-    /// 1.95M tracked boxes.
+    /// What the cap on tracked boxes counts: every tracked box, once per key that holds it,
+    /// and one more per key.
+    fn units(&self) -> usize {
+        self.reverse.len() + self.ids.len()
+    }
+
+    /// Makes room for a load that adds `load` units (its `boxes`, and one for a new key) by
+    /// evicting idle keys, least recently active first, never `keeping`. Idle keys are looked
+    /// for only past the cap, and only until there is room. A refusal if even all of them
+    /// would not make room, and then none is evicted.
+    fn make_room(
+        &mut self,
+        key: &TrackingKey,
+        load: usize,
+        boxes: usize,
+        keeping: Option<KeyId>,
+    ) -> Option<Output> {
+        let (tracked, max) = (self.units(), self.config.max_tracked_boxes);
+        let needed = tracked.saturating_add(load).saturating_sub(max);
+        if needed == 0 {
+            return None;
+        }
+        let (mut evictable, mut chosen) = (0, Vec::new());
+        for (last_seen_ms, key_id, units) in self.evictable() {
+            if evictable >= needed {
+                break;
+            }
+            if Some(key_id) == keeping {
+                continue;
+            }
+            evictable += units;
+            chosen.push((last_seen_ms, key_id));
+        }
+        if evictable < needed {
+            let key = key.clone();
+            return Some(Output::CapacityExceeded { key, tracked, evictable, boxes });
+        }
+        let evicted: Vec<TrackingKey> = chosen
+            .into_iter()
+            .map(|(last_seen_ms, key_id)| {
+                let evicted = self.keys[&key_id].key.clone();
+                let idle_ms = self.now_ms - last_seen_ms;
+                debug!(?evicted, idle_ms, for_key = ?key, "Evicting idle key for a load");
+                evicted
+            })
+            .collect();
+        self.untrack(&evicted);
+        self.evicted_keys += evicted.len() as u64;
+        None
+    }
+
+    /// The room for a new key's load of at most `up_to` boxes. Idle keys' room is counted
+    /// only if such a load could pass the cap, and only until it would fit: past that it
+    /// changes no answer. So `evictable` is exact only when the load does not fit; otherwise
+    /// it is at least the room the load needs. With the defaults, idle keys are counted only
+    /// past 1.95M tracked units.
     fn capacity(&self, up_to: usize) -> Capacity {
-        let (tracked, max) = (self.reverse.len(), self.config.max_tracked_boxes);
-        let needed = tracked.saturating_add(up_to).saturating_sub(max);
+        let (tracked, max) = (self.units(), self.config.max_tracked_boxes);
+        let needed = tracked.saturating_add(up_to + 1).saturating_sub(max);
         let mut evictable = 0;
         if needed > 0 {
-            for (_, _, boxes) in self.evictable() {
+            for (_, _, units) in self.evictable() {
                 if evictable >= needed {
                     break;
                 }
-                evictable += boxes;
+                evictable += units;
             }
         }
         Capacity { tracked, evictable, max }
     }
 
     /// The keys a load may evict, in the order it evicts them, with their last activity and
-    /// box counts: no subscribers, so no stream breaks, and idle for `evict_after`, so a
-    /// client between two requests that belong together keeps its key. Configured keys
-    /// always have their keeper's subscription. Least recently active first, then oldest
-    /// load first.
+    /// the units they hold (their boxes, and one): no subscribers, so no stream breaks, and
+    /// idle for `evict_after`, so a client between two requests that belong together keeps
+    /// its key. Configured keys always have their keeper's subscription. Least recently
+    /// active first, then oldest load first.
     fn evictable(&self) -> impl Iterator<Item = (u64, KeyId, usize)> {
         let after = millis(self.config.evict_after);
         self.idle
@@ -627,7 +821,7 @@ impl Engine {
             .take_while(move |&(&(last_seen_ms, _), _)| {
                 self.now_ms.saturating_sub(last_seen_ms) >= after
             })
-            .map(|(&(last_seen_ms, id), &boxes)| (last_seen_ms, id, boxes))
+            .map(|(&(last_seen_ms, id), &boxes)| (last_seen_ms, id, boxes + 1))
     }
 
     /// Records activity on a tracked key, and returns its state.
@@ -674,6 +868,9 @@ impl Engine {
             };
             let state = self.keys.remove(&key_id).expect("an id is tracked");
             self.idle.remove(&(state.last_seen_ms, key_id));
+            if let (true, TrackingKey::Tree(tree)) = (state.balance_only, key) {
+                self.balance_trees.remove(tree);
+            }
             for b in &state.boxes {
                 self.reverse.remove(&(b.box_id, key_id));
             }
@@ -684,6 +881,9 @@ impl Engine {
             return;
         }
         for delta in self.ring.iter_mut().chain(self.orphans.values_mut()) {
+            if !delta.balances.is_empty() {
+                delta.balances.retain(|key_id, _| !gone.contains(key_id));
+            }
             let held = delta.keys.len();
             // Looked up from the smaller side: a block touches few keys, a sweep may drop few.
             if gone.len() < held {
@@ -814,6 +1014,9 @@ impl Engine {
         after: Option<BoxKey>,
         limit: usize,
     ) -> Result<PageIds, PageError> {
+        if self.is_balance_only(key) {
+            return Err(PageError::NotTracked);
+        }
         let since = self.touch(key).ok_or(PageError::NotTracked)?.since;
         // A tracked key implies a tip: dropping the tip untracks every key.
         let at = at.or(self.tip).ok_or(PageError::NotTracked)?;
@@ -847,6 +1050,9 @@ impl Engine {
     /// confirmed ones. The limit is taken after the pending spends, so the boxes cut are ones
     /// a client could spend.
     pub(crate) fn with_pool(&self, key: &TrackingKey, limit: usize) -> Option<WithPoolIds> {
+        if self.is_balance_only(key) {
+            return None;
+        }
         let key_id = *self.ids.get(key)?;
         // A tracked key implies a tip: dropping the tip untracks every key.
         let as_of = self.tip?;
@@ -878,6 +1084,9 @@ impl Engine {
             return vec![Output::ResyncRequired { key, reason: ResyncReason::NotTracked }];
         };
         let (since, loaded_seq) = (state.since, state.loaded_seq);
+        if from.is_some() && state.balance_only {
+            return vec![Output::ResyncRequired { key, reason: ResyncReason::NotTracked }];
+        }
         let key_id = self.ids[&key];
         let mut outputs = Vec::new();
         if let Some(from) = from {
@@ -927,20 +1136,23 @@ impl Engine {
     }
 }
 
-/// Decides whether a pending tx's input counts as confirmed at the engine's tip: a box a
-/// tracked key would hold counts only if one does; any other box counts, on the source's word
-/// (see `overlay::pending_order`).
+/// Decides whether a pending tx's input counts as confirmed at the engine's tip: a box a key
+/// tracked with its boxes would hold counts only if one does; any other box counts, on the
+/// source's word (see `overlay::pending_order`), a balance-only key's included, since it has
+/// no boxes to check against.
 struct Confirmed<'a> {
     ids: &'a BTreeMap<TrackingKey, KeyId>,
+    balance_trees: &'a HashMap<ErgoTree, KeyId>,
     reverse: &'a BTreeMap<(BoxId, KeyId), u32>,
 }
 
 impl<'a> Confirmed<'a> {
     fn new(
         ids: &'a BTreeMap<TrackingKey, KeyId>,
+        balance_trees: &'a HashMap<ErgoTree, KeyId>,
         reverse: &'a BTreeMap<(BoxId, KeyId), u32>,
     ) -> Self {
-        Self { ids, reverse }
+        Self { ids, balance_trees, reverse }
     }
 
     fn check(&self, b: &UTxO) -> bool {
@@ -949,7 +1161,11 @@ impl<'a> Confirmed<'a> {
             .range((b.id, KeyId::MIN)..=(b.id, KeyId::MAX))
             .next()
             .is_some();
-        held || !overlay::keys_of(b).any(|k| self.ids.contains_key(&k))
+        let with_boxes = |k: &TrackingKey| match k {
+            TrackingKey::Tree(tree) => !self.balance_trees.contains_key(tree),
+            TrackingKey::Token(_) => true,
+        };
+        held || !overlay::keys_of(b).any(|k| self.ids.contains_key(&k) && with_boxes(&k))
     }
 }
 

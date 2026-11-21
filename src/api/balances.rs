@@ -7,34 +7,20 @@
 //! afterwards: one-off reads do not fill memory. Either way, a zero balance asks the indexer
 //! whether the address ever received a box.
 
-use std::time::Duration;
-
 use tokio::time::sleep;
 use tracing::debug;
 
+pub use crate::adapters::balance::Config;
 use crate::{
-    adapters::{BalanceReader, EngineHandle, balance::BalanceAt},
+    adapters::{
+        BalanceReader, EngineHandle,
+        balance::{BalanceAt, TrackError, totals},
+    },
     api::{ApiError, history::pending_txs},
     clients::NodeSource,
     engine::{PendingAt, Query, Reply, Totals, TrackingKey, overlay::PendingDelta},
-    types::ergo::{self, ErgoTree},
+    types::ergo::ErgoTree,
 };
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Config {
-    /// Attempts at pairing the two halves of an untracked address's balance before giving
-    /// up with `not_ready`.
-    pub attempts: u32,
-    /// The wait between attempts: about one tick of the follower, which is what an engine a
-    /// block behind the indexer needs to catch up.
-    pub retry: Duration,
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Self { attempts: 3, retry: Duration::from_secs(1) }
-    }
-}
 
 /// An address's balance as of a height: what its boxes hold, and the signed change its
 /// pending txs would make (positive incoming, negative leaving, per asset). `used` says
@@ -80,6 +66,24 @@ impl<S: NodeSource> Balances<S> {
             || pending != PendingDelta::default()
             || self.used(engine, tree).await?;
         Ok(AddressBalance { height, confirmed, pending, used })
+    }
+
+    /// Starts tracking the address guarded by `tree` balance-only, for a subscription to its
+    /// balance: one read of the indexer, and no boxes. An address already tracked stays as it
+    /// is.
+    pub async fn track(&self, engine: &impl EngineHandle, tree: &ErgoTree) -> Result<(), ApiError> {
+        let Err(error) = self.reader.track(engine, tree, self.config).await else {
+            return Ok(());
+        };
+        Err(match &*error {
+            TrackError::NotSettled { attempts } => {
+                debug!(attempts, "Balance load gave up: the indexer and the engine did not meet");
+                ApiError::NotReady { retry_after: self.config.retry }
+            }
+            TrackError::CapacityExceeded { .. } => ApiError::CapacityExceeded,
+            TrackError::Node(error) => ApiError::from(error),
+            TrackError::EngineGone(gone) => ApiError::EngineGone(*gone),
+        })
     }
 
     /// Whether an address with a zero balance ever received a box: a pending tx touches it,
@@ -182,16 +186,6 @@ async fn pending_at(
         Reply::Pending(pending) => Ok(pending),
         other => unreachable!("`Query::Pending` answered {other:?}"),
     }
-}
-
-/// The node's balance as running totals, so both paths answer in one form and compare by
-/// value: tokens summed by id, and a token with no units left out.
-fn totals(balance: ergo::Balance) -> Totals {
-    let mut totals = Totals { nano_ergs: balance.nano_ergs, ..Totals::default() };
-    for token in balance.tokens.into_iter().filter(|t| t.amount > 0) {
-        *totals.tokens.entry(token.token_id).or_default() += token.amount;
-    }
-    totals
 }
 
 #[cfg(test)]

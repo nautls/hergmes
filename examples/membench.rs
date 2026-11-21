@@ -3,6 +3,7 @@
 //!
 //! ```sh
 //! cargo run --release --example membench -- engine <keys> <boxes-per-key>
+//! cargo run --release --example membench -- balance <keys>
 //! cargo run --release --example membench -- cache <boxes>
 //! cargo run --release --features sim --example membench -- connections <connections> [<keys>]
 //! ```
@@ -14,6 +15,10 @@
 //!
 //! `engine` also prints what a load and a scrape's `Query::Stats` take on average, in
 //! microseconds: both must stay flat, or nearly, as the keys grow.
+//!
+//! `balance` tracks synthetic addresses balance-only, each holding ERG and two tokens, and
+//! reports the growth per key and what an empty block then takes, in microseconds: a block
+//! walks every key, so that time grows with them.
 //!
 //! `connections` opens WebSocket connections to the relay over a `SimChain`, served in this
 //! process, and reports what each one costs the relay; with `<keys>`, each connection then
@@ -58,6 +63,7 @@ fn main() {
     };
     match args.first().map(String::as_str) {
         Some("engine") => engine(number(1), number(2)),
+        Some("balance") => balance(number(1)),
         Some("cache") => cache(number(1)),
         Some("connections") => connections(number(1), args.get(2).map_or(0, |_| number(2))),
         _ => usage(),
@@ -66,7 +72,8 @@ fn main() {
 
 fn usage() -> ! {
     eprintln!(
-        "usage: membench engine <keys> <boxes-per-key> | membench cache <boxes> \
+        "usage: membench engine <keys> <boxes-per-key> | membench balance <keys> \
+         | membench cache <boxes> \
          | membench connections <connections> [keys-per-connection] (with --features sim)"
     );
     std::process::exit(2)
@@ -136,6 +143,57 @@ fn engine(keys: usize, boxes_per_key: usize) {
         "engine keys={keys} boxes_per_key={boxes_per_key} boxes={boxes} rss_before={before} \
          rss_after={after} grown={grown} bytes_per_box={:.1} load_micros={load_micros} stats_micros={stats_micros}",
         grown as f64 / boxes as f64
+    );
+}
+
+fn balance(keys: usize) {
+    use hergmes::engine::Totals;
+
+    let mut engine = Engine::new(Config::DEFAULT);
+    let header = |height: u32| BlockHeader {
+        id: digest(u64::MAX - u64::from(1_000_000 - height)),
+        parent_id: digest(u64::MAX - u64::from(1_000_000 - height) + 1),
+        height,
+        json: "{}".into(),
+    };
+    let mut height = 1_000_000;
+    engine
+        .apply(Event::BlockApplied(IndexedBlock { header: header(height), transactions: vec![] }))
+        .expect("the first block");
+    let tip = engine.tip().expect("a tip");
+
+    let before = resident();
+    let loading = std::time::Instant::now();
+    for k in 0..keys {
+        let mut confirmed = Totals { nano_ergs: 1_000_000_000 + k as u64, ..Totals::default() };
+        confirmed.tokens.insert(digest(1 << 40 | k as u64), 5);
+        confirmed.tokens.insert(digest(2 << 40 | k as u64), 7);
+        let event = Event::BalanceLoaded { tree: tree(k as u64), as_of: tip, confirmed };
+        let outputs = engine.apply(event).expect("a load is never an error");
+        assert!(outputs.is_empty(), "tracked: {outputs:?}");
+    }
+    let after = resident();
+    let load_micros = loading.elapsed().as_micros() / keys as u128;
+    let Reply::Stats(stats) = engine.query(Query::Stats) else { unreachable!() };
+    assert_eq!(stats.balance_keys, keys, "every key was loaded");
+
+    // Empty blocks: what every block pays for the keys, with no change to any.
+    let blocks = 20;
+    let started = std::time::Instant::now();
+    for _ in 0..blocks {
+        height += 1;
+        let mut h = header(height);
+        h.parent_id = engine.tip().expect("a tip").header_id;
+        engine
+            .apply(Event::BlockApplied(IndexedBlock { header: h, transactions: vec![] }))
+            .expect("extends the tip");
+    }
+    let block_micros = started.elapsed().as_micros() / blocks;
+    let grown = after.saturating_sub(before);
+    println!(
+        "balance keys={keys} rss_before={before} rss_after={after} grown={grown} \
+         bytes_per_key={:.1} load_micros={load_micros} empty_block_micros={block_micros}",
+        grown as f64 / keys as f64
     );
 }
 

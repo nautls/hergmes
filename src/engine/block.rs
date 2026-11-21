@@ -75,6 +75,54 @@ impl Totals {
             }
         }
     }
+
+    /// Adds `sign` times `change`, or `None` if an amount would go below zero, which leaves
+    /// the totals unchanged. A token whose units drop to zero is left out.
+    ///
+    /// For a balance-only key, whose totals start from the indexer's balance rather than from
+    /// boxes the engine saw: a spend larger than what it holds means that start was wrong.
+    pub fn apply(&self, change: &Change, sign: i128) -> Option<Totals> {
+        let moved = |amount: u64, by: i128| u64::try_from(i128::from(amount) + sign * by).ok();
+        let mut totals = Totals {
+            nano_ergs: moved(self.nano_ergs, change.nano_ergs)?,
+            tokens: self.tokens.clone(),
+        };
+        for (id, by) in &change.tokens {
+            let amount = moved(totals.tokens.get(id).copied().unwrap_or(0), *by)?;
+            if amount == 0 {
+                totals.tokens.remove(id);
+            } else {
+                totals.tokens.insert(*id, amount);
+            }
+        }
+        Some(totals)
+    }
+}
+
+/// A signed change to an address's totals: what a block paid it minus what it spent from it.
+/// A token whose change nets to zero is left out, so an empty change is the default value.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Change {
+    pub nano_ergs: i128,
+    pub tokens: BTreeMap<TokenId, i128>,
+}
+
+impl Change {
+    /// Adds `sign` times a box's ERG and tokens.
+    pub fn add(&mut self, utxo: &UTxO, sign: i128) {
+        self.nano_ergs += sign * i128::from(utxo.value);
+        for token in utxo.tokens.iter().filter(|t| t.amount > 0) {
+            let by = self.tokens.entry(token.id).or_default();
+            *by += sign * i128::from(token.amount);
+            if *by == 0 {
+                self.tokens.remove(&token.id);
+            }
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
 }
 
 /// A small id standing for a tracked key in per-box structures (the reverse index and the
@@ -126,7 +174,9 @@ impl KeyDelta {
 /// A ring buffer entry: what one block did to the tracked keys.
 ///
 /// Each box a tracked key gained or lost is stored once, in `boxes`; the per-key
-/// deltas refer to it by id. Keys the block left unchanged have no entry.
+/// deltas refer to it by id. A balance-only key has no boxes to page or replay, so its share
+/// is only the change to its totals, in `balances`, which keeps no box in the ring. Keys the
+/// block left unchanged have no entry.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BlockDelta {
     pub block: BlockRef,
@@ -136,6 +186,7 @@ pub struct BlockDelta {
     pub seq: u64,
     pub boxes: HashMap<BoxId, StoredBox>,
     pub keys: HashMap<KeyId, KeyDelta>,
+    pub balances: HashMap<KeyId, Change>,
 }
 
 impl BlockDelta {

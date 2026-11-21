@@ -67,13 +67,16 @@
 # Memory for full boxes kept to serve pages, in MiB; 0 disables it.
 # box_cache_mb = 128
 
-# Most boxes an address or token can have to be tracked. The default fits one page of the
-# node's; above it, the node reads every earlier box again for each page, so a large key
-# loads slowly.
+# Most boxes a key can hold and still have its boxes tracked, for pages and box subscriptions; a
+# balance subscription reads no boxes, so it takes an address of any size. The default fits
+# one page of the node's; above it, the node reads every earlier box again for each page, so
+# a large key loads slowly.
 # max_boxes_per_key = 16383
 
-# Most boxes tracked over all keys. A load past it first evicts keys with no subscribers that
-# have been idle for a minute, least recently active first, and is refused only if they can't
-# make room. Memory grows about linearly with it: full at the default, with about 100k
-# keys on 1,000 connections, the relay held about 860 MiB resident.
+# Most boxes tracked over all keys, each key counting as one box more than it holds, so a key
+# holding none (a balance subscription's, an empty address) still takes room. A load past it
+# first evicts keys with no subscribers that have been idle for a minute, least recently
+# active first, and is refused only if they can't make room. Memory grows about linearly with
+# it: full at the default, with about 100k keys on 1,000 connections, the relay held about
+# 860 MiB resident.
 # max_tracked_boxes = 2000000

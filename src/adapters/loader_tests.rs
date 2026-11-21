@@ -387,7 +387,9 @@ fn a_load_past_the_cap_on_tracked_boxes_is_refused_and_seeds_nothing() {
     assert!(cache.boxes().is_empty(), "nothing from a refused load");
 }
 
-fn engine_with_room(chain: &Chain, max_tracked_boxes: usize) -> Mutex<Engine> {
+/// An engine with room for one new key of `room` boxes: the key counts as one more.
+fn engine_with_room(chain: &Chain, room: usize) -> Mutex<Engine> {
+    let max_tracked_boxes = room + 1;
     let mut engine = Engine::new(EngineConfig { max_tracked_boxes, ..EngineConfig::default() });
     engine
         .apply(Event::BlockApplied(chain.oracle().indexed_block(chain.height())))
