@@ -50,24 +50,28 @@ pub struct Config {
     /// past it first evicts idle keys (see `Engine::evictable`), which would leave after
     /// the grace period anyway, so idle keys never stand in the way of active ones.
     pub max_tracked_units: usize,
-    /// The most boxes a block untracks for keys idle past the grace period: the first key
-    /// always goes, a later one only if it fits, and the rest wait for the next block. A
-    /// key's untrack costs about half a microsecond a box (`examples/untrackbench.rs`), so
-    /// a mass disconnect would otherwise hold one block, and every request behind it, for
-    /// seconds. Keys left waiting stay idle, so a load that needs their room evicts them.
-    pub untrack_boxes_per_block: usize,
+    /// The most units a block untracks for keys idle past the grace period, a key counting
+    /// its boxes and its charge as the cap does: the first key always goes, a later one only
+    /// if it fits, and the rest wait for the next block. An untrack costs about 0.16 µs a box,
+    /// and about 1.5 µs a key holding none, such as a balance-only key
+    /// (`examples/untrackbench.rs`), so a mass disconnect would otherwise hold one block, and
+    /// every request behind it, for seconds. Counted in units, a key with no box is charged
+    /// less than its time (about 5 units for about 10 boxes' worth): a full budget of them
+    /// still takes only about 15 ms. Keys left waiting stay
+    /// idle, so a load that needs their room evicts them.
+    pub untrack_units_per_block: usize,
 }
 
 impl Config {
     /// About a day of blocks, an hour of grace, a minute before eviction, about 290 MB
-    /// of ids, and an untrack of at most about 30 ms a block: three keys at the loader's
-    /// default per-key cap.
+    /// of ids, and an untrack of at most about 15 ms a block: three keys at the loader's
+    /// default per-key cap (about 8 ms), or about 10k balance-only keys.
     pub const DEFAULT: Self = Self {
         window: 720,
         grace: Duration::from_secs(60 * 60),
         evict_after: Duration::from_secs(60),
         max_tracked_units: 2_000_000,
-        untrack_boxes_per_block: 50_000,
+        untrack_units_per_block: 50_000,
     };
 }
 
@@ -144,6 +148,10 @@ pub struct Engine {
     next_id: u32,
     /// Tracked keys, in the order messages go out in.
     ids: BTreeMap<TrackingKey, KeyId>,
+    /// The keys tracked with their boxes, in the same order: the ones a block sends a
+    /// `Block` to, walked apart so a block does not walk balance-only keys, which get none.
+    /// Their trees are shared with `ids`, not copied.
+    box_keys: BTreeMap<TrackingKey, KeyId>,
     /// The balance-only keys, by tree: how a block's inputs find them, since they hold no
     /// boxes in the reverse index.
     balance_trees: HashMap<ErgoTree, KeyId>,
@@ -178,6 +186,7 @@ impl Engine {
             seq: 0,
             next_id: 0,
             ids: BTreeMap::new(),
+            box_keys: BTreeMap::new(),
             balance_trees: HashMap::new(),
             charges: 0,
             keys: HashMap::new(),
@@ -446,16 +455,19 @@ impl Engine {
         delta.boxes.retain(|id, _| referenced.contains(id));
 
         let mut outputs = Vec::new();
-        let mut dropped = Vec::new();
-        for (key, key_id) in &self.ids {
-            if mismatched.contains(key_id) {
+        // A `Block` for every key with boxes, and a resync for every balance-only key whose
+        // totals the block could not take, merged in key order.
+        let dropped: Vec<TrackingKey> = mismatched
+            .iter()
+            .map(|id| self.keys[id].key.clone())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        let mut resyncs = dropped.iter().peekable();
+        for (key, key_id) in &self.box_keys {
+            while let Some(resync) = resyncs.next_if(|k| *k < key) {
                 let reason = ResyncReason::BalanceMismatch;
-                outputs.push(Output::ResyncRequired { key: key.clone(), reason });
-                dropped.push(key.clone());
-                continue;
-            }
-            if self.keys[key_id].balance_only {
-                continue;
+                outputs.push(Output::ResyncRequired { key: resync.clone(), reason });
             }
             let key_delta = delta.keys.get(key_id);
             outputs.push(Output::Block {
@@ -465,6 +477,10 @@ impl Engine {
                 created: key_delta.map_or_else(Vec::new, |d| created_boxes(&delta, d)),
                 spent: key_delta.map_or_else(Vec::new, |d| d.spent.clone()),
             });
+        }
+        for resync in resyncs {
+            let reason = ResyncReason::BalanceMismatch;
+            outputs.push(Output::ResyncRequired { key: resync.clone(), reason });
         }
 
         self.orphans.remove(&block_ref.header_id);
@@ -480,15 +496,15 @@ impl Engine {
         // Untrack idle keys before deciding the overlays: their boxes are no longer checked.
         // Least recently active first, within the block's budget.
         let grace = millis(self.config.grace);
-        let budget = self.config.untrack_boxes_per_block;
+        let budget = self.config.untrack_units_per_block;
         let (mut keys, mut untracked) = (0, 0);
         let idle: Vec<TrackingKey> = self
             .idle
             .iter()
             .take_while(|&(&(last_seen_ms, _), _)| self.now_ms.saturating_sub(last_seen_ms) > grace)
-            .take_while(|&(_, &boxes)| {
+            .take_while(|&((_, id), &boxes)| {
                 keys += 1;
-                untracked += boxes;
+                untracked += boxes + self.keys[id].charge;
                 keys == 1 || untracked <= budget
             })
             .map(|((_, id), _)| self.keys[id].key.clone())
@@ -708,6 +724,7 @@ impl Engine {
         }
         self.charges += charge;
         self.ids.insert(key.clone(), key_id);
+        self.box_keys.insert(key.clone(), key_id);
         self.keys.insert(key_id, state);
 
         // The key's boxes are now checked against its set, which can leave txs out.
@@ -854,7 +871,9 @@ impl Engine {
     fn capacity(&self, key: &TrackingKey, up_to: usize) -> Capacity {
         let (tracked, max) = (self.units(), self.config.max_tracked_units);
         let charge = key_charge(key, 0);
-        let needed = tracked.saturating_add(up_to + charge).saturating_sub(max);
+        let needed = tracked
+            .saturating_add(up_to.saturating_add(charge))
+            .saturating_sub(max);
         let mut evictable = 0;
         if needed > 0 {
             for (_, _, units) in self.evictable() {
@@ -924,6 +943,7 @@ impl Engine {
             let Some(key_id) = self.ids.remove(key) else {
                 continue;
             };
+            self.box_keys.remove(key);
             let state = self.keys.remove(&key_id).expect("an id is tracked");
             self.idle.remove(&(state.last_seen_ms, key_id));
             self.charges -= state.charge;

@@ -18,11 +18,12 @@
 //!
 //! `balance` tracks synthetic addresses balance-only, each holding ERG and `<tokens-per-key>`
 //! distinct tokens (default two), and reports the growth per key and what an empty block then
-//! takes, in microseconds: a block walks every key, so that time grows with them. A key's
-//! running totals keep one entry per token it holds, so runs at several token counts give
-//! the cost of a key with none and the cost of each token. Its trees are P2PK ones (36
-//! bytes) unless `<tree-bytes>` asks for longer ones, as a contract's (P2S) are: the engine
-//! keeps a key's tree in several places, so their length counts more than once.
+//! takes, in microseconds: a block walks only the keys with boxes, so with balance-only keys
+//! alone that time should stay near zero however many there are. A key's running totals keep
+//! one entry per token it holds, so runs at several token counts give the cost of a key with
+//! none and the cost of each token. Its trees are P2PK ones (36 bytes) unless `<tree-bytes>`
+//! asks for longer ones, as a contract's (P2S) are: the engine shares one copy of a key's
+//! tree among its maps, so a byte of tree should cost about a byte.
 //!
 //! `connections` opens WebSocket connections to the relay over a `SimChain`, served in this
 //! process, and reports what each one costs the relay; with `<keys>`, each connection then
@@ -175,7 +176,9 @@ fn balance(keys: usize, tokens: usize, tree_bytes: usize) {
         HexBytes::from(bytes)
     };
 
-    let mut engine = Engine::new(Config::DEFAULT);
+    // Room for every key: the cap counts each one's charge.
+    let charge = key_charge(&TrackingKey::Tree(tree(0)), tokens);
+    let mut engine = Engine::new(Config { max_tracked_units: keys * charge, ..Config::DEFAULT });
     let header = |height: u32| BlockHeader {
         id: digest(u64::MAX - u64::from(1_000_000 - height)),
         parent_id: digest(u64::MAX - u64::from(1_000_000 - height) + 1),

@@ -261,7 +261,7 @@ impl Config {
                 evict_after: engine_defaults.evict_after,
                 // Not a setting either: it bounds a block's time, which no deployment wants
                 // longer.
-                untrack_boxes_per_block: engine_defaults.untrack_boxes_per_block,
+                untrack_units_per_block: engine_defaults.untrack_units_per_block,
                 max_tracked_units: at_least_one(
                     keys::MAX_TRACKED_UNITS,
                     file.max_tracked_units,

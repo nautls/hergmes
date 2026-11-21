@@ -24,7 +24,7 @@ const CONFIG: Config = Config {
     grace: Duration::from_secs(3),
     evict_after: Duration::from_secs(2),
     max_tracked_units: 20,
-    untrack_boxes_per_block: 3,
+    untrack_units_per_block: 15,
 };
 const MAX_ADVANCE_SECS: u8 = 2;
 const MAX_REORG: u8 = 5;
@@ -426,8 +426,9 @@ impl Harness {
         }
 
         // Idle keys go, least recently active and then oldest load first, until the block's
-        // budget of boxes is spent: the first always goes, a later one only if it fits, and
-        // none after one that does not. Keys with subscribers or recent activity stay.
+        // budget of units is spent, a key counting its boxes and its charge: the first always
+        // goes, a later one only if it fits, and none after one that does not. Keys with
+        // subscribers or recent activity stay.
         let grace = CONFIG.grace.as_millis() as u64;
         let now = self.now;
         let oracle = self.oracle();
@@ -435,20 +436,27 @@ impl Harness {
             .keys
             .iter()
             .filter(|(_, m)| m.subscribers == 0 && now - m.last_seen > grace)
-            .map(|(k, m)| (m.last_seen, m.epoch, k.clone(), self.held(&oracle, k, block.height)))
+            .map(|(k, m)| {
+                let units = self.held(&oracle, k, block.height) + m.charge;
+                (m.last_seen, m.epoch, k.clone(), units)
+            })
             .collect();
         idle.sort();
         let mut untracked = 0;
-        for (i, (_, _, key, boxes)) in idle.into_iter().enumerate() {
-            if i > 0 && untracked + boxes > CONFIG.untrack_boxes_per_block {
+        for (i, (_, _, key, units)) in idle.into_iter().enumerate() {
+            if i > 0 && untracked + units > CONFIG.untrack_units_per_block {
                 self.seen
                     .insert("idle key kept past grace: the block's budget was spent");
                 break;
             }
-            untracked += boxes;
+            untracked += units;
             self.keys.remove(&key);
             self.seen.insert("idle key untracked");
-            if boxes > CONFIG.untrack_boxes_per_block {
+            if i > 0 {
+                self.seen
+                    .insert("idle keys untracked together in one block");
+            }
+            if units > CONFIG.untrack_units_per_block {
                 self.seen
                     .insert("idle key over the block's budget untracked alone");
             }
@@ -1275,6 +1283,12 @@ impl Harness {
             })
             .collect();
         assert_eq!(trees, expected_trees, "balance-only trees");
+        // The keys a block walks for its `Block` messages are exactly the keys with boxes.
+        let walked: Vec<&TrackingKey> = self.engine.box_keys.keys().collect();
+        assert_eq!(walked, self.box_keys().iter().collect::<Vec<_>>(), "keys with boxes");
+        for (key, id) in &self.engine.box_keys {
+            assert_eq!(self.engine.ids.get(key), Some(id), "{key:?}'s id");
+        }
         for delta in self.engine.ring.iter().chain(self.engine.orphans.values()) {
             for key_id in delta.keys.keys().chain(delta.balances.keys()) {
                 assert!(self.engine.keys.contains_key(key_id), "a share of an untracked key");
@@ -1605,6 +1619,7 @@ fn random_histories_reach_the_hard_engine_cases() {
         "idle key untracked",
         "idle key kept past grace: the block's budget was spent",
         "idle key over the block's budget untracked alone",
+        "idle keys untracked together in one block",
         "idle key evicted for a load",
         "idle key kept: the load fit without it",
         "load refused at the cap",
@@ -1894,23 +1909,63 @@ fn a_catch_up_from_a_block_resyncs_a_balance_only_key() {
 }
 
 /// A balance-only key that started from a wrong balance resyncs when a block spends more
-/// than it holds, and is untracked; one that never meets such a block keeps it, and a load
-/// of its boxes corrects it, sending the balance its boxes give.
+/// than it holds, and is untracked. A block walks only the keys with boxes, so the resyncs
+/// are merged among their blocks in key order, the first key's and the last's included.
 #[test]
-fn a_wrong_starting_balance_resyncs_at_an_overspend_and_a_load_corrects_it() {
+fn a_wrong_starting_balance_resyncs_at_an_overspend_in_key_order() {
     let mut f = Fixture::new(Config::default());
-    let (zero, one) = (f.key(0), f.key(1));
-    f.load_balance(&zero, Totals::default());
-    let short = Totals { nano_ergs: f.totals(&one).nano_ergs - 1, ..f.totals(&one) };
-    f.load_balance(&one, short);
-
-    let source = sim::testing::box_of(&f.chain, 0);
-    let tx = f.chain.transfer(&[source], &f.chain.trees()[2].clone());
-    let outputs = f.mine(vec![tx]);
+    // The first and the last address in key order start from nothing and are overspent; the
+    // ones between are tracked with their boxes, so the resyncs go out before and after
+    // their blocks.
+    let mut trees: Vec<usize> = (0..f.chain.trees().len()).collect();
+    trees.sort_by_key(|&t| f.key(t));
+    let (first, last) = (trees[0], *trees.last().expect("trees"));
+    let middle = &trees[1..trees.len() - 1];
+    assert!(middle.len() >= 2);
+    let (low, high) = (f.key(first), f.key(last));
+    f.load_balance(&low, Totals::default());
+    f.load_balance(&high, Totals::default());
+    for &t in middle {
+        let key = f.key(t);
+        f.load(&key);
+    }
+    let spend = |f: &mut Fixture, t: usize| {
+        let source = sim::testing::box_of(&f.chain, t);
+        let to = f.chain.trees()[middle[0]].clone();
+        f.chain.transfer(&[source], &to)
+    };
+    let txs = vec![spend(&mut f, first), spend(&mut f, last)];
+    let outputs = f.mine(txs);
+    let mut expected: Vec<(&str, TrackingKey)> =
+        middle.iter().map(|&t| ("block", f.key(t))).collect();
+    expected.push(("resync", low.clone()));
+    expected.push(("resync", high.clone()));
+    expected.sort_by(|a, b| a.1.cmp(&b.1));
+    let rank0: Vec<_> = kinds(&outputs)
+        .into_iter()
+        .filter(|(k, _)| matches!(*k, "block" | "resync"))
+        .collect();
+    assert_eq!(rank0, expected, "in key order");
     let reason = ResyncReason::BalanceMismatch;
-    assert_eq!(outputs, [Output::ResyncRequired { key: zero.clone(), reason }]);
-    assert!(!f.engine.is_tracked(&zero));
+    for key in [&low, &high] {
+        assert_eq!(
+            find(&outputs, "resync", key),
+            &Output::ResyncRequired { key: key.clone(), reason }
+        );
+        assert!(!f.engine.is_tracked(key));
+    }
     assert!(f.engine.ring.iter().all(|d| d.balances.is_empty()));
+}
+
+/// A balance-only key that started a little high is never overspent, so it keeps the error;
+/// a load of its boxes corrects it, and sends the balance its boxes give.
+#[test]
+fn a_load_of_its_boxes_corrects_a_balance_only_key() {
+    let mut f = Fixture::new(Config::default());
+    let one = f.key(1);
+    let high = Totals { nano_ergs: f.totals(&one).nano_ergs + 1, ..f.totals(&one) };
+    f.load_balance(&one, high.clone());
+    assert_eq!(f.state(&one).1, Some(high));
 
     let outputs = f.load(&one);
     let Output::Balance { balance, .. } = find(&outputs, "balance", &one) else { unreachable!() };

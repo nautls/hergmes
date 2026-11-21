@@ -26,10 +26,10 @@
 use std::time::{Duration, Instant};
 
 use hergmes::{
-    engine::{Config, Engine, Event, Query, Reply},
+    engine::{Config, Engine, Event, Query, Reply, TrackingKey, key_charge},
     types::ergo::IndexedBlock,
 };
-use support::{FIRST, block, load};
+use support::{FIRST, block, load, tree};
 
 mod support;
 
@@ -39,7 +39,7 @@ fn main() {
         .map(|a| a.parse().unwrap_or_else(|_| usage()))
         .collect();
     let budget = match args.len() {
-        5 => Config::DEFAULT.untrack_boxes_per_block,
+        5 => Config::DEFAULT.untrack_units_per_block,
         6 => args[5],
         _ => usage(),
     };
@@ -97,10 +97,15 @@ fn run(
     budget: usize,
 ) {
     let config = Config {
-        untrack_boxes_per_block: budget,
-        // Room for every key and the ring's boxes: nothing is evicted, so the sweep alone
-        // untracks.
-        max_tracked_units: active_keys * active_boxes + idle_keys * idle_boxes + 4 * ring + 16,
+        untrack_units_per_block: budget,
+        // Room for every key, its charge included, and the ring's boxes: nothing is evicted,
+        // so the sweep alone untracks. A P2PK key with no token is charged the most a load
+        // here is.
+        max_tracked_units: (active_keys + idle_keys) * key_charge(&TrackingKey::Tree(tree(0)), 0)
+            + active_keys * active_boxes
+            + idle_keys * idle_boxes
+            + 4 * ring
+            + 16,
         ..Config::DEFAULT
     };
     let grace = config.grace;
