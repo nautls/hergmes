@@ -151,7 +151,10 @@ impl SimRelay {
                 BoxFetcher::new(sim.clone(), cache),
             )
             .waiting_for(Settled::now()),
-            balances: Balances::new(sim.clone(), balances::Config { attempts: 3, retry: RETRY }),
+            balances: Balances::new(
+                sim.clone(),
+                balances::Config { give_up_after: 3 * RETRY, retry: RETRY, poll: RETRY },
+            ),
             history: History::new(sim.clone(), history::Config { attempts: 3, retry: RETRY }),
             headers: Headers::new(HeaderReader::new(sim.clone(), follower.headers())),
             boxes: Boxes::new(sim.clone()),

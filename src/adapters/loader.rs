@@ -23,6 +23,7 @@ use tracing::{debug, info};
 use crate::{
     adapters::{
         BoxCache, EngineGone, EngineHandle, backoff, best_full_block, engine_capacity, engine_tip,
+        polls::{Checks, Polls},
     },
     clients::{NodeError, NodeSource, Page, source::MAX_PAGE_LIMIT},
     engine::{BlockRef, Capacity, Event, LoadedBox, Output, TrackingKey},
@@ -59,8 +60,8 @@ pub struct Config {
     /// How long a key over `max_boxes` is refused without paging it again.
     pub refusal_ttl: Duration,
     /// How long [`Loader::load`] keeps trying, from the first attempt's answer: no attempt
-    /// starts past it, and one always runs. Counted from the answer, not the call, so a slow
-    /// first attempt (a large key's pages on a busy node) still gets its retries.
+    /// starts at or past it, and one always runs. Counted from the answer, not the call, so a
+    /// slow first attempt (a large key's pages on a busy node) still gets its retries.
     pub give_up_after: Duration,
     /// The wait after an attempt that paged the key and lost it ([`Attempt::TipMoved`],
     /// [`Attempt::Rejected`]): the next one is a full reload too, so it waits about a
@@ -166,66 +167,23 @@ pub struct Loader<S> {
     polls: Mutex<Polls>,
 }
 
-/// What an attempt says about the engine and the indexer keeping up with the node.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Checks {
-    /// Stopped before the pages: [`Attempt::NoTip`], [`Attempt::EngineBehind`],
-    /// [`Attempt::IndexerBehind`].
-    Behind,
-    /// Got past them, to the pages: whatever came next, the engine and the indexer were at
-    /// the node's tip.
-    Passed,
-    /// Neither: an error before or during the checks (a node `503`, a failed read), which
-    /// says nothing about them.
-    Unknown,
-}
-
-impl Checks {
-    fn of(outcome: &Result<Attempt, LoadError>) -> Self {
-        match outcome {
-            Ok(Attempt::NoTip | Attempt::EngineBehind { .. } | Attempt::IndexerBehind { .. }) => {
-                Self::Behind
-            }
-            Ok(Attempt::Tracked { .. } | Attempt::TipMoved | Attempt::Rejected)
-            | Err(
-                LoadError::TooManyBoxes { .. }
-                | LoadError::CapacityExceeded { .. }
-                | LoadError::Mismatch { .. },
-            ) => Self::Passed,
-            Err(_) => Self::Unknown,
+/// What a load attempt says about the engine and the indexer keeping up with the node:
+/// behind when it stopped before the pages ([`Attempt::NoTip`], [`Attempt::EngineBehind`],
+/// [`Attempt::IndexerBehind`]), passed when it got to them (whatever came next, the engine and
+/// the indexer were at the node's tip), and unknown for an error before or during the checks
+/// (a node `503`, a failed read).
+fn checks(outcome: &Result<Attempt, LoadError>) -> Checks {
+    match outcome {
+        Ok(Attempt::NoTip | Attempt::EngineBehind { .. } | Attempt::IndexerBehind { .. }) => {
+            Checks::Behind
         }
-    }
-}
-
-/// A run of attempts, of any load, that stopped before the pages: when it began, and when
-/// the last one did. Loads poll during its first `retry`.
-#[derive(Debug, Default)]
-struct Polls {
-    run: Option<(Instant, Instant)>,
-}
-
-impl Polls {
-    /// Records an attempt that answered at `now`, and says whether its load polls. A run
-    /// ends at an attempt that got past the checks, and lapses once no attempt was behind
-    /// for two `retry`s: past that it was no one cause seen throughout (every load gave up,
-    /// and the next to come finds a block's ordinary lag), so a new run polls again. An
-    /// error that says nothing of the checks leaves the run as it is.
-    fn record(&mut self, now: Instant, checks: Checks, retry: Duration) -> bool {
-        match checks {
-            Checks::Behind => {
-                let since = match self.run {
-                    Some((since, last)) if now - last <= 2 * retry => since,
-                    _ => now,
-                };
-                self.run = Some((since, now));
-                now - since < retry
-            }
-            Checks::Passed => {
-                self.run = None;
-                false
-            }
-            Checks::Unknown => false,
-        }
+        Ok(Attempt::Tracked { .. } | Attempt::TipMoved | Attempt::Rejected)
+        | Err(
+            LoadError::TooManyBoxes { .. }
+            | LoadError::CapacityExceeded { .. }
+            | LoadError::Mismatch { .. },
+        ) => Checks::Passed,
+        Err(_) => Checks::Unknown,
     }
 }
 
@@ -302,7 +260,7 @@ impl<S: NodeSource> Loader<S> {
                 .polls
                 .lock()
                 .expect("never held across a panic")
-                .record(now, Checks::of(&outcome), self.config.retry);
+                .record(now, checks(&outcome), self.config.retry);
             let (last, wait) = match outcome {
                 Ok(Attempt::Tracked { as_of, boxes }) => return Ok((as_of, boxes)),
                 Ok(outcome) => {

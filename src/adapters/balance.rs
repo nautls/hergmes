@@ -7,14 +7,20 @@
 //! delta only when that height is the engine's tip height. The node's `unconfirmed` field is
 //! never read.
 
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 use moka::future::Cache;
-use tokio::time::sleep;
+use tokio::time::{Instant, sleep};
 use tracing::debug;
 
 use crate::{
-    adapters::{EngineGone, EngineHandle, best_full_block, engine_tip},
+    adapters::{
+        EngineGone, EngineHandle, best_full_block, engine_tip,
+        polls::{Checks, Polls},
+    },
     clients::{NodeError, NodeSource},
     engine::{Event, Output, Totals, TrackingKey},
     types::ergo::{Balance, ErgoTree},
@@ -33,17 +39,51 @@ pub struct BalanceAt {
 /// How long a balance read waits for the engine and the indexer to meet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Config {
-    /// Attempts at pairing a confirmed balance with the engine's tip before giving up with
-    /// `not_ready`.
-    pub attempts: u32,
-    /// The wait between attempts: about one tick of the follower, which is what an engine a
-    /// block behind the indexer needs to catch up.
+    /// How long a read keeps trying to pair a confirmed balance with the engine's tip, from
+    /// the first attempt's answer, before giving up with `not_ready`: no attempt starts at or
+    /// past it, and one always runs. Counted from the answer, as the loader's is, so a slow
+    /// first attempt still gets its retries.
+    pub give_up_after: Duration,
+    /// The wait between attempts once the quick polls are over, and the `Retry-After` of a
+    /// `not_ready`: about one tick of the follower, which is what an engine a block behind
+    /// the indexer needs to catch up.
     pub retry: Duration,
+    /// The wait between attempts for a `retry` from the first one found behind, of any read
+    /// (see `adapters::polls`).
+    pub poll: Duration,
 }
 
 impl Default for Config {
+    /// Attempts at 0, 200, 400, 600 and 800 ms and at 1 s, then at 2 s, counted from the first
+    /// answer: a read that gives up does so 2 s after it, so a client's `not_ready` comes when
+    /// it always has.
     fn default() -> Self {
-        Self { attempts: 3, retry: Duration::from_secs(1) }
+        Self {
+            give_up_after: Duration::from_secs(3),
+            retry: Duration::from_secs(1),
+            poll: Duration::from_millis(200),
+        }
+    }
+}
+
+/// The outcome of one attempt at tracking an address balance-only.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Attempt {
+    /// The engine took the balance.
+    Tracked,
+    /// Stopped before the balance: no tip yet, or the engine or the indexer not at it.
+    Behind,
+    /// Read at a tip all three shared, then lost: the tip moved, or the engine rejected it.
+    Lost,
+}
+
+impl Attempt {
+    /// What the attempt says about the engine and the indexer keeping up with the node.
+    pub fn checks(self) -> Checks {
+        match self {
+            Self::Behind => Checks::Behind,
+            Self::Tracked | Self::Lost => Checks::Passed,
+        }
     }
 }
 
@@ -68,11 +108,24 @@ pub struct BalanceReader<S> {
     /// The balance-only loads running, by tree, so concurrent subscribes to one address read
     /// its balance once (see the loader's `loads`).
     tracks: Cache<ErgoTree, ()>,
+    /// The current run of attempts, of any read, that found the engine or the indexer behind.
+    polls: Mutex<Polls>,
 }
 
 impl<S: NodeSource> BalanceReader<S> {
     pub fn new(source: S) -> Self {
-        Self { source, tracks: Cache::builder().build() }
+        Self { source, tracks: Cache::builder().build(), polls: Mutex::new(Polls::default()) }
+    }
+
+    /// Records an attempt that answered at `now`, and says how long to wait before the next:
+    /// a `poll` during a run's first `retry`, then a `retry`.
+    pub fn wait_after(&self, now: Instant, checks: Checks, config: &Config) -> Duration {
+        let poll = self
+            .polls
+            .lock()
+            .expect("never held across a panic")
+            .record(now, checks, config.retry);
+        if poll { config.poll } else { config.retry }
     }
 
     /// The confirmed balance of `tree`, read while `indexedHeight` stayed the same. `None` if
@@ -96,8 +149,9 @@ impl<S: NodeSource> BalanceReader<S> {
     }
 
     /// Starts tracking `tree` balance-only, from its confirmed balance at the engine's tip,
-    /// trying up to `config.attempts` times. A key the engine already tracks, either way,
-    /// stays as it is. A call while another for `tree` runs waits for that one's outcome.
+    /// trying until an attempt is taken or the next would start at or past
+    /// `config.give_up_after`. A key the engine already tracks, either way, stays as it is. A
+    /// call while another for `tree` runs waits for that one's outcome.
     pub async fn track(
         &self,
         engine: &impl EngineHandle,
@@ -122,22 +176,33 @@ impl<S: NodeSource> BalanceReader<S> {
         tree: &ErgoTree,
         config: Config,
     ) -> Result<(), TrackError> {
-        for attempt in 1..=config.attempts {
-            if self.try_track(engine, tree).await? {
-                return Ok(());
+        let mut answered: Option<Instant> = None;
+        for attempt in 1.. {
+            let outcome = self.try_track(engine, tree).await?;
+            let now = Instant::now();
+            let started = *answered.get_or_insert(now);
+            let wait = self.wait_after(now, outcome.checks(), &config);
+            // A lost read ends the run, but its cause is a block that just landed: the next
+            // attempt costs one or two cheap calls and finds the engine a tick behind, which
+            // starts a new run of polls.
+            let wait = match outcome {
+                Attempt::Tracked => return Ok(()),
+                Attempt::Lost => config.poll,
+                Attempt::Behind => wait,
+            };
+            debug!(attempt, ?outcome, "Balance load not settled, retrying");
+            if now - started + wait >= config.give_up_after {
+                return Err(TrackError::NotSettled { attempts: attempt });
             }
-            debug!(attempt, "Balance load not settled, retrying");
-            if attempt < config.attempts {
-                sleep(config.retry).await;
-            }
+            sleep(wait).await;
         }
-        Err(TrackError::NotSettled { attempts: config.attempts })
+        unreachable!("the attempts run until one returns")
     }
 
     /// One attempt, with the box loader's checks: the node's tip read before and after the
     /// balance, the engine at it, and the indexer at its height. A streamed balance keeps a
     /// wrong start until a block spends past it, so a read is taken only at a tip all three
-    /// share. Whether the engine took it.
+    /// share.
     ///
     /// The confirmed balance is the indexer's running total for the address, not a sum of its
     /// boxes at the read (node 6.0.8, `BlockchainApiRoute.getAddressBalanceTotal` serves
@@ -149,19 +214,19 @@ impl<S: NodeSource> BalanceReader<S> {
         &self,
         engine: &impl EngineHandle,
         tree: &ErgoTree,
-    ) -> Result<bool, TrackError> {
+    ) -> Result<Attempt, TrackError> {
         let Some(tip) = best_full_block(&self.source.info().await?) else {
-            return Ok(false);
+            return Ok(Attempt::Behind);
         };
         if engine_tip(engine).await? != Some(tip) {
-            return Ok(false);
+            return Ok(Attempt::Behind);
         }
         if self.source.indexed_height().await?.indexed_height != tip.height {
-            return Ok(false);
+            return Ok(Attempt::Behind);
         }
         let confirmed = totals(self.source.confirmed_balance(tree).await?);
         if best_full_block(&self.source.info().await?) != Some(tip) {
-            return Ok(false);
+            return Ok(Attempt::Lost);
         }
         let event = Event::BalanceLoaded { tree: tree.clone(), as_of: tip, confirmed };
         // `BalanceLoaded` is never an `EngineError`: an off-tip load answers `LoadRejected`.
@@ -169,14 +234,14 @@ impl<S: NodeSource> BalanceReader<S> {
         let key = TrackingKey::Tree(tree.clone());
         for output in outputs.iter().filter(|o| *o.key() == key) {
             match *output {
-                Output::LoadRejected { .. } => return Ok(false),
+                Output::LoadRejected { .. } => return Ok(Attempt::Lost),
                 Output::CapacityExceeded { tracked, evictable, .. } => {
                     return Err(TrackError::CapacityExceeded { tracked, evictable });
                 }
                 _ => {}
             }
         }
-        Ok(true)
+        Ok(Attempt::Tracked)
     }
 }
 

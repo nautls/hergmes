@@ -7,7 +7,7 @@
 //! afterwards: one-off reads do not fill memory. Either way, a zero balance asks the indexer
 //! whether the address ever received a box.
 
-use tokio::time::sleep;
+use tokio::time::{Instant, sleep};
 use tracing::debug;
 
 pub use crate::adapters::balance::Config;
@@ -15,6 +15,7 @@ use crate::{
     adapters::{
         BalanceReader, EngineHandle,
         balance::{BalanceAt, TrackError, totals},
+        polls::Checks,
     },
     api::{ApiError, history::pending_txs},
     clients::NodeSource,
@@ -129,7 +130,8 @@ impl<S: NodeSource> Balances<S> {
     ///
     /// An engine behind keeps the confirmed read and waits for the engine to reach it, so a
     /// retry is one engine query, not three more node calls. An engine ahead, or an indexer
-    /// that kept moving, reads the indexer again.
+    /// that kept moving, reads the indexer again. Halves at different heights are a block's
+    /// lag, so the attempts poll as a track's do, sharing its run.
     async fn untracked(
         &self,
         engine: &impl EngineHandle,
@@ -137,7 +139,8 @@ impl<S: NodeSource> Balances<S> {
     ) -> Result<Halves, ApiError> {
         let key = TrackingKey::Tree(tree.clone());
         let mut read: Option<BalanceAt> = None;
-        for attempt in 1..=self.config.attempts {
+        let mut answered: Option<Instant> = None;
+        for attempt in 1.. {
             if read.is_none() {
                 read = self
                     .reader
@@ -150,6 +153,8 @@ impl<S: NodeSource> Balances<S> {
                 let engine_height = pending.as_ref().map(|p| p.as_of.height);
                 match pending {
                     Some(p) if p.as_of.height == indexed => {
+                        self.reader
+                            .wait_after(Instant::now(), Checks::Passed, &self.config);
                         let BalanceAt { height, confirmed } = read.expect("read above");
                         return Ok(Halves {
                             height,
@@ -169,9 +174,13 @@ impl<S: NodeSource> Balances<S> {
                     "Balance halves at different heights, trying again"
                 );
             }
-            if attempt < self.config.attempts {
-                sleep(self.config.retry).await;
+            let now = Instant::now();
+            let started = *answered.get_or_insert(now);
+            let wait = self.reader.wait_after(now, Checks::Behind, &self.config);
+            if now - started + wait >= self.config.give_up_after {
+                break;
             }
+            sleep(wait).await;
         }
         Err(ApiError::NotReady { retry_after: self.config.retry })
     }

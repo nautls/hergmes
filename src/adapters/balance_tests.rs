@@ -77,8 +77,11 @@ async fn an_indexer_that_keeps_moving_gives_no_balance() {
 mod track {
     use std::sync::Mutex;
 
+    use tokio::time::Instant;
+
     use super::super::*;
     use crate::{
+        adapters::polls::Checks,
         engine::{Config as EngineConfig, Engine, Query, Reply, TrackingKey},
         sim::{
             Endpoint, SimChain,
@@ -114,7 +117,7 @@ mod track {
         let sim = SimChain::new(chain);
         let tree = sim.lock().trees()[0].clone();
         let reader = BalanceReader::new(sim.clone());
-        assert!(ready(reader.try_track(&engine, &tree)).unwrap());
+        assert_eq!(ready(reader.try_track(&engine, &tree)).unwrap(), Attempt::Tracked);
         let expected = {
             let chain = sim.lock();
             chain
@@ -140,7 +143,8 @@ mod track {
         let sim = SimChain::new(chain);
         let tree = sim.lock().trees()[0].clone();
         let reader = BalanceReader::new(sim.clone());
-        assert!(!ready(reader.try_track(&engine, &tree)).unwrap());
+        let attempt = ready(reader.try_track(&engine, &tree)).unwrap();
+        assert_eq!((attempt, attempt.checks()), (Attempt::Behind, Checks::Behind));
         assert_eq!(count(&sim, Endpoint::ConfirmedBalance), 0);
         assert_eq!(tracked(&engine, &tree), None);
     }
@@ -158,7 +162,8 @@ mod track {
             }
         });
         let reader = BalanceReader::new(sim.clone());
-        assert!(!ready(reader.try_track(&engine, &tree)).unwrap());
+        let attempt = ready(reader.try_track(&engine, &tree)).unwrap();
+        assert_eq!((attempt, attempt.checks()), (Attempt::Lost, Checks::Passed));
         assert_eq!(tracked(&engine, &tree), None);
     }
 
@@ -179,7 +184,8 @@ mod track {
             }
         });
         let reader = BalanceReader::new(sim.clone());
-        assert!(!ready(reader.try_track(&*engine, &tree)).unwrap());
+        let attempt = ready(reader.try_track(&*engine, &tree)).unwrap();
+        assert_eq!((attempt, attempt.checks()), (Attempt::Lost, Checks::Passed));
         assert_eq!(tracked(&engine, &tree), None);
     }
 
@@ -202,5 +208,137 @@ mod track {
             "{refused:?}"
         );
         assert_eq!(tracked(&engine, &tree), None);
+    }
+
+    /// An engine a block behind the node: the follower has not ticked yet.
+    fn behind() -> (SimChain, Mutex<Engine>) {
+        let chain = new_chain();
+        let engine = synced_engine(&chain);
+        let sim = SimChain::new(chain);
+        sim.lock().mine(0, 1, 1);
+        (sim, engine)
+    }
+
+    fn catch_up(sim: &SimChain, engine: &Mutex<Engine>) {
+        let block = {
+            let chain = sim.lock();
+            chain.oracle().indexed_block(chain.height())
+        };
+        engine
+            .lock()
+            .unwrap()
+            .apply(Event::BlockApplied(block))
+            .unwrap();
+    }
+
+    /// Right after a block the engine trails the node by up to a follower tick: a track
+    /// polls, so it settles within a `poll` of the engine catching up, not a `retry`.
+    #[tokio::test(start_paused = true)]
+    async fn a_track_settles_within_a_poll_of_the_engine_catching_up() {
+        let (sim, engine) = behind();
+        let tree = sim.lock().trees()[0].clone();
+        let reader = BalanceReader::new(sim.clone());
+        let config = Config::default();
+        let started = Instant::now();
+        let track = reader.track(&engine, &tree, config);
+        let tick = async {
+            sleep(Duration::from_millis(300)).await;
+            catch_up(&sim, &engine);
+        };
+        let (tracked_now, ()) = tokio::join!(track, tick);
+        tracked_now.unwrap();
+        assert_eq!(started.elapsed(), 2 * config.poll, "the poll after the catch-up");
+        assert!(tracked(&engine, &tree).is_some());
+    }
+
+    /// The quick polls last a `retry`: an engine or indexer still behind after that is no
+    /// block's first second, so the track falls back to one attempt a `retry`.
+    #[tokio::test(start_paused = true)]
+    async fn a_track_polls_for_a_retry_then_waits_retries() {
+        let (sim, engine) = behind();
+        let tree = sim.lock().trees()[0].clone();
+        let reader = BalanceReader::new(sim.clone());
+        let config = Config::default();
+        let started = Instant::now();
+        let error = reader.track(&engine, &tree, config).await.unwrap_err();
+        // Polls at 0, 200, 400, 600 and 800 ms and at 1 s, then a retry at 2 s; a third
+        // retry would start at 3 s.
+        assert!(matches!(*error, TrackError::NotSettled { attempts: 7 }), "{error:?}");
+        assert_eq!(count(&sim, Endpoint::Info), 7);
+        assert_eq!(started.elapsed(), Duration::from_secs(2), "no wait after the last");
+    }
+
+    /// The run of polls is the reader's, not one track's: a later track, of the same address
+    /// or another, finds the run over and waits retries.
+    #[tokio::test(start_paused = true)]
+    async fn later_tracks_share_the_run_of_polls() {
+        let (sim, engine) = behind();
+        let trees = sim.lock().trees()[..2].to_vec();
+        let reader = BalanceReader::new(sim.clone());
+        let config = Config::default();
+        let attempts = |error: Arc<TrackError>| match *error {
+            TrackError::NotSettled { attempts } => attempts,
+            ref other => panic!("{other:?}"),
+        };
+        let first = reader.track(&engine, &trees[0], config).await.unwrap_err();
+        assert_eq!(attempts(first), 7);
+        let again = reader.track(&engine, &trees[0], config).await.unwrap_err();
+        assert_eq!(attempts(again), 3, "retries only, at 0, 1 and 2 s");
+        let other = reader.track(&engine, &trees[1], config).await.unwrap_err();
+        assert_eq!(attempts(other), 3);
+    }
+
+    /// A track that settles ends the run of polls: the next block's lag is a new run, polled
+    /// from its start, even within two `retry`s of the last one.
+    #[tokio::test(start_paused = true)]
+    async fn a_settled_track_ends_the_run_of_polls() {
+        let (sim, engine) = behind();
+        let trees = sim.lock().trees()[..2].to_vec();
+        let reader = BalanceReader::new(sim.clone());
+        let config = Config::default();
+        let track_after_a_block = async |tree: &ErgoTree| {
+            let started = Instant::now();
+            let tick = async {
+                sleep(Duration::from_millis(300)).await;
+                catch_up(&sim, &engine);
+            };
+            let (tracked_now, ()) = tokio::join!(reader.track(&engine, tree, config), tick);
+            tracked_now.unwrap();
+            started.elapsed()
+        };
+        assert_eq!(track_after_a_block(&trees[0]).await, 2 * config.poll);
+        sleep(Duration::from_millis(1_100)).await;
+        sim.lock().mine(0, 1, 1);
+        assert_eq!(track_after_a_block(&trees[1]).await, 2 * config.poll, "a new run");
+    }
+
+    /// A read lost to a block that landed during it: the engine is a tick behind from then
+    /// on, so the track polls rather than waits a `retry`.
+    #[tokio::test(start_paused = true)]
+    async fn a_lost_read_is_followed_by_polls() {
+        let chain = new_chain();
+        let engine = synced_engine(&chain);
+        let sim = SimChain::new(chain);
+        let tree = sim.lock().trees()[0].clone();
+        let mined = std::sync::atomic::AtomicBool::new(false);
+        sim.on_call(move |endpoint, chain| {
+            if endpoint == Endpoint::ConfirmedBalance
+                && !mined.swap(true, std::sync::atomic::Ordering::Relaxed)
+            {
+                chain.mine(0, 1, 1);
+            }
+        });
+        let reader = BalanceReader::new(sim.clone());
+        let config = Config::default();
+        let started = Instant::now();
+        let tick = async {
+            sleep(Duration::from_millis(300)).await;
+            catch_up(&sim, &engine);
+        };
+        let (tracked_now, ()) = tokio::join!(reader.track(&engine, &tree, config), tick);
+        tracked_now.unwrap();
+        // Lost at 0, behind at 200 ms, tracked at 400 ms.
+        assert_eq!(started.elapsed(), 2 * config.poll);
+        assert!(tracked(&engine, &tree).is_some());
     }
 }

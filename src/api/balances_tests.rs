@@ -34,7 +34,11 @@ const ENGINE: EngineConfig =
     EngineConfig { window: 4, grace: crate::sim::testing::blocks(2), ..EngineConfig::DEFAULT };
 const MAX_REORG: u8 = 5;
 const CASES: u32 = 500;
-const CONFIG: Config = Config { attempts: 3, retry: Duration::from_secs(1) };
+const CONFIG: Config = Config {
+    give_up_after: Duration::from_secs(3),
+    retry: Duration::from_secs(1),
+    poll: Duration::from_millis(200),
+};
 
 /// An engine that keeps the last `balance` streamed for each key, as a subscriber would.
 struct Recording {
@@ -772,14 +776,16 @@ async fn an_engine_a_block_behind_is_waited_for() {
     let f = Fixture::new();
     f.mine_tx();
     let tree = f.tree(0);
+    let started = tokio::time::Instant::now();
     let read = f.balances.balance(&f.engine, &tree);
     let catch_up = async {
-        tokio::time::sleep(CONFIG.retry / 2).await;
+        tokio::time::sleep(Duration::from_millis(500)).await;
         f.apply_tip();
     };
     let (balance, ()) = tokio::join!(read, catch_up);
     assert_eq!(balance.unwrap(), f.expected(0));
     assert_eq!(f.balance_calls(), 1, "the confirmed read is kept while the engine catches up");
+    assert_eq!(started.elapsed(), 3 * CONFIG.poll, "the poll after the catch-up");
 }
 
 #[tokio::test(start_paused = true)]
@@ -789,7 +795,9 @@ async fn an_engine_that_stays_behind_is_not_ready() {
     let started = tokio::time::Instant::now();
     let error = f.balances.balance(&f.engine, &f.tree(0)).await.unwrap_err();
     assert_eq!(error, ApiError::NotReady { retry_after: CONFIG.retry });
-    assert_eq!(started.elapsed(), CONFIG.retry * (CONFIG.attempts - 1), "no wait after the last");
+    // Polls at 0, 200, 400, 600 and 800 ms and at 1 s, then a retry at 2 s; the next would
+    // start at 3 s.
+    assert_eq!(started.elapsed(), Duration::from_secs(2), "no wait after the last");
     assert_eq!(f.balance_calls(), 1);
 }
 
