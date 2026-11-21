@@ -28,7 +28,7 @@
 //! off a key loaded again since.
 
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap},
+    collections::{BTreeMap, HashMap},
     sync::{
         Arc, OnceLock,
         atomic::{AtomicU64, Ordering},
@@ -392,18 +392,25 @@ impl EngineTask {
     }
 }
 
+/// A live subscription, as routing needs it.
 struct Registered {
-    key: TrackingKey,
+    id: SubscriptionId,
     sink: Sink,
     balance_only: bool,
 }
 
-/// The live subscriptions, by id and by key.
+/// The live subscriptions: each key's, with their sinks, and each subscription's key. Routing
+/// finds a key's sinks in one lookup: with a lookup by id per subscriber too, a block's
+/// output to every tracked key cost twice the cache misses.
+///
+/// A key's subscriptions are a `Vec` in id order (ids only grow, so a new one goes last): a
+/// key rarely has more than one or two, which a map would hold in a node of its own, eleven
+/// entries wide, a dozen times the memory.
 #[derive(Default)]
 struct Router {
     next: u64,
-    subscriptions: BTreeMap<SubscriptionId, Registered>,
-    by_key: HashMap<TrackingKey, BTreeSet<SubscriptionId>>,
+    keys: BTreeMap<SubscriptionId, TrackingKey>,
+    by_key: HashMap<TrackingKey, Vec<Registered>>,
 }
 
 impl Router {
@@ -432,9 +439,12 @@ impl Router {
         }
         let id = SubscriptionId(self.next);
         self.next += 1;
-        self.by_key.entry(key.clone()).or_default().insert(id);
-        self.subscriptions
-            .insert(id, Registered { key, sink, balance_only: from.is_none() });
+        // Room for one: most keys never get a second, and an empty `Vec` grows to four.
+        self.by_key
+            .entry(key.clone())
+            .or_insert_with(|| Vec::with_capacity(1))
+            .push(Registered { id, sink, balance_only: from.is_none() });
+        self.keys.insert(id, key);
         Subscription::Live { id, catch_up }
     }
 
@@ -447,26 +457,29 @@ impl Router {
     /// Drops a subscription from the registry, without telling the engine. Its key, if it was
     /// registered.
     fn end(&mut self, id: SubscriptionId) -> Option<TrackingKey> {
-        let registered = self.subscriptions.remove(&id)?;
-        if let Some(ids) = self.by_key.get_mut(&registered.key) {
-            ids.remove(&id);
-            if ids.is_empty() {
-                self.by_key.remove(&registered.key);
+        let key = self.keys.remove(&id)?;
+        if let Some(subscribers) = self.by_key.get_mut(&key) {
+            subscribers.retain(|registered| registered.id != id);
+            if subscribers.is_empty() {
+                self.by_key.remove(&key);
             }
         }
-        Some(registered.key)
+        Some(key)
     }
 
     /// Ends every subscription whose receiver was dropped. Routing notices a closed sink
     /// only when it sends to it, which a balance-only subscription to a quiet key never
-    /// gets, and its count would keep the key tracked for good.
+    /// gets, and its count would keep the key tracked for good. They end in id order, as the
+    /// keys' map would not give them, so the engine gets the same events on every run.
     fn sweep(&mut self, engine: &mut Engine) {
-        let closed: Vec<SubscriptionId> = self
-            .subscriptions
-            .iter()
-            .filter(|(_, registered)| registered.sink.is_closed())
-            .map(|(id, _)| *id)
+        let mut closed: Vec<SubscriptionId> = self
+            .by_key
+            .values()
+            .flatten()
+            .filter(|registered| registered.sink.is_closed())
+            .map(|registered| registered.id)
             .collect();
+        closed.sort_unstable();
         for id in closed {
             debug!(?id, "Subscriber left, ending it");
             self.unsubscribe(engine, id);
@@ -482,7 +495,7 @@ impl Router {
                 unrouted.push(output);
                 continue;
             }
-            let Some(ids) = self.by_key.get(output.key()) else {
+            let Some(subscribers) = self.by_key.get(output.key()) else {
                 continue;
             };
             let resync = matches!(output, Output::ResyncRequired { .. });
@@ -491,8 +504,7 @@ impl Router {
             let mut output = Some(output);
             let mut shared: Option<Arc<Routed>> = None;
             let mut ended = Vec::new();
-            for id in ids {
-                let registered = &self.subscriptions[id];
+            for registered in subscribers {
                 if registered.balance_only && !balance && !resync {
                     continue;
                 }
@@ -500,14 +512,16 @@ impl Router {
                     Arc::new(Routed::new(output.take().expect("moved only once")))
                 });
                 if let Err(error) = registered.sink.try_send(shared.clone()) {
-                    debug!(?id, key = ?registered.key, %error, "Subscriber can't take more, ending it");
-                    ended.push(*id);
+                    let key = shared.output.key();
+                    let id = registered.id;
+                    debug!(?id, ?key, %error, "Subscriber can't take more, ending it");
+                    ended.push(id);
                 }
             }
             if resync {
                 // The engine untracked the key: every subscription to it ends, and none is
                 // in the engine's count any more.
-                ended.extend(ids.iter().copied());
+                ended.extend(subscribers.iter().map(|registered| registered.id));
             }
             for id in ended {
                 if let Some(key) = self.end(id)
