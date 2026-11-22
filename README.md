@@ -173,7 +173,7 @@ The relay has not been run above the default cap, so a higher one is not yet tes
 | `GET /v1/addresses/{address}/transactions`    | An address's txs, newest first, pending on top    |
 | `GET /v1/headers`                             | The last block headers up to the tip, for signing |
 | `GET /v1/boxes/{boxId}`                       | One box, if a tx can spend it now                 |
-| `GET /v1/tokens/metadata?ids={tokenId},...`   | Tokens' names, decimals and emissions             |
+| `GET /v1/tokens/metadata?ids={tokenId},...`   | Tokens' names, decimals, emissions and artwork    |
 | `POST /v1/transactions`                       | Send a signed tx, or only check it                |
 | `GET /v1/status`                              | Version, network, tip and readiness               |
 
@@ -223,8 +223,13 @@ and each once. A token the indexer does not know is left out, so a request is ne
 unknown id. `name`, `description` and `decimals` are what the minter wrote in the minting box's
 R4 to R6 (EIP-4), read by the node: anyone can mint a token named like another, so they say
 nothing about who issued it. `mintingBoxId` is the first output of the minting tx holding the
-token, not the token id. No `ids`, or more than 100, is `400 invalid_ids`. Any token can be
-named: the key policy and the supply limit do not apply.
+token, not the token id. The relay reads R7 to R9 from the minting box itself, as the node does
+not: `type` names R7's registered type (`nft-picture`, `nft-audio`, `nft-video`,
+`nft-artwork-collection`, `nft-file-attachments`, `nft` for an NFT of no registered subcategory,
+`membership-threshold-signature`). A picture, audio, video or plain `nft` also has `artworkHash`
+(R8, a SHA-256 in hex), `artworkUrl` and `artworkCover` (R9, a link or a link and a cover). Each
+is left out when absent or not of its EIP-4 type. No `ids`, or more than 100, is `400
+invalid_ids`. Any token can be named: the key policy and the supply limit do not apply.
 
 `POST /v1/transactions` takes a signed tx serialized to hex (Fleet SDK's `serializeTransaction`) as
 a `text/plain` body (a JSON string is taken too, as by the node), at most 196,608 characters (the

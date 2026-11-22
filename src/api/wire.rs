@@ -308,13 +308,26 @@ struct WireToken<'a>(&'a TokenMetadata);
 impl Serialize for WireToken<'_> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let t = self.0;
-        let mut s = serializer.serialize_struct("Token", 6)?;
+        let mut s = serializer.serialize_struct("Token", 10)?;
         s.serialize_field("tokenId", &t.id)?;
         s.serialize_field("mintingBoxId", &t.minting_box_id)?;
         s.serialize_field("name", &t.name)?;
         s.serialize_field("description", &t.description)?;
         s.serialize_field("decimals", &t.decimals)?;
         s.serialize_field("emission", &Amount(t.emission))?;
+        // Each EIP-4 field is left out when absent, as most tokens have none.
+        if let Some(asset) = &t.asset {
+            s.serialize_field("type", asset.asset_type.as_str())?;
+            if let Some(hash) = &asset.artwork_hash {
+                s.serialize_field("artworkHash", hash)?;
+            }
+            if let Some(url) = &asset.artwork_url {
+                s.serialize_field("artworkUrl", url)?;
+            }
+            if let Some(cover) = &asset.artwork_cover {
+                s.serialize_field("artworkCover", cover)?;
+            }
+        }
         s.end()
     }
 }

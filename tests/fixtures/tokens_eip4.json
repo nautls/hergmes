@@ -1,0 +1,18 @@
+[
+  {
+    "id": "a532e340b5b71cd16ebc2306a1e1b3cf17c1d60b12aa9fa690adb44c0a2fa260",
+    "boxId": "82225de364d22b8b5784414de0326fdc09bcf8e36a199fb3d6db03406d6100df",
+    "emissionAmount": 1,
+    "name": "Token Name",
+    "description": "Token Description",
+    "decimals": 0
+  },
+  {
+    "id": "36aba4b4a97b65be491cf9f5ca57b5408b0da8d0194f30ec8330d1e8946161c1",
+    "boxId": "159d1d534722cdd97dc8509abeb8c752ea757ac9a17b8fbcb45a936529df1334",
+    "emissionAmount": 500000,
+    "name": "Erdoge",
+    "description": "Like Doge but Erg.",
+    "decimals": 0
+  }
+]

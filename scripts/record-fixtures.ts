@@ -9,6 +9,7 @@
  *   node scripts/record-fixtures.ts --used-only [--node URL] [--out DIR]
  *   node scripts/record-fixtures.ts --tx-only [--node URL] [--out DIR]
  *   node scripts/record-fixtures.ts --tokens-only [--node URL] [--out DIR]
+ *   node scripts/record-fixtures.ts --minting-only [--node URL] [--out DIR]
  *
  * --history-only records only the address tx history fixtures, for the sample address of
  * the existing manifest.json, and adds them to it, leaving every other fixture as it is.
@@ -16,6 +17,7 @@
  * --used-only does the same for the box count fixtures, which say whether an address is used.
  * --tx-only does the same for the transaction fixtures (see recordTransactions).
  * --tokens-only does the same for the token metadata batch, for the manifest's sample tokens.
+ * --minting-only does the same for the EIP-4 minting boxes (see recordMinting).
  *
  * Runs on Node 23.6+ (native type stripping) with no dependencies.
  * The node URL defaults to $ERGO_NODE_URL. The node must run the extra indexer.
@@ -39,6 +41,10 @@ const EMPTY_ADDRESS = "9gNvAv97W71Wm33GoXgSQBFJxinFubKvE6wh2dEhFTSgYEe783j";
 // Valid mainnet P2PK address of a random curve point, so no one holds its key: no box and no
 // tx has ever touched it. EMPTY_ADDRESS holds no boxes but has a history.
 const UNUSED_ADDRESS = "9iKCdiitfAVb1Wux5nFXiMcdYXGkhdNksAxJHQ28qiAMkxXupbt";
+// Mainnet EIP-4 mints: a picture NFT whose R9 holds a link and a cover, and a plain token
+// with only a name, a description and decimals.
+const PICTURE_NFT = "a532e340b5b71cd16ebc2306a1e1b3cf17c1d60b12aa9fa690adb44c0a2fa260";
+const PLAIN_TOKEN = "36aba4b4a97b65be491cf9f5ca57b5408b0da8d0194f30ec8330d1e8946161c1";
 const SMALL_SUPPLY_LIMIT = 100;
 const BLOCKS_TO_SCAN = 50;
 const MEMPOOL_LIMIT = 20;
@@ -311,6 +317,31 @@ async function recordTokens(rec: Recorder, samples: Json) {
   );
 }
 
+/** EIP-4 mints: the indexer lists their name, description and decimals (R4 to R6) but not the
+ * asset type and artwork (R7 to R9) (IndexedToken.fromBox), which are read from the minting
+ * box, any box the indexer knows, spent or not. */
+async function recordMinting(rec: Recorder) {
+  const tokens = await rec.record("tokens_eip4", "POST", "/blockchain/tokens", [
+    PICTURE_NFT,
+    PLAIN_TOKEN,
+  ]);
+  const [picture, plain] = tokens.value;
+  await rec.record(
+    "minting_box_picture",
+    "GET",
+    `/blockchain/box/byId/${picture.boxId}`,
+    undefined,
+    "A picture NFT (R7 0101): R8 its SHA-256, R9 a (link, cover) pair.",
+  );
+  await rec.record(
+    "minting_box_plain",
+    "GET",
+    `/blockchain/box/byId/${plain.boxId}`,
+    undefined,
+    "R4 to R6 only: no asset type.",
+  );
+}
+
 /** The box counts that tell whether an address was ever used: `limit=0` returns no box and
  * reads none (Segment.getFromSegments), and `total` counts every box the address received,
  * spent or not (Segment.boxCount). */
@@ -488,6 +519,7 @@ async function main() {
       "used-only": { type: "boolean", default: false },
       "tx-only": { type: "boolean", default: false },
       "tokens-only": { type: "boolean", default: false },
+      "minting-only": { type: "boolean", default: false },
     },
   });
   if (!args.node) fail("Pass --node or set ERGO_NODE_URL");
@@ -513,6 +545,9 @@ async function main() {
   }
   if (args["tokens-only"]) {
     return addTo(node, outDir, "token", (rec, m) => recordTokens(rec, m.samples));
+  }
+  if (args["minting-only"]) {
+    return addTo(node, outDir, "minting box", (rec) => recordMinting(rec));
   }
   const previous = (() => {
     try {
@@ -640,6 +675,7 @@ async function main() {
   await rec.record("token_large_supply", "GET", `/blockchain/token/byId/${large}`);
   await rec.record("token_unknown", "GET", `/blockchain/token/byId/${UNKNOWN_ID}`);
   await recordTokens(rec, { nft, smallSupplyToken: small, largeSupplyToken: large });
+  await recordMinting(rec);
   await rec.record("unspent_by_token_nft", "GET", unspentByToken(nft));
   await rec.record("unspent_by_token_small_supply", "GET", unspentByToken(small));
   await rec.record(

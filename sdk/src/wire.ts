@@ -102,7 +102,28 @@ export interface TokenMetadata {
   decimals: number;
   /** Every unit minted. */
   emission: string;
+  /**
+   * The minting box's EIP-4 asset type (R7). `nft` is an NFT of no registered subcategory.
+   * Absent if R7 names no registered type.
+   */
+  type?: AssetType;
+  /** The SHA-256 of its artwork (R8), in hex: only for a picture, audio, video or plain `nft`. */
+  artworkHash?: string;
+  /** A link to its artwork (R9), for the same types. */
+  artworkUrl?: string;
+  /** A link to a cover image, the second link of R9, as for audio. */
+  artworkCover?: string;
 }
+
+/** The EIP-4 asset types, by R7: `0101`, `0102`, `0103`, `0104`, `010f`, other `01`, `0201`. */
+export type AssetType =
+  | "nft-picture"
+  | "nft-audio"
+  | "nft-video"
+  | "nft-artwork-collection"
+  | "nft-file-attachments"
+  | "nft"
+  | "membership-threshold-signature";
 
 /** The known tokens among those asked for, in their order; unknown ids are left out. */
 export interface TokenList {

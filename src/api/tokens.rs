@@ -1,30 +1,39 @@
-//! The token metadata service: names, descriptions, decimals and emissions, for clients that
-//! show tokens.
+//! The token metadata service: names, descriptions, decimals, emissions and EIP-4 asset types
+//! and artwork, for clients that show tokens.
 //!
 //! A token id here is not a key: the read keeps no engine state and streams nothing, so it is
 //! outside the key policy and the supply limit, and a wallet can name any token it holds.
 
 use std::{collections::HashMap, mem::size_of, sync::Arc};
 
+use futures_util::{StreamExt, TryStreamExt, stream};
 use moka::{policy::EvictionPolicy, sync::Cache};
 
 use crate::{
     adapters::cache::ENTRY,
     api::ApiError,
     clients::NodeSource,
-    types::ergo::{TokenId, TokenMetadata},
+    types::{
+        eip4::Asset,
+        ergo::{TokenId, TokenMetadata},
+    },
 };
 
 /// The most ids a request names: 65 characters each with the comma, so 100 keep the URL
 /// near 6.5 KB, under nginx's default 8 KB request line.
 pub const MAX_IDS: usize = 100;
 
+/// The most minting boxes read at once. The node reads boxes one per request (node 6.0.8,
+/// `BlockchainApiRoute.getBoxByIdR`; `box/range` lists ids, not boxes), so a request naming
+/// [`MAX_IDS`] new tokens makes that many reads, and this keeps them from all landing at once.
+const BOX_READS: usize = 8;
+
 /// The bytes of metadata kept. `name` and `description` are a mint's R4 and R5 (node 6.0.8,
-/// `IndexedToken.fromBox`), together under 4 KB since a box is at most 4096 bytes
-/// (`SigmaConstants.MaxBoxSize`), so one token weighs from about 500 bytes to about 4.5 KB:
-/// weighing by bytes keeps the budget true where a count would be off by up to nine times. A
-/// typical token weighs about 550 bytes, most of it the entry's overhead, so this keeps about
-/// 7,500.
+/// `IndexedToken.fromBox`) and the asset's links its R9, all under 4 KB since a box is at most
+/// 4096 bytes (`SigmaConstants.MaxBoxSize`), so one token weighs from about 500 bytes to about
+/// 4.6 KB: weighing by bytes keeps the budget true where a count would be off by up to nine
+/// times. A typical token weighs about 550 bytes, most of it the entry's overhead, and an NFT
+/// with its links about 750, so this keeps 5,500 to 7,500.
 pub const CACHE_BUDGET: u64 = 4 << 20;
 
 pub struct Tokens<S> {
@@ -42,8 +51,9 @@ impl<S: NodeSource> Tokens<S> {
     }
 
     /// The metadata of the tokens named in `ids`, comma-separated, in their order and each
-    /// once; unknown tokens are left out. One node call, for the ids not kept, or none. A
-    /// node failure fails the whole request.
+    /// once; unknown tokens are left out. For the ids not kept, one node call, then one per
+    /// token found to read its minting box; none if every id is kept. A node failure fails
+    /// the whole request.
     pub async fn metadata(&self, ids: Option<&str>) -> Result<Vec<Arc<TokenMetadata>>, ApiError> {
         let ids = parse(ids)?;
         let mut found: HashMap<TokenId, Arc<TokenMetadata>> = HashMap::with_capacity(ids.len());
@@ -60,13 +70,41 @@ impl<S: NodeSource> Tokens<S> {
                 .tokens(&missing)
                 .await
                 .map_err(|e| ApiError::from(&e))?;
-            for token in fetched {
+            // Each token is kept as soon as its box is read, so a failure keeps the reads done
+            // before it and a retry makes only the rest. The first failure stops the reads not
+            // yet made, sparing a node that is failing.
+            let mut reads = stream::iter(fetched)
+                .map(|token| self.with_asset(token))
+                .buffer_unordered(BOX_READS);
+            while let Some((token, complete)) = reads.try_next().await? {
                 let token = Arc::new(token);
-                self.cache.insert(token.id, token.clone());
+                if complete {
+                    self.cache.insert(token.id, token.clone());
+                }
                 found.insert(token.id, token);
             }
         }
         Ok(ids.iter().filter_map(|id| found.remove(id)).collect())
+    }
+
+    /// `token` with the asset its minting box describes, and whether the box was read. The
+    /// indexer lists a token only once it has indexed the mint, so a box it does not know was
+    /// lost to a reorg since: the token is served as listed but not kept, as for an unknown id.
+    async fn with_asset(
+        &self,
+        mut token: TokenMetadata,
+    ) -> Result<(TokenMetadata, bool), ApiError> {
+        let minting = self
+            .source
+            .indexed_box(&token.minting_box_id)
+            .await
+            .map_err(|e| ApiError::from(&e))?;
+        let Some(minting) = minting else {
+            tracing::debug!(token = %token.id, "minting box unknown, token not kept");
+            return Ok((token, false));
+        };
+        token.asset = Asset::from_registers(&minting.indexed.utxo.registers).map(Box::new);
+        Ok((token, true))
     }
 }
 
@@ -100,10 +138,14 @@ fn cache(budget: u64) -> Cache<TokenId, Arc<TokenMetadata>> {
         .build()
 }
 
-/// A token's estimated size in memory: the struct, its strings and the entry's overhead,
-/// which is the box cache's (`ENTRY`): the same key size, `Arc` and moka bookkeeping.
+/// A token's estimated size in memory: the struct, its strings, its asset and the entry's
+/// overhead, which is the box cache's (`ENTRY`): the same key size, `Arc` and moka bookkeeping.
 fn weight(t: &TokenMetadata) -> u32 {
-    let bytes = size_of::<TokenMetadata>() + t.name.len() + t.description.len() + ENTRY;
+    let asset = t
+        .asset
+        .as_ref()
+        .map_or(0, |a| size_of::<Asset>() + a.heap_size());
+    let bytes = size_of::<TokenMetadata>() + t.name.len() + t.description.len() + asset + ENTRY;
     // A box is at most 4096 bytes serialized (`SigmaConstants.MaxBoxSize`), far below this.
     u32::try_from(bytes).unwrap_or(u32::MAX)
 }
