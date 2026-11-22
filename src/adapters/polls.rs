@@ -1,11 +1,12 @@
 //! Quick polls while the engine or the indexer catches up with the node.
 //!
-//! Right after a block, the node has it before the engine (the follower ticks once a second)
-//! and sometimes before the indexer. An attempt that finds either behind costs one or two
-//! cheap node calls and usually settles within that first second, so waiting a whole retry
-//! would answer up to a second late. A cause that lasts (an indexer resyncing after a
-//! restart) must not be polled for hours, though, so the quick polls last one retry from the
-//! first attempt found behind, then attempts fall back to one a retry.
+//! Right after a block, the node has it before the engine (the follower ticks once a second,
+//! or a wake gap after an attempt wakes it) and sometimes before the indexer. An attempt that
+//! finds either behind costs one or two cheap node calls and usually settles within that
+//! first second, so waiting a whole retry would answer up to a second late. A cause that
+//! lasts (an indexer resyncing after a restart) must not be polled for hours, though, so the
+//! quick polls last one retry from the first attempt found behind, then attempts fall back to
+//! one a retry.
 //!
 //! The run is shared by every attempt of one reader, since the cause is the node's, the
 //! indexer's or the engine's and not a key's: attempts started later (a keeper's after

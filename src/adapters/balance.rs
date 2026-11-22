@@ -18,7 +18,7 @@ use tracing::debug;
 
 use crate::{
     adapters::{
-        EngineGone, EngineHandle, best_full_block, engine_tip,
+        EngineGone, EngineHandle, Wake, best_full_block, engine_tip,
         polls::{Checks, Polls},
     },
     clients::{NodeError, NodeSource},
@@ -110,11 +110,25 @@ pub struct BalanceReader<S> {
     tracks: Cache<ErgoTree, ()>,
     /// The current run of attempts, of any read, that found the engine or the indexer behind.
     polls: Mutex<Polls>,
+    /// Wakes the follower when an attempt finds the engine behind the node's tip.
+    wake: Wake,
 }
 
 impl<S: NodeSource> BalanceReader<S> {
     pub fn new(source: S) -> Self {
-        Self { source, tracks: Cache::builder().build(), polls: Mutex::new(Polls::default()) }
+        Self {
+            source,
+            tracks: Cache::builder().build(),
+            polls: Mutex::new(Polls::default()),
+            wake: Wake::default(),
+        }
+    }
+
+    /// Wakes the follower behind `wake` whenever an attempt finds the engine behind the
+    /// node's tip (see `Loader::waking`).
+    pub fn waking(mut self, wake: Wake) -> Self {
+        self.wake = wake;
+        self
     }
 
     /// Records an attempt that answered at `now`, and says how long to wait before the next:
@@ -219,6 +233,7 @@ impl<S: NodeSource> BalanceReader<S> {
             return Ok(Attempt::Behind);
         };
         if engine_tip(engine).await? != Some(tip) {
+            self.wake.wake();
             return Ok(Attempt::Behind);
         }
         if self.source.indexed_height().await?.indexed_height != tip.height {

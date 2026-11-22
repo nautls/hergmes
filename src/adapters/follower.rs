@@ -9,12 +9,16 @@
 //! is behind would be held or ignored by the engine, but counted as taken by the poller, which
 //! would then wait for its refresh period before fetching again at the tip the engine
 //! reaches.
+//!
+//! A load that finds the engine behind the node wakes the follower for an early tick (see
+//! [`Wake`]), so a block reaches the engine when a client is waiting for it, without reading
+//! the node more often when none is.
 
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use tokio::{
-    sync::watch,
-    time::{Instant, MissedTickBehavior, sleep},
+    sync::{Notify, watch},
+    time::{Instant, sleep, sleep_until},
 };
 use tracing::{info, warn};
 
@@ -33,12 +37,46 @@ use crate::{
 pub struct Config {
     /// How often `/info` is read.
     pub interval: Duration,
+    /// The least time from the end of a tick to a tick a [`Wake`] asks for. A wake comes from
+    /// a load that found the engine behind the node, and loads keep finding it so while the
+    /// indexer lags after a block, so without it the follower would read the node back to back
+    /// when the node is slowest. Counted from the end, so a slow `/info` doesn't shorten it.
+    pub wake_gap: Duration,
     pub mempool: mempool::Config,
 }
 
 impl Default for Config {
     fn default() -> Self {
-        Self { interval: Duration::from_secs(1), mempool: mempool::Config::default() }
+        Self {
+            interval: Duration::from_secs(1),
+            wake_gap: Duration::from_millis(200),
+            mempool: mempool::Config::default(),
+        }
+    }
+}
+
+/// Asks the follower for a tick before its interval is up.
+///
+/// The engine learns of a block only from the follower, while a load reads the node's tip
+/// itself, so right after a block a load sees it first and would wait up to an interval for
+/// the engine. It wakes the follower instead. Wakes made before the follower gets to them
+/// count as one. A `Wake` made with `default` reaches no follower.
+#[derive(Debug, Clone, Default)]
+pub struct Wake(Arc<Notify>);
+
+impl Wake {
+    pub fn wake(&self) {
+        self.0.notify_one();
+    }
+
+    /// Whether a wake is pending, taking it.
+    #[cfg(test)]
+    pub fn take(&self) -> bool {
+        use std::future::Future;
+        let notified = std::pin::pin!(self.0.notified());
+        notified
+            .poll(&mut std::task::Context::from_waker(std::task::Waker::noop()))
+            .is_ready()
     }
 }
 
@@ -58,6 +96,7 @@ pub struct Follower<S> {
     config: Config,
     /// Whether the last tick left the engine at the node's tip, for `/v1/status`.
     synced: watch::Sender<bool>,
+    wake: Wake,
 }
 
 impl<S: NodeSource + Clone> Follower<S> {
@@ -68,6 +107,7 @@ impl<S: NodeSource + Clone> Follower<S> {
             source,
             config,
             synced: watch::Sender::new(false),
+            wake: Wake::default(),
         }
     }
 
@@ -76,6 +116,11 @@ impl<S: NodeSource + Clone> Follower<S> {
     /// a block sync failed). Read by the status route, which makes no node call of its own.
     pub fn synced(&self) -> watch::Receiver<bool> {
         self.synced.subscribe()
+    }
+
+    /// A handle that wakes this follower, for the readers that find the engine behind.
+    pub fn waker(&self) -> Wake {
+        self.wake.clone()
     }
 
     /// The headers of the blocks the follower applies, for the header reader.
@@ -119,15 +164,27 @@ impl<S: NodeSource + Clone> Follower<S> {
         Ok(Tick { blocks, mempool: Some(mempool) })
     }
 
-    /// Ticks every interval until the engine is gone. A failed call is logged, and a `503`
-    /// waits for its `Retry-After` before the next tick. A refused event is logged by the
+    /// Ticks an interval after the last tick ended, or a `wake_gap` after it when woken, until
+    /// the engine is gone. Counted from the end, so a node slower than the interval is still
+    /// left an interval between reads. A failed call is logged, and a `503` waits for its
+    /// `Retry-After` before the next tick, woken or not. A refused event is logged by the
     /// engine task; the next tick syncs again from the engine's chain.
     pub async fn run(mut self, engine: &impl EngineHandle) -> EngineGone {
-        let mut ticker = tokio::time::interval(self.config.interval);
-        ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
+        let wake = self.wake.0.clone();
+        let mut ended: Option<Instant> = None;
         loop {
-            ticker.tick().await;
-            let wait = match self.tick(engine, Instant::now()).await {
+            let due = ended.map_or_else(Instant::now, |ended| ended + self.config.interval);
+            tokio::select! {
+                () = sleep_until(due) => {}
+                () = wake.notified() => {
+                    if let Some(ended) = ended {
+                        sleep_until(ended + self.config.wake_gap).await;
+                    }
+                }
+            }
+            let result = self.tick(engine, Instant::now()).await;
+            ended = Some(Instant::now());
+            let wait = match result {
                 Ok(tick) => {
                     if let Some(Err(error)) = &tick.mempool {
                         warn!(%error, "Mempool poll failed");

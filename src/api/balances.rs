@@ -13,7 +13,7 @@ use tracing::debug;
 pub use crate::adapters::balance::Config;
 use crate::{
     adapters::{
-        BalanceReader, EngineHandle,
+        BalanceReader, EngineHandle, Wake,
         balance::{BalanceAt, TrackError, totals},
         polls::Checks,
     },
@@ -60,6 +60,12 @@ impl<S: NodeSource> Balances<S> {
     /// take the cap before clients can. A balance subscription answers `not_ready` until then.
     pub fn waiting_for(mut self, settled: Settled) -> Self {
         self.settled = settled;
+        self
+    }
+
+    /// Wakes the follower behind `wake` when a read finds the engine behind the node's tip.
+    pub fn waking(mut self, wake: Wake) -> Self {
+        self.reader = self.reader.waking(wake);
         self
     }
 

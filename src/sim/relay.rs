@@ -132,6 +132,8 @@ impl SimRelay {
             follower::Config {
                 // Never read: the follower does not run on its own here.
                 interval: Duration::from_secs(1),
+                // Never read either: nothing wakes it, the control routes tick it.
+                wake_gap: Duration::ZERO,
                 // Every synced tick hands the engine the pool as it is.
                 mempool: mempool::Config { refresh: Duration::ZERO },
             },

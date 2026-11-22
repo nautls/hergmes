@@ -81,7 +81,7 @@ mod track {
 
     use super::super::*;
     use crate::{
-        adapters::polls::Checks,
+        adapters::{Follower, Wake, follower, polls::Checks},
         engine::{Config as EngineConfig, Engine, Query, Reply, TrackingKey},
         sim::{
             Endpoint, SimChain,
@@ -142,11 +142,50 @@ mod track {
         let engine = Mutex::new(engine);
         let sim = SimChain::new(chain);
         let tree = sim.lock().trees()[0].clone();
-        let reader = BalanceReader::new(sim.clone());
+        let wake = Wake::default();
+        let reader = BalanceReader::new(sim.clone()).waking(wake.clone());
         let attempt = ready(reader.try_track(&engine, &tree)).unwrap();
         assert_eq!((attempt, attempt.checks()), (Attempt::Behind, Checks::Behind));
         assert_eq!(count(&sim, Endpoint::ConfirmedBalance), 0);
         assert_eq!(tracked(&engine, &tree), None);
+        assert!(!wake.take(), "the engine is at the tip: a tick would not help");
+    }
+
+    /// The node has a block the engine doesn't: the attempt wakes the follower.
+    #[test]
+    fn an_engine_behind_the_node_wakes_the_follower() {
+        let (sim, engine) = behind();
+        let tree = sim.lock().trees()[0].clone();
+        let wake = Wake::default();
+        let reader = BalanceReader::new(sim.clone()).waking(wake.clone());
+        let attempt = ready(reader.try_track(&engine, &tree)).unwrap();
+        assert_eq!(attempt, Attempt::Behind);
+        assert!(wake.take());
+    }
+
+    /// A track right after a block settles a `wake_gap` and a `poll` after the follower's
+    /// last tick, not at its next one.
+    #[tokio::test(start_paused = true)]
+    async fn a_track_right_after_a_block_does_not_wait_for_the_next_tick() {
+        let chain = new_chain();
+        let engine = std::sync::Arc::new(synced_engine(&chain));
+        let sim = SimChain::new(chain);
+        let follower_config = follower::Config::default();
+        let follower = Follower::new(sim.clone(), follower_config);
+        let reader = BalanceReader::new(sim.clone()).waking(follower.waker());
+        let follower_engine = engine.clone();
+        let task = tokio::spawn(async move { follower.run(&*follower_engine).await });
+        tokio::time::sleep(Duration::from_millis(10)).await;
+
+        sim.lock().mine(0, 1, 1);
+        let tree = sim.lock().trees()[0].clone();
+        let config = Config::default();
+        let started = Instant::now();
+        reader.track(&*engine, &tree, config).await.unwrap();
+        let waited = started.elapsed();
+        let most = follower_config.wake_gap + config.poll;
+        assert!(waited <= most, "waited {waited:?}, at most {most:?}");
+        task.abort();
     }
 
     /// A block during the balance read: the balance may be either block's, so it is dropped.

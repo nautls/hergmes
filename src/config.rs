@@ -274,6 +274,7 @@ impl Config {
                     file.poll_interval_ms,
                     follower_defaults.interval,
                 )?,
+                wake_gap: follower_defaults.wake_gap,
                 mempool: mempool::Config {
                     refresh: millis(
                         keys::MEMPOOL_REFRESH_MS,

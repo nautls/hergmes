@@ -9,7 +9,7 @@ use std::sync::{
 
 use super::*;
 use crate::{
-    adapters::{BoxCache, BoxFetcher, EngineGone, Follower, follower},
+    adapters::{BoxCache, BoxFetcher, EngineGone, Follower, Wake, follower},
     engine::{Config as EngineConfig, Engine, EngineError, Query, Reply},
     sim::{
         Chain, Endpoint, SimChain, SimConfig,
@@ -95,12 +95,14 @@ fn an_engine_behind_the_node_is_not_loaded_for() {
     let before = engine.lock().unwrap().tip();
     let node = sim.lock().mine(0, 1, 1);
     let key = tree_key(&sim, 0);
-    let loader = Loader::new(sim.clone(), Config::default());
+    let wake = Wake::default();
+    let loader = Loader::new(sim.clone(), Config::default()).waking(wake.clone());
     assert_eq!(
         ready(loader.try_load(&engine, &key)).unwrap(),
         Attempt::EngineBehind { engine: before, node }
     );
     assert_eq!(count(&sim, Endpoint::UnspentByErgoTree), 0);
+    assert!(wake.take(), "the follower is woken to bring the engine to the node's tip");
 }
 
 #[test]
@@ -116,12 +118,14 @@ fn an_indexer_behind_the_tip_is_waited_for() {
     let engine = Mutex::new(engine);
     let sim = SimChain::new(chain);
     let key = tree_key(&sim, 0);
-    let loader = Loader::new(sim.clone(), Config::default());
+    let wake = Wake::default();
+    let loader = Loader::new(sim.clone(), Config::default()).waking(wake.clone());
     assert_eq!(
         ready(loader.try_load(&engine, &key)).unwrap(),
         Attempt::IndexerBehind { indexed_height: tip.height - 1, tip_height: tip.height }
     );
     assert_eq!(count(&sim, Endpoint::UnspentByErgoTree), 0);
+    assert!(!wake.take(), "the engine is at the tip: a tick would not help");
 }
 
 #[test]
@@ -533,6 +537,31 @@ async fn a_load_polls_while_the_engine_catches_up() {
     loader_of(&sim, config).load(&*engine, &key).await.unwrap();
     let waited = started.elapsed();
     assert!(waited >= catch_up && waited <= catch_up + config.poll, "{waited:?}");
+    task.abort();
+}
+
+/// A load that finds a block the engine doesn't have yet wakes the follower, so it settles
+/// a `wake_gap` and a `poll` after the follower's last tick, not at its next one.
+#[tokio::test(start_paused = true)]
+async fn a_load_right_after_a_block_does_not_wait_for_the_next_tick() {
+    let chain = new_chain();
+    let engine = Arc::new(synced_engine(&chain));
+    let sim = SimChain::new(chain);
+    let follower_config = follower::Config::default();
+    let follower = Follower::new(sim.clone(), follower_config);
+    let loader = loader_of(&sim, Config::default()).waking(follower.waker());
+    let follower_engine = engine.clone();
+    let task = tokio::spawn(async move { follower.run(&*follower_engine).await });
+    sleep(Duration::from_millis(10)).await;
+
+    sim.lock().mine(1, 1, 1);
+    let key = tree_key(&sim, 0);
+    let started = tokio::time::Instant::now();
+    let (as_of, _) = loader.load(&*engine, &key).await.unwrap();
+    assert_eq!(as_of, sim.lock().tip());
+    let waited = started.elapsed();
+    let most = follower_config.wake_gap + Config::default().poll;
+    assert!(waited <= most, "waited {waited:?}, at most {most:?}");
     task.abort();
 }
 

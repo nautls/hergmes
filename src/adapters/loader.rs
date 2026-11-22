@@ -22,7 +22,8 @@ use tracing::{debug, info};
 
 use crate::{
     adapters::{
-        BoxCache, EngineGone, EngineHandle, backoff, best_full_block, engine_capacity, engine_tip,
+        BoxCache, EngineGone, EngineHandle, Wake, backoff, best_full_block, engine_capacity,
+        engine_tip,
         polls::{Checks, Polls},
     },
     clients::{NodeError, NodeSource, Page, source::MAX_PAGE_LIMIT},
@@ -71,9 +72,10 @@ pub struct Config {
     /// [`Attempt::EngineBehind`], [`Attempt::IndexerBehind`]), for a `retry` from the first
     /// such attempt in a row, of any load; then `retry`. Those cost one or two cheap calls,
     /// and their cause usually clears within a block's first second: the engine trails the
-    /// node by up to a follower tick, and a `retry` would answer up to that much late. A cause
-    /// that lasts (an indexer resyncing after a restart) gets one attempt a `retry` from each
-    /// load, as before the polls.
+    /// node until the follower's next tick, which the attempt wakes it for, so a `retry`
+    /// would mostly be spent waiting on an engine already caught up. A cause that lasts (an
+    /// indexer resyncing after a restart) gets one attempt a `retry` from each load, as
+    /// before the polls.
     pub poll: Duration,
 }
 
@@ -165,6 +167,8 @@ pub struct Loader<S> {
     /// later (a keeper's after giving up, clients' of other keys) wait retries rather than
     /// each poll a second of their own.
     polls: Mutex<Polls>,
+    /// Wakes the follower when an attempt finds the engine behind the node's tip.
+    wake: Wake,
 }
 
 /// What a load attempt says about the engine and the indexer keeping up with the node:
@@ -201,6 +205,7 @@ impl<S: NodeSource> Loader<S> {
             loads: Cache::builder().build(),
             refused,
             polls: Mutex::new(Polls::default()),
+            wake: Wake::default(),
         }
     }
 
@@ -214,6 +219,14 @@ impl<S: NodeSource> Loader<S> {
     /// seeds nothing: the tip moved, some of its boxes may be spent, and a retry follows.
     pub fn seeding(mut self, cache: BoxCache) -> Self {
         self.cache = cache;
+        self
+    }
+
+    /// Wakes the follower behind `wake` whenever an attempt finds the engine behind the
+    /// node's tip, so the load waits for a block sync rather than for the follower's next
+    /// tick.
+    pub fn waking(mut self, wake: Wake) -> Self {
+        self.wake = wake;
         self
     }
 
@@ -300,6 +313,7 @@ impl<S: NodeSource> Loader<S> {
         };
         let engine_at = engine_tip(engine).await?;
         if engine_at != Some(tip) {
+            self.wake.wake();
             return Ok(Attempt::EngineBehind { engine: engine_at, node: tip });
         }
         let indexed = self.source.indexed_height().await?;

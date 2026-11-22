@@ -126,6 +126,8 @@ async fn run(flag: Option<PathBuf>) -> Result<(), AppError> {
 
     let follower = Follower::new(node.clone(), config.follower);
     let synced = follower.synced();
+    // For the loads that find the engine behind the node, so they don't wait for a tick.
+    let wake = follower.waker();
     // Filled by the follower with the headers of the blocks it applies.
     let headers = HeaderReader::new(node.clone(), follower.headers());
     let mut follower = tokio::spawn({
@@ -134,7 +136,11 @@ async fn run(flag: Option<PathBuf>) -> Result<(), AppError> {
     });
 
     // Shared by the keepers and the page service, so their loads of one key coalesce.
-    let loader = Arc::new(Loader::new(node.clone(), config.loader).seeding(cache.clone()));
+    let loader = Arc::new(
+        Loader::new(node.clone(), config.loader)
+            .seeding(cache.clone())
+            .waking(wake.clone()),
+    );
     let tokens = Arc::new(TokenChecker::new(node.clone(), config.token_supply_limit));
     // The server starts at once, for the status route and tracked keys, but loads no key for
     // a client until the configured keys have settled.
@@ -143,7 +149,9 @@ async fn run(flag: Option<PathBuf>) -> Result<(), AppError> {
         engine: engine.clone(),
         pages: Pages::new(loader.clone(), tokens.clone(), BoxFetcher::new(node.clone(), cache))
             .waiting_for(settled.clone()),
-        balances: Balances::new(node.clone(), Default::default()).waiting_for(settled),
+        balances: Balances::new(node.clone(), Default::default())
+            .waiting_for(settled)
+            .waking(wake),
         history: History::new(node.clone(), Default::default()),
         headers: Headers::new(headers),
         boxes: Boxes::new(node.clone()),
