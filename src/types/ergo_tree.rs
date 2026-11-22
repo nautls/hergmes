@@ -1,5 +1,5 @@
 //! The constants and template of a constant-segregated ErgoTree, read without parsing the
-//! tree's expression.
+//! tree's expression, and the byte collections a register's constant holds.
 //!
 //! The node indexes boxes by template hash: `IndexedContractTemplateSerializer.hashTreeTemplate`
 //! (node 6.0.8) hashes `ErgoTree.template` with Blake2b256, and the template is what follows
@@ -33,6 +33,8 @@ const MAX_DEPTH: usize = 110;
 /// `TUPLE` is a constructor times `PRIM_RANGE` plus an embedded primitive, 0 meaning the
 /// argument type follows.
 const PRIM_RANGE: u8 = 12;
+const COLL: u8 = PRIM_RANGE;
+const PAIR: u8 = 5 * PRIM_RANGE;
 const TUPLE: u8 = 96;
 const UNIT: u8 = 98;
 const AVL_TREE: u8 = 100;
@@ -84,6 +86,28 @@ pub fn constants(tree: &[u8]) -> Option<Vec<&[u8]>> {
     Some(constants)
 }
 
+/// The bytes of a constant that is a `Coll[Byte]`, as a register holds one. `None` if it is
+/// of another type, can't be read, or bytes follow it.
+pub fn byte_coll(constant: &[u8]) -> Option<&[u8]> {
+    let p = Parser::whole(constant)?;
+    let data = p.byte_coll_type(0)?;
+    Some(p.byte_coll_value(data)?.0)
+}
+
+/// The elements of a constant that is a `(Coll[Byte], Coll[Byte])`, written as a pair or as
+/// a 2-tuple. `None` as for [`byte_coll`].
+pub fn byte_coll_pair(constant: &[u8]) -> Option<(&[u8], &[u8])> {
+    let p = Parser::whole(constant)?;
+    let first_type = match p.byte(0)? {
+        PAIR => 1,
+        TUPLE if p.byte(1)? == 2 => 2,
+        _ => return None,
+    };
+    let data = p.byte_coll_type(p.byte_coll_type(first_type)?)?;
+    let (first, pos) = p.byte_coll_value(data)?;
+    Some((first, p.byte_coll_value(pos)?.0))
+}
+
 /// Reads the header, the size and the constants, handing each constant's bytes to
 /// `on_constant`, and returns where the template starts.
 fn walk<'a>(tree: &'a [u8], mut on_constant: impl FnMut(&'a [u8])) -> Option<usize> {
@@ -121,7 +145,30 @@ struct Parser<'a> {
     bytes: &'a [u8],
 }
 
-impl Parser<'_> {
+impl<'a> Parser<'a> {
+    /// A parser over `constant`, if it is one readable constant and nothing more.
+    fn whole(constant: &'a [u8]) -> Option<Self> {
+        let p = Parser { bytes: constant };
+        (p.constant(0)? == constant.len()).then_some(p)
+    }
+
+    /// Where a `Coll[Byte]` type read at `pos` ends: its element embedded, or in a byte of its
+    /// own. `None` for any other type.
+    fn byte_coll_type(&self, pos: usize) -> Option<usize> {
+        match self.byte(pos)? {
+            code if code == COLL + BYTE => Some(pos + 1),
+            COLL if self.byte(pos + 1)? == BYTE => Some(pos + 2),
+            _ => None,
+        }
+    }
+
+    /// A `Coll[Byte]` value read at `pos`, and where it ends.
+    fn byte_coll_value(&self, pos: usize) -> Option<(&'a [u8], usize)> {
+        let (len, start) = self.vlq(pos)?;
+        let end = self.skip(start, len)?;
+        Some((&self.bytes[start..end], end))
+    }
+
     fn constant(&self, pos: usize) -> Option<usize> {
         let data = self.skip_type(pos, 0)?;
         self.skip_value(Ty::At(pos), data, 0)

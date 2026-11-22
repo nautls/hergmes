@@ -446,3 +446,56 @@ fn fails_on_a_count_past_the_constants() {
     tree[1] = 2;
     assert_eq!(constants(&tree), None);
 }
+
+/// A register's byte collection, in either type encoding, and a pair of them, as a pair or a
+/// 2-tuple.
+#[test]
+fn reads_byte_collections_and_pairs_of_them() {
+    assert_eq!(byte_coll(&h("0e03010203")), Some(&[1, 2, 3][..]));
+    assert_eq!(byte_coll(&h("0c0203010203")), Some(&[1, 2, 3][..]));
+    assert_eq!(byte_coll(&h("0e00")), Some(&[][..]));
+    let pair = Some((&[1][..], &[2, 3][..]));
+    for constant in ["3c0e0e0101020203", "60020e0e0101020203", "3c0c020c020101020203"] {
+        assert_eq!(byte_coll_pair(&h(constant)), pair, "{constant}");
+        assert_eq!(byte_coll(&h(constant)), None, "{constant}");
+    }
+}
+
+/// Any other type, a value cut short, a length past the end, or bytes past the value is none.
+#[test]
+fn reads_no_other_constant_as_byte_collections() {
+    for constant in [
+        "0402",
+        "0c0103",
+        "1a0100",
+        "0e0301020300",
+        "0e030102",
+        "0e80",
+        "0effffffffffffffffffff01",
+        "3c0e040101",
+        "3c0e0e010102020300",
+        "60030e0e0e010101010101",
+    ] {
+        assert_eq!(byte_coll(&h(constant)), None, "{constant}");
+        assert_eq!(byte_coll_pair(&h(constant)), None, "{constant}");
+    }
+    for constant in FLEET_CONSTANTS.iter().filter(|c| !c.starts_with("0e")) {
+        assert_eq!(byte_coll(&h(constant)), None, "{constant}");
+    }
+}
+
+/// No prefix of a recorded minting box's registers reads, and none panics.
+#[test]
+fn reads_no_truncated_register() {
+    let minting: crate::types::ergo::BoxById = fixtures::load("minting_box_picture");
+    let registers = minting.indexed.utxo.registers;
+    for r in [&registers.r7, &registers.r8, &registers.r9] {
+        let bytes = &r.as_ref().unwrap().0;
+        assert!(byte_coll(bytes).is_some() || byte_coll_pair(bytes).is_some());
+        for end in 0..bytes.len() {
+            let cut = &bytes[..end];
+            assert_eq!(byte_coll(cut), None, "{}", hex::encode(cut));
+            assert_eq!(byte_coll_pair(cut), None, "{}", hex::encode(cut));
+        }
+    }
+}

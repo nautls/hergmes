@@ -29,6 +29,7 @@ export {
   type SubmitOptions,
 } from "./rest.ts";
 export type {
+  AssetType,
   Assets as WireAssets,
   AsOfHeight,
   Balance as WireBalance,

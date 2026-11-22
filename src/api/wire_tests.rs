@@ -6,7 +6,10 @@ use std::{collections::BTreeMap, sync::Arc};
 use super::*;
 use crate::{
     sim::testing::digest,
-    types::ergo::{NonMandatoryRegisters, Token},
+    types::{
+        eip4::{Asset, AssetType},
+        ergo::{NonMandatoryRegisters, Token, TokenMetadata},
+    },
 };
 
 /// 2^53 + 1, the first integer a JavaScript number can't hold.
@@ -223,4 +226,51 @@ fn a_history_page() {
     );
     let last = HistoryPage { items: Vec::new(), next_cursor: None };
     assert_eq!(json(HistoryBody(&last)), r#"{"items":[],"nextCursor":null}"#);
+}
+
+/// A token's EIP-4 fields follow its metadata, each left out when absent: the asset type as
+/// its name, the artwork hash in hex, the links as they are.
+#[test]
+fn a_token_has_its_asset_fields_only_when_present() {
+    let token = |asset| {
+        Arc::new(TokenMetadata {
+            id: digest(1),
+            minting_box_id: digest(2),
+            emission: ABOVE_2_53,
+            name: "n".into(),
+            description: "d".into(),
+            decimals: -1,
+            asset,
+        })
+    };
+    let picture = Asset {
+        asset_type: AssetType::NftPicture,
+        artwork_hash: Some(digest(3)),
+        artwork_url: Some("ipfs://a".into()),
+        artwork_cover: Some("ipfs://c".into()),
+    };
+    let membership = Asset {
+        asset_type: AssetType::MembershipThresholdSignature,
+        artwork_hash: None,
+        artwork_url: None,
+        artwork_cover: None,
+    };
+    let tokens = [token(None), token(Some(Box::new(picture))), token(Some(Box::new(membership)))];
+    let common = format!(
+        r#""tokenId":"{}","mintingBoxId":"{}","name":"n","description":"d","decimals":-1,"emission":"9007199254740993""#,
+        hex(1),
+        hex(2),
+    );
+    assert_eq!(
+        json(TokensBody(&tokens)),
+        format!(
+            concat!(
+                r#"{{"items":[{{{c}}},"#,
+                r#"{{{c},"type":"nft-picture","artworkHash":"{hash}","artworkUrl":"ipfs://a","artworkCover":"ipfs://c"}},"#,
+                r#"{{{c},"type":"membership-threshold-signature"}}]}}"#,
+            ),
+            c = common,
+            hash = hex(3),
+        )
+    );
 }

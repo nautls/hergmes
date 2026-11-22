@@ -3,7 +3,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Deserializer, Serialize, de::Error};
 use serde_json::value::RawValue;
 
-use crate::types::{Digest, HashDigest, HexBytes};
+use crate::types::{Digest, HashDigest, HexBytes, eip4::Asset};
 
 pub type BoxId = HashDigest;
 pub type TxId = HashDigest;
@@ -315,6 +315,10 @@ pub struct TokenMetadata {
     pub name: Box<str>,
     pub description: Box<str>,
     pub decimals: i32,
+    /// The asset type and artwork, which the indexer does not read: filled in from the minting
+    /// box.
+    #[serde(skip)]
+    pub asset: Option<Box<Asset>>,
 }
 
 /// Response of `POST /blockchain/balance`.

@@ -1095,6 +1095,7 @@ impl Chain {
                     name: name.into(),
                     description: "".into(),
                     decimals: 0,
+                    asset: None,
                 })
             })
             .collect()
