@@ -112,12 +112,12 @@ describe("a box subscription", () => {
     m.receive({ type: "subscribed", id: 0, key });
     m.receive(delta("block", 11, [confirmed(2, 11)], [1]));
     expect(m.state.phase).toBe("catching_up");
-    expect(m.state.view).toBeUndefined();
+    expect(m.state.boxes).toBeUndefined();
     m.receive(mempool(11, [["tx", [box(3)], [2]]]));
     m.receive(balance(block(11), 1000, 0));
 
     expect(m.state.phase).toBe("live");
-    const view = m.state.view;
+    const view = m.state.boxes;
     expect(view?.lastChange).toEqual(block(11));
     expect(view?.confirmed.map((b) => b.boxId)).toEqual([hex(2)]);
     expect(view?.confirmed[0]?.value).toBe(1000n);
@@ -146,10 +146,10 @@ describe("a box subscription", () => {
     const { m, resyncs } = live();
     m.receive(delta("block", 11, [confirmed(3, 11)], [1]));
     m.receive(delta("rollback", 11, [confirmed(1, 9)], [3]));
-    expect(m.state.view?.lastChange).toEqual(block(10));
-    expect(m.state.view?.confirmed.map((b) => b.boxId)).toEqual([hex(1), hex(2)]);
+    expect(m.state.boxes?.lastChange).toEqual(block(10));
+    expect(m.state.boxes?.confirmed.map((b) => b.boxId)).toEqual([hex(1), hex(2)]);
     m.receive(delta("block", 11, [], [2]));
-    expect(m.state.view?.confirmed.map((b) => b.boxId)).toEqual([hex(1)]);
+    expect(m.state.boxes?.confirmed.map((b) => b.boxId)).toEqual([hex(1)]);
     expect(resyncs).toEqual([]);
   });
 
@@ -158,9 +158,9 @@ describe("a box subscription", () => {
     m.receive(delta("block", 14, [confirmed(3, 14)], [1], block(10)));
     m.receive(mempool(14));
     m.receive(balance(block(15), 1000, 0, block(14)));
-    expect(m.state.view?.lastChange).toEqual(block(14));
+    expect(m.state.boxes?.lastChange).toEqual(block(14));
     m.receive(delta("rollback", 14, [confirmed(1, 9)], [3], block(10)));
-    expect(m.state.view?.lastChange).toEqual(block(10));
+    expect(m.state.boxes?.lastChange).toEqual(block(10));
     expect(resyncs).toEqual([]);
   });
 
@@ -191,19 +191,19 @@ describe("a box subscription", () => {
     ["fork_beyond_window", { type: "resync_required", key, reason: "fork_beyond_window" }, "relay"],
   ])("takes a new snapshot on %s", (reason, message, by = "sdk") => {
     const { m, resyncs } = live();
-    const view = m.state.view;
+    const view = m.state.boxes;
     const generation = snapshotOf(m.receive(message));
     expect(resyncs).toEqual([{ key, by, reason }]);
     // The last live view stays, marked by the phase as no longer current.
-    expect(m.state).toMatchObject({ phase: "snapshot", view });
+    expect(m.state).toMatchObject({ phase: "snapshot", boxes: view });
     // Messages of the old subscription are ignored until the new one starts.
     m.receive(delta("block", 11, [], []));
-    expect(m.state.view).toBe(view);
+    expect(m.state.boxes).toBe(view);
     const sub = subscribeOf(m.snapshotLoaded(generation, block(12), [confirmed(5, 12)]));
     m.receive({ type: "subscribed", id: sub.id, key });
     m.receive(mempool(12));
     expect(m.state.phase).toBe("live");
-    expect(m.state.view?.confirmed.map((b) => b.boxId)).toEqual([hex(5)]);
+    expect(m.state.boxes?.confirmed.map((b) => b.boxId)).toEqual([hex(5)]);
   });
 
   test("takes a new snapshot when the subscribe's answer is resync_required", () => {
@@ -257,16 +257,16 @@ describe("a box subscription", () => {
     expect(m.stop()).toEqual([{ kind: "send", message: { op: "unsubscribe", key } }]);
     expect(m.state.phase).toBe("disconnected");
     m.receive(delta("block", 11, [], [1]));
-    expect(m.state.view?.lastChange).toEqual(block(10));
+    expect(m.state.boxes?.lastChange).toEqual(block(10));
   });
 });
 
-describe("the view's confirmed boxes", () => {
+describe("the confirmed boxes", () => {
   test("are reused by an overlay that leaves them alone", () => {
     const { m } = live();
-    const before = m.state.view;
+    const before = m.state.boxes;
     m.receive(mempool(10, [["a", [box(3)], [1]]]));
-    const after = m.state.view;
+    const after = m.state.boxes;
     expect(after?.confirmed).toBe(before?.confirmed);
     expect(after?.spendable.map((b) => b.boxId)).toEqual([hex(2), hex(3)]);
   });
@@ -274,9 +274,9 @@ describe("the view's confirmed boxes", () => {
   test("a block that moves boxes keeps the keyset order without sorting them all", () => {
     const { m } = live();
     m.receive(delta("block", 11, [confirmed(9, 11), confirmed(4, 11)], [1]));
-    expect(m.state.view?.confirmed.map((b) => b.boxId)).toEqual([hex(2), hex(4), hex(9)]);
+    expect(m.state.boxes?.confirmed.map((b) => b.boxId)).toEqual([hex(2), hex(4), hex(9)]);
     m.receive(delta("rollback", 11, [confirmed(1, 9)], [9, 4]));
-    expect(m.state.view?.confirmed.map((b) => b.boxId)).toEqual([hex(1), hex(2)]);
+    expect(m.state.boxes?.confirmed.map((b) => b.boxId)).toEqual([hex(1), hex(2)]);
   });
 });
 
@@ -291,16 +291,15 @@ describe("spendable now", () => {
         ["b", [box(6, undefined, 50)], [4]],
       ]),
     );
-    const view = m.state.view;
+    const view = m.state.boxes;
     expect(view?.spendable.map((b) => b.boxId)).toEqual([hex(2), hex(3), hex(6)]);
-    expect(view?.spendableTotals).toEqual({ nanoErgs: 1450n, tokens: new Map([[t, 5n]]) });
   });
 
   test("lists a box once while a block confirms a pending output before the next mempool", () => {
     const { m } = live();
     m.receive(mempool(10, [["a", [box(3)], [1]]]));
     m.receive(delta("block", 11, [confirmed(3, 11)], [1]));
-    expect(m.state.view?.spendable.map((b) => b.boxId)).toEqual([hex(2), hex(3)]);
+    expect(m.state.boxes?.spendable.map((b) => b.boxId)).toEqual([hex(2), hex(3)]);
   });
 });
 
@@ -311,7 +310,7 @@ describe("a balance-only subscription", () => {
     m.receive({ type: "subscribed", id: 0, key });
     expect(m.state.phase).toBe("catching_up");
     m.receive(balance(block(10), 5, -2));
-    expect(m.state).toMatchObject({ phase: "live", view: undefined });
+    expect(m.state).toMatchObject({ phase: "live", boxes: undefined });
     expect(m.state.balance?.pending.nanoErgs).toBe(-2n);
     m.receive(balance(block(12), 7));
     expect(m.state.balance?.asOf).toEqual(block(12));
@@ -340,19 +339,19 @@ function retryOf(actions: Action[]) {
 describe("across a dropped socket", () => {
   test("a live key resumes from its last change, keeping its view meanwhile", () => {
     const { m, resyncs } = live();
-    const view = m.state.view;
+    const view = m.state.boxes;
     expect(m.disconnected()).toEqual([]);
-    expect(m.state).toMatchObject({ phase: "disconnected", view });
+    expect(m.state).toMatchObject({ phase: "disconnected", boxes: view });
     // What the old socket still delivers is not this subscription's.
     m.receive(delta("block", 11, [], [7]));
     expect(subscribeOf(m.connected())).toEqual({ op: "subscribe", key, from: block(10), id: 1 });
     expect(m.state.phase).toBe("catching_up");
     m.receive({ type: "subscribed", id: 1, key });
     m.receive(delta("block", 11, [confirmed(3, 11)], [1]));
-    expect(m.state.view).toBe(view);
+    expect(m.state.boxes).toBe(view);
     m.receive(mempool(11));
     expect(m.state.phase).toBe("live");
-    expect(m.state.view?.confirmed.map((b) => b.boxId)).toEqual([hex(2), hex(3)]);
+    expect(m.state.boxes?.confirmed.map((b) => b.boxId)).toEqual([hex(2), hex(3)]);
     expect(resyncs).toEqual([]);
   });
 
@@ -366,7 +365,7 @@ describe("across a dropped socket", () => {
     m.receive(delta("block", 14, [confirmed(4, 14)], [3], block(11)));
     m.receive(mempool(14));
     expect(m.state.phase).toBe("live");
-    expect(m.state.view?.lastChange).toEqual(block(14));
+    expect(m.state.boxes?.lastChange).toEqual(block(14));
     expect(resyncs).toEqual([]);
   });
 
@@ -387,7 +386,7 @@ describe("across a dropped socket", () => {
     m.receive({ type: "subscribed", id: first.id, key });
     m.receive(delta("block", 11, [confirmed(3, 11)], [1]));
     // Not published yet: the replay is not over.
-    expect(m.state.view?.lastChange).toEqual(block(10));
+    expect(m.state.boxes?.lastChange).toEqual(block(10));
     m.disconnected();
     expect(subscribeOf(m.connected()).from).toEqual(block(11));
   });

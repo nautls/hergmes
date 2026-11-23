@@ -30,7 +30,7 @@ async function liveAt(sub: Subscription, tip: BlockRef, what: string): Promise<v
     () =>
       sub.state.phase === "live" &&
       relay.tip?.headerId === tip.headerId &&
-      isDeepStrictEqual(sub.state.view?.confirmed, want),
+      isDeepStrictEqual(sub.state.boxes?.confirmed, want),
     what,
   );
 }
@@ -58,14 +58,15 @@ test("holds on one key share its subscription, which ends with the last", async 
   expect(first.state).toBe(second.state);
 
   const changes: string[] = [];
-  second.onChange((state) => changes.push(state.phase));
+  second.subscribe((state) => changes.push(state.phase));
+  changes.length = 0;
   first.close();
   first.close();
   tip = await mine(1);
   await liveAt(second, tip, "the remaining hold to follow the next block");
   // Listeners hear of it on the next timer, after `state` changed.
   await until(() => changes.length > 0, "the remaining hold's listener called");
-  expect(second.state.view?.confirmed).toEqual(
+  expect(second.state.boxes?.confirmed).toEqual(
     (await sim.expected(key)).boxes.map((b) => ensureUTxOBigInt(b)),
   );
 
@@ -79,22 +80,23 @@ test("a box subscription replaces a balance-only one on the same key", async () 
   const balanceOnly = relay.subscribe(key, { boxes: false });
   await sim.settle();
   await until(() => balanceOnly.state.phase === "live", "the balance");
-  expect(balanceOnly.state.view).toBeUndefined();
+  expect(balanceOnly.state.boxes).toBeUndefined();
 
   const phases: string[] = [];
-  balanceOnly.onChange((state) => phases.push(state.phase));
+  balanceOnly.subscribe((state) => phases.push(state.phase));
+  phases.length = 0;
   const boxes = relay.subscribe(key);
   const tip = await mine(2);
   await liveAt(boxes, tip, "the box subscription live");
   // The balance-only hold's listeners hear of the replacement too.
   await until(() => phases.at(-1) === "live", "the balance-only hold notified");
   expect(balanceOnly.state).toBe(boxes.state);
-  expect(boxes.state.view?.confirmed).toEqual(
+  expect(boxes.state.boxes?.confirmed).toEqual(
     (await sim.expected(key)).boxes.map((b) => ensureUTxOBigInt(b)),
   );
   // A balance-only hold added later keeps the boxes.
   relay.subscribe(key, { boxes: false });
-  expect(boxes.state.view).toBeDefined();
+  expect(boxes.state.boxes).toBeDefined();
 });
 
 test("a token key always follows boxes", async () => {
@@ -102,6 +104,7 @@ test("a token key always follows boxes", async () => {
   const { tokens } = await sim.keys();
   const token = tokens.find((t) => BigInt(t.emission) <= 100n);
   if (!token) throw new Error("no token under the supply limit");
+  // @ts-expect-error A token has no balance to follow alone; the relay follows its boxes anyway.
   const sub = relay.subscribe({ tokenId: token.tokenId }, { boxes: false });
   const tip = await sim.settle();
   await liveAt(sub, tip, "the token live");
@@ -201,7 +204,7 @@ test("a box subscription resumes by itself after its socket dropped, with no sna
   await until(() => opened.count === 2, "the reconnect");
   tip = await mine(5);
   await liveAt(sub, tip, "the key live again");
-  expect(sub.state.view?.confirmed).toEqual(
+  expect(sub.state.boxes?.confirmed).toEqual(
     (await sim.expected(key)).boxes.map((b) => ensureUTxOBigInt(b)),
   );
   expect(reads).toBe(snapshots);

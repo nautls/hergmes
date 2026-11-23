@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { Key, Relay } from "@hergmes/sdk";
+import { Relay, type Key } from "@hergmes/sdk";
 import { computed } from "vue";
 import HistoryList from "./HistoryList.vue";
 import { amount, erg, keyText, short, tokens } from "./format.ts";
@@ -9,12 +9,19 @@ const props = defineProps<{ relay: Relay; target: Key; boxes: boolean }>();
 defineEmits<{ remove: [] }>();
 
 // Opens again when the relay or the key changes; closes with the component.
-const { state } = useHandle(() => props.relay.subscribe(props.target, { boxes: props.boxes }));
+const { state } = useHandle(() =>
+  "address" in props.target
+    ? props.relay.subscribe(props.target, { boxes: props.boxes })
+    : props.relay.subscribe(props.target),
+);
 
 const address = computed(() => ("address" in props.target ? props.target.address : undefined));
 const live = computed(() => state.value?.phase === "live");
+const spendableErgs = computed(
+  () => state.value?.boxes?.spendable.reduce((sum, box) => sum + box.value, 0n) ?? 0n,
+);
 const confirmedIds = computed(
-  () => new Set(state.value?.view?.confirmed.map((box) => box.boxId) ?? []),
+  () => new Set(state.value?.boxes?.confirmed.map((box) => box.boxId) ?? []),
 );
 </script>
 
@@ -57,16 +64,16 @@ const confirmedIds = computed(
       </template>
     </dl>
 
-    <template v-if="state?.view">
+    <template v-if="state?.boxes">
       <h3>
-        Spendable: {{ state.view.spendable.length }} boxes,
-        {{ erg(state.view.spendableTotals.nanoErgs) }}
+        Spendable: {{ state.boxes.spendable.length }} boxes,
+        {{ erg(spendableErgs) }}
         <span class="muted">
-          last change at {{ state.view.lastChange.height.toLocaleString() }}
+          last change at {{ state.boxes.lastChange.height.toLocaleString() }}
         </span>
       </h3>
       <ul class="boxes">
-        <li v-for="box in state.view.spendable" :key="box.boxId">
+        <li v-for="box in state.boxes.spendable" :key="box.boxId">
           <code :title="box.boxId">{{ short(box.boxId) }}</code>
           <span>{{ erg(box.value) }}</span>
           <span v-if="box.assets.length" class="muted">
@@ -76,10 +83,10 @@ const confirmedIds = computed(
         </li>
       </ul>
 
-      <template v-if="state.view.pending.length">
+      <template v-if="state.boxes.pending.length">
         <h3>Pending txs</h3>
         <ul class="boxes">
-          <li v-for="tx in state.view.pending" :key="tx.txId">
+          <li v-for="tx in state.boxes.pending" :key="tx.txId">
             <code :title="tx.txId">{{ short(tx.txId) }}</code>
             <span>+{{ tx.created.length }} / −{{ tx.spent.length }} boxes</span>
           </li>

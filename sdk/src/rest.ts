@@ -93,7 +93,7 @@ export class RestClient {
 
   /**
    * What a tx can spend now from a key, in one response: its confirmed boxes and the pool's
-   * outputs to it, less what pool txs spend. `view.spendable` on a subscription keeps it live.
+   * outputs to it, less what pool txs spend. `boxes.spendable` on a subscription keeps it live.
    */
   spendable(key: Key, options: RequestOptions = {}): Promise<Spendable> {
     return this.#get(`${keyPath(key)}/boxes/with-pool`, {}, options);

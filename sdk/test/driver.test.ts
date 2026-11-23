@@ -36,7 +36,7 @@ test("listeners are called once for the messages that arrived together, with the
   const relay = new Relay("http://relay", { WebSocket: Socket });
   const sub = relay.subscribe(key, { boxes: false });
   const calls: SubscriptionState[] = [];
-  sub.onChange((state) => calls.push(state));
+  sub.subscribe((state) => calls.push(state));
   await task();
   const socket = FakeSocket.last;
   expect(socket?.sent).toEqual([{ op: "subscribe", key, id: 0 }]);
@@ -311,11 +311,13 @@ test("a listener that throws stops neither the others nor the SDK", async () => 
   const b = relay.subscribe(other, { boxes: false });
   await vi.advanceTimersByTimeAsync(0);
   const seen: string[] = [];
-  a.onChange(() => {
+  a.subscribe(() => {
     throw new Error("app bug");
   });
-  a.onChange(() => seen.push("a"));
-  b.onChange(() => seen.push("b"));
+  a.subscribe(() => seen.push("a"));
+  b.subscribe(() => seen.push("b"));
+  // Each was called at once with the current state; only the changes below count.
+  seen.length = 0;
   relay.onTip(() => {
     throw new Error("tip bug");
   });
@@ -338,7 +340,8 @@ test("a listener that throws stops neither the others nor the SDK", async () => 
     }
   }
   expect(seen).toEqual(["a", "b"]);
-  expect(errors.sort()).toEqual(["app bug", "tip bug"]);
+  // The first "app bug" is the throwing listener's call at once.
+  expect(errors.sort()).toEqual(["app bug", "app bug", "tip bug"]);
   relay.close();
 });
 

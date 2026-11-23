@@ -7,21 +7,20 @@ the relay's REST routes.
 ## Install
 
 Not published yet; the package is `@hergmes/sdk`. It runs on Node 22 or later and in browsers
-(the built-in `fetch` and `WebSocket`, nothing else). Its Fleet SDK packages are its own
-dependencies, so an app can be on any Fleet version: a `SignedTransaction` is checked by shape.
+(the built-in `fetch` and `WebSocket`, nothing else).
 
 ## Usage
 
 ```ts
-import { Relay, RelayError } from "@hergmes/sdk";
+import { Relay } from "@hergmes/sdk";
 
 // The relay's root, under which `/v1` is served; it may have a path.
 const relay = new Relay("https://relay.example.com");
 
 const wallet = relay.subscribe({ address: "9f…" });
-wallet.onChange(({ phase, view, balance }) => {
-  if (phase !== "live") return; // `view` and `balance` are their last live values, stale
-  console.log(view?.spendableTotals.nanoErgs, balance?.pending.nanoErgs);
+wallet.subscribe(({ phase, boxes, balance }) => {
+  if (phase !== "live") return; // `boxes` and `balance` are their last live values, stale
+  console.log(boxes?.spendable.length, balance?.confirmed.nanoErgs, balance?.pending.nanoErgs);
 });
 
 // Later: ends this hold, and the key's subscription with the last one.
@@ -38,10 +37,11 @@ ErgoTree's bytes after its constants, for the boxes of every instance of a contr
 constants.
 
 - With boxes (the default) the SDK reads the key's confirmed boxes, subscribes from that block
-  and applies every block, rollback and mempool change that touches the key. Its `state.view` has
+  and applies every block, rollback and mempool change that touches the key. Its `state.boxes` has
   the confirmed boxes, the pending txs as they affect the key, and `spendable`, what a tx can
-  spend now: confirmed boxes and pending outputs no pending tx spends. For an address,
-  `spendableTotals` is the balance's `confirmed + pending`. `view.lastChange` is the block of
+  spend now: confirmed boxes and pending outputs no pending tx spends. For an address, its total
+  is the balance's `confirmed + pending`; for any key, `utxoSum(boxes.spendable)` from
+  `@fleet-sdk/common` totals it. `boxes.lastChange` is the block of
   the key's last change: the relay sends a key only the blocks that change it, so the height to
   show is the relay's, `relay.tip`.
 - With `{ boxes: false }`, an address's balance alone: no snapshot, the lightest subscription.
@@ -50,25 +50,25 @@ constants.
 `state.balance` is the address's balance: `confirmed`, and `pending`, the signed change the
 mempool makes to it. Amounts are `bigint`s, tokens a `Map` from token id to amount.
 
-`state.phase` says where the subscription is, and whether `view` and `balance` are current:
+`state.phase` says where the subscription is, and whether `boxes` and `balance` are current:
 
 | Phase          | Meaning                                                                      |
 | -------------- | ---------------------------------------------------------------------------- |
 | `snapshot`     | reading the key's boxes                                                      |
 | `catching_up`  | subscribed, replaying to the relay's tip                                     |
-| `live`         | following the chain: `view` and `balance` are current                        |
+| `live`         | following the chain: `boxes` and `balance` are current                       |
 | `waiting`      | refused or failed for now; `error.retryAfter` says when it starts again      |
 | `rejected`     | refused or failed for good, `error` says why; a later subscribe tries again  |
 | `disconnected` | the socket closed; it resumes from the key's last change once it opens again |
 
-Outside `live`, `view` and `balance` keep their last live values, to show as stale. Recovery is
+Outside `live`, `boxes` and `balance` keep their last live values, to show as stale. Recovery is
 the SDK's: after a closed socket it reconnects with a jittered backoff and each key resumes from
-its last change, and when the relay asks for a resync, or a message doesn't fit the view, the key reads
+its last change, and when the relay asks for a resync, or a message doesn't fit its boxes, the key reads
 a new snapshot.
 
-`state` is replaced whole on every change. `onChange(listener)` calls the listener once for the
-messages that arrived together, with the latest state; `subscribe(listener)` does the same after
-calling it at once with the current state. Both answer a function that removes the listener.
+`state` is replaced whole on every change. `subscribe(listener)` calls the listener at once with
+the current state, then once for the messages that arrived together, with the latest state. It
+answers a function that removes the listener.
 
 Several holds on one key share its subscription, so components can each open their own. A box
 hold replaces a balance-only subscription; the key is unsubscribed when its last hold closes.
@@ -80,7 +80,7 @@ hold replaces a balance-only subscription; the key is unsubscribed when its last
 
 `relay.history(address, { refresh, limit })` answers a `TxHistory`: the address's txs, newest
 first, pending ones on top, each with its signed net change to the address. The first page is
-read at once; `more()` reads the next older one, as the user scrolls.
+read at once; `more()` reads the next older one.
 
 With `refresh: true` the first page is read again whenever the address's balance changes. This
 holds the address as a balance-only subscription does, sharing the key's subscription if the
@@ -162,8 +162,8 @@ The SDK hands out two kinds of handle, with one shape:
 - `relay.subscribe({ address }, { boxes: false })`, an address's balance alone;
 - `relay.history(address, { refresh: true })`, an address's txs, the first page kept fresh.
 
-Each has a `state` replaced whole on every change, `onChange(listener)`, `subscribe(listener)`
-(a Svelte store's contract: the current state at once, then each change) and `close()`. So one
+Each has a `state` replaced whole on every change, `subscribe(listener)` (a Svelte store's
+contract: the current state at once, then each change) and `close()`. So one
 helper per framework serves all of them. Close a handle when the component that opened it goes
 away: a subscription, and a history with `refresh`, hold the key at the relay until then.
 
@@ -174,7 +174,7 @@ import { useCallback, useEffect, useState, useSyncExternalStore, type Dependency
 
 interface Handle<S> {
   readonly state: S;
-  onChange(listener: (state: S) => void): () => void;
+  subscribe(listener: (state: S) => void): () => void;
   close(): void;
 }
 
@@ -188,7 +188,7 @@ export function useHandle<H extends Handle<unknown>>(open: () => H, deps: Depend
     return () => h.close();
   }, deps);
   const subscribe = useCallback(
-    (onChange: () => void) => handle?.onChange(onChange) ?? (() => undefined),
+    (onChange: () => void) => handle?.subscribe(onChange) ?? (() => undefined),
     [handle],
   );
   const state = useSyncExternalStore(subscribe, () => handle?.state as H["state"] | undefined);
@@ -245,7 +245,7 @@ address can change.
   });
 </script>
 
-<p>{$wallet.phase}: {$wallet.view?.spendableTotals.nanoErgs ?? "…"} nanoERG spendable</p>
+<p>{$wallet.phase}: {$wallet.boxes?.spendable.length ?? "…"} boxes spendable</p>
 ```
 
 ### What each state holds
@@ -260,9 +260,9 @@ const { state: balance } = useHandle(
 );
 // balance?.balance?.confirmed.nanoErgs, balance?.balance?.pending.nanoErgs (signed)
 
-// Boxes, for building txs: what can be spent now, and its totals.
+// Boxes, for building txs: what can be spent now.
 const { state: wallet } = useHandle(() => relay.subscribe({ address }), [relay, address]);
-// wallet?.view?.spendable, wallet?.view?.spendableTotals
+// wallet?.boxes?.spendable; its totals: utxoSum(wallet.boxes.spendable) from @fleet-sdk/common
 
 // History: the first page kept fresh, older pages on demand.
 const { state: txs, handle: history } = useHandle(
@@ -272,7 +272,7 @@ const { state: txs, handle: history } = useHandle(
 // txs?.items, then history?.more() at the bottom of the list
 ```
 
-- `phase` says whether `view` and `balance` are current: only `live` is. While the
+- `phase` says whether `boxes` and `balance` are current: only `live` is. While the
   subscription recovers (`snapshot`, `catching_up`, `disconnected`, `waiting`) they keep their
   last live values, to show as stale; `rejected` is final until the next subscribe, and
   `error` says why.

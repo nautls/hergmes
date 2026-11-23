@@ -1,7 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
-import { ensureUTxOBigInt, type Box } from "@fleet-sdk/common";
+import { ensureUTxOBigInt, utxoSum, type Box } from "@fleet-sdk/common";
 import { afterAll, beforeAll, expect, test } from "vitest";
-import { totals } from "../src/machine.ts";
 import {
   Relay,
   type Assets,
@@ -58,19 +57,24 @@ function wanted(expected: Expected) {
     confirmed: assets(expected.balance.confirmed),
     pending: assets(expected.balance.pending),
   };
-  return { confirmed, pending, spendable, spendableTotals: totals(spendable), balance };
+  return { confirmed, pending, spendable, balance };
 }
 
 /** What a subscription holds, in the shape of {@link wanted}. */
 function held(sub: Subscription) {
-  const { view, balance } = sub.state;
+  const { boxes: view, balance } = sub.state;
   return {
     confirmed: view?.confirmed,
     pending: view?.pending,
     spendable: view?.spendable,
-    spendableTotals: view?.spendableTotals,
     balance: balance && { confirmed: balance.confirmed, pending: balance.pending },
   };
+}
+
+/** The ERG and tokens in `boxes`. */
+function totals(boxes: readonly Box<bigint>[]): Assets {
+  const sum = utxoSum(boxes);
+  return { nanoErgs: sum.nanoErgs, tokens: new Map(sum.tokens.map((t) => [t.tokenId, t.amount])) };
 }
 
 function sum(a: Assets, b: Assets): Assets {
@@ -270,7 +274,7 @@ test(`subscriptions converge to the oracle at every checkpoint (SEED=${String(SE
         if (!exp) return false;
         if (box.state.phase === "rejected") return exp.boxes.length === 0;
         // Only blocks that change a key reach it: its last change is at or below the tip.
-        const at: BlockRef | undefined = box.state.view?.lastChange;
+        const at: BlockRef | undefined = box.state.boxes?.lastChange;
         const want = wanted(exp);
         return (
           box.state.phase === "live" &&
@@ -317,12 +321,12 @@ test(`subscriptions converge to the oracle at every checkpoint (SEED=${String(SE
           continue;
         }
         expect(box.state.phase, keyContext).toBe("live");
-        expect(box.state.view?.lastChange.height, keyContext).toBeLessThanOrEqual(tip.height);
+        expect(box.state.boxes?.lastChange.height, keyContext).toBeLessThanOrEqual(tip.height);
         const want = wanted(exp);
         expect(held(box), keyContext).toEqual(want);
-        if (want.balance && box.state.view) {
+        if (want.balance && box.state.boxes) {
           // Spendable now totals the balance's two halves.
-          expect(sorted(box.state.view.spendableTotals), keyContext).toEqual(
+          expect(sorted(totals(box.state.boxes.spendable)), keyContext).toEqual(
             sorted(sum(want.balance.confirmed, want.balance.pending)),
           );
         }

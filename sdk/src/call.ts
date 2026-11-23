@@ -14,19 +14,24 @@ export function call<T>(listener: ((value: T) => void) | undefined, value: T): v
 }
 
 /**
- * A Svelte store's `subscribe` over a handle's `state` and `onChange`: `listener` gets the
- * current state at once, then each change, never the same state twice in a row (a change
- * made before the batched call would otherwise come again).
+ * A Svelte store's `subscribe` over a handle's state and the listeners its batched calls go
+ * to: `listener` gets the current state at once, then each change, never the same state twice
+ * in a row (a change made before the batched call would otherwise come again).
  */
 export function store<T>(
-  handle: { readonly state: T; onChange(listener: (state: T) => void): () => void },
+  current: T,
+  listeners: Set<(state: T) => void>,
   listener: (state: T) => void,
 ): () => void {
-  let last = handle.state;
-  listener(last);
-  return handle.onChange((state) => {
+  let last = current;
+  call(listener, last);
+  const changed = (state: T) => {
     if (state === last) return;
     last = state;
     listener(state);
-  });
+  };
+  listeners.add(changed);
+  return () => {
+    listeners.delete(changed);
+  };
 }

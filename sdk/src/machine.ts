@@ -59,10 +59,10 @@ export interface BoxView {
   pending: readonly PendingTx[];
   /**
    * What a tx can spend now: the confirmed boxes and pending outputs no pending tx spends,
-   * confirmed first. For an address its total is the balance's `confirmed + pending`.
+   * confirmed first. For an address its total is the balance's `confirmed + pending`; for any
+   * key, `utxoSum` from `@fleet-sdk/common` totals it.
    */
   spendable: readonly Box<bigint>[];
-  spendableTotals: Assets;
 }
 
 /**
@@ -87,14 +87,14 @@ export interface SubscriptionError {
 }
 
 /**
- * A subscription's state, replaced whole on every change. `view` and `balance` keep their
+ * A subscription's state, replaced whole on every change. `boxes` and `balance` keep their
  * last live values while the subscription recovers; `phase` says whether they are current.
  */
 export interface SubscriptionState {
   key: Key;
   phase: Phase;
-  /** A box subscription's view, once it was live. */
-  view: BoxView | undefined;
+  /** A box subscription's boxes, once it was live. */
+  boxes: BoxView | undefined;
   /** An address's latest balance. */
   balance: Balance | undefined;
   error: SubscriptionError | undefined;
@@ -186,7 +186,7 @@ interface Working {
    * rather than sorting and copying every box again.
    */
   confirmed: ConfirmedBox[] | undefined;
-  spendable: { boxes: Box<bigint>[]; totals: Assets } | undefined;
+  spendable: Box<bigint>[] | undefined;
 }
 
 export class KeyMachine {
@@ -209,7 +209,7 @@ export class KeyMachine {
 
   /**
    * `online` says whether the socket is open or opening. `previous` is the state of the
-   * subscription this one replaces, if any: its last view and balance stay visible until this
+   * subscription this one replaces, if any: its last boxes and balance stay visible until this
    * one has its own, as while recovering.
    */
   constructor(
@@ -224,9 +224,9 @@ export class KeyMachine {
     this.#context = context;
     this.#online = online;
     const phase = boxes ? "snapshot" : "catching_up";
-    const view = boxes ? previous?.view : undefined;
+    const view = boxes ? previous?.boxes : undefined;
     const balance = previous?.balance;
-    this.#state = Object.freeze({ key, phase, view, balance, error: undefined });
+    this.#state = Object.freeze({ key, phase, boxes: view, balance, error: undefined });
   }
 
   get state(): SubscriptionState {
@@ -499,10 +499,9 @@ export class KeyMachine {
       lastChange: w.last,
       confirmed,
       pending: w.pending,
-      spendable: w.spendable.boxes,
-      spendableTotals: w.spendable.totals,
+      spendable: w.spendable,
     };
-    this.#set({ phase: next, view: Object.freeze(view) });
+    this.#set({ phase: next, boxes: Object.freeze(view) });
   }
 }
 
@@ -528,7 +527,7 @@ function spendableNow(
   confirmed: readonly ConfirmedBox[],
   held: ReadonlyMap<string, ConfirmedBox>,
   pending: readonly PendingTx[],
-): { boxes: Box<bigint>[]; totals: Assets } {
+): Box<bigint>[] {
   const spent = new Set(pending.flatMap((tx) => tx.spent));
   const boxes: Box<bigint>[] = confirmed.filter((b) => !spent.has(b.boxId));
   for (const tx of pending) {
@@ -536,7 +535,7 @@ function spendableNow(
       if (!spent.has(b.boxId) && !held.has(b.boxId)) boxes.push(b);
     }
   }
-  return { boxes, totals: totals(boxes) };
+  return boxes;
 }
 
 function keysetOrder(a: ConfirmedBox, b: ConfirmedBox): number {
@@ -550,16 +549,4 @@ export function assets(wire: WireAssets): Assets {
     nanoErgs: BigInt(wire.nanoErgs),
     tokens: new Map(wire.tokens.map((t) => [t.tokenId, BigInt(t.amount)])),
   };
-}
-
-/** The ERG and tokens in `boxes`, tokens in id order. */
-export function totals(boxes: readonly Box<bigint>[]): Assets {
-  let nanoErgs = 0n;
-  const tokens = new Map<string, bigint>();
-  for (const box of boxes) {
-    nanoErgs += box.value;
-    for (const t of box.assets) tokens.set(t.tokenId, (tokens.get(t.tokenId) ?? 0n) + t.amount);
-  }
-  const sorted = new Map([...tokens].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)));
-  return { nanoErgs, tokens: sorted };
 }

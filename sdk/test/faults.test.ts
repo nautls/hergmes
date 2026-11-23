@@ -75,8 +75,8 @@ async function converged(sub: Subscription, tip: BlockRef): Promise<void> {
     },
   };
   const held = () => ({
-    confirmed: sub.state.view?.confirmed,
-    pending: sub.state.view?.pending.map((tx) => tx.txId),
+    confirmed: sub.state.boxes?.confirmed,
+    pending: sub.state.boxes?.pending.map((tx) => tx.txId),
     balance: sub.state.balance && {
       confirmed: sub.state.balance.confirmed.nanoErgs,
       pending: sub.state.balance.pending.nanoErgs,
@@ -84,7 +84,7 @@ async function converged(sub: Subscription, tip: BlockRef): Promise<void> {
   });
   const done = () =>
     sub.state.phase === "live" &&
-    (sub.state.view?.lastChange.height ?? 0) <= tip.height &&
+    (sub.state.boxes?.lastChange.height ?? 0) <= tip.height &&
     isDeepStrictEqual(held(), want);
   await until(done, `the oracle's state at ${String(tip.height)}`).catch((e: unknown) => {
     expect(held()).toEqual(want);

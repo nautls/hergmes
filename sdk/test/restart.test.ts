@@ -72,13 +72,13 @@ test("after a restart the SDK reconnects through a dead port and converges on th
       balance: expected.balance && BigInt(expected.balance.confirmed.nanoErgs),
     };
     const held = () => ({
-      confirmed: sub.state.view?.confirmed,
+      confirmed: sub.state.boxes?.confirmed,
       balance: sub.state.balance?.confirmed.nanoErgs,
     });
     await until(
       () =>
         sub.state.phase === "live" &&
-        (sub === subs[2] || (sub.state.view?.lastChange.height ?? Infinity) <= tip.height) &&
+        (sub === subs[2] || (sub.state.boxes?.lastChange.height ?? Infinity) <= tip.height) &&
         isDeepStrictEqual(held(), want),
       `${JSON.stringify(sub.key)} on the new chain`,
     ).catch((e: unknown) => {

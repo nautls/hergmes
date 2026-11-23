@@ -29,11 +29,11 @@ export interface RelayOptions extends RestOptions {
   backoff?: { firstMs?: number; maxMs?: number };
 }
 
+/** How to follow an address. Token and template keys have no balance, so they always follow boxes. */
 export interface SubscribeOptions {
   /**
    * Follow the key's boxes: its confirmed set, the mempool's overlay and what is spendable
-   * now. `false` follows only an address's balance, which needs no snapshot. Token and template
-   * keys have no balance, so they always follow boxes. Defaults to `true`.
+   * now. `false` follows only the balance, which needs no snapshot. Defaults to `true`.
    */
   boxes?: boolean;
 }
@@ -47,21 +47,16 @@ export interface Subscription {
    * The relay sends a block's effect on a key as separate messages: the `block`, then the
    * `mempool` and the `balance` if they changed, and nothing marks the last. So for a moment a
    * live state can pair a new block with the previous overlay and balance: a pending tx the
-   * block replaced with another spender still shows its outputs as spendable, and
-   * `spendableTotals` differs from `balance`. The messages that follow correct it.
+   * block replaced with another spender still shows its outputs as spendable, and `spendable`
+   * disagrees with `balance`. The messages that follow correct it.
    */
   readonly state: SubscriptionState;
   /**
-   * Calls `listener` with the latest state after changes, once for all the messages that
-   * arrived together (on a `setTimeout(0)`), which hides most of those moments and spares a
-   * render per message in a burst. A browser throttles timers in a hidden tab, so a call can
-   * come up to about a second late there; `state` is always current. Answers a function that
-   * removes the listener.
-   */
-  onChange(listener: (state: SubscriptionState) => void): () => void;
-  /**
-   * Calls `listener` with the current state at once, then as {@link Subscription.onChange} does,
-   * never twice with the same state. Answers a function that removes the listener. The
+   * Calls `listener` with the current state at once, then with the latest state after changes,
+   * once for all the messages that arrived together (on a `setTimeout(0)`), never twice with
+   * the same state. Batching hides most of those moments and spares a render per message in a
+   * burst. A browser throttles timers in a hidden tab, so a call can come up to about a second
+   * late there; `state` is always current. Answers a function that removes the listener. The
    * contract of a Svelte store, so the handle is one (`$sub`).
    */
   subscribe(listener: (state: SubscriptionState) => void): () => void;
@@ -142,10 +137,14 @@ export class Relay {
     return () => this.#tipListeners.delete(listener);
   }
 
+  /** Holds `key`. Only an address has a choice in what to follow, so only it takes options. */
+  subscribe(key: { address: string }, options?: SubscribeOptions): Subscription;
+  subscribe(key: Key): Subscription;
   subscribe(key: Key, options: SubscribeOptions = {}): Subscription {
     const boxes = !("address" in key) || options.boxes !== false;
     const name = keyName(key);
     let entry = this.#entries.get(name);
+
     if (!entry) {
       const machine = this.#machine(key, boxes);
       entry = {
@@ -171,20 +170,18 @@ export class Relay {
         return replaced.machine.start();
       });
     }
+
     entry.holds++;
     const held = entry;
     let open = true;
+
     return {
       key,
       get state() {
         return held.machine.state;
       },
-      onChange(listener) {
-        held.listeners.add(listener);
-        return () => held.listeners.delete(listener);
-      },
       subscribe(listener) {
-        return store(this, listener);
+        return store(held.machine.state, held.listeners, listener);
       },
       close: () => {
         if (!open) return;

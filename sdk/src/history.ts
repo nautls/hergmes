@@ -79,14 +79,10 @@ export interface TxHistory {
    */
   more(): Promise<void>;
   /**
-   * Calls `listener` with the latest state after changes, once for all the changes made
-   * together (on a `setTimeout(0)`). Answers a function that removes the listener.
-   */
-  onChange(listener: (state: HistoryState) => void): () => void;
-  /**
-   * Calls `listener` with the current state at once, then as {@link TxHistory.onChange} does,
-   * never twice with the same state. Answers a function that removes the listener. The
-   * contract of a Svelte store, so the handle is one (`$history`).
+   * Calls `listener` with the current state at once, then with the latest state after changes,
+   * once for all the changes made together (on a `setTimeout(0)`), never twice with the same
+   * state. Answers a function that removes the listener. The contract of a Svelte store, so
+   * the handle is one (`$history`).
    */
   subscribe(listener: (state: HistoryState) => void): () => void;
   /** Stops reading and releases the address's hold, if `refresh` took one. */
@@ -110,7 +106,7 @@ export interface HistoryContext {
 /** The part of a subscription a history uses. */
 export interface SubscriptionLike {
   readonly state: SubscriptionState;
-  onChange(listener: (state: SubscriptionState) => void): () => void;
+  subscribe(listener: (state: SubscriptionState) => void): () => void;
   close(): void;
 }
 
@@ -171,7 +167,8 @@ export class HistoryFeed implements TxHistory {
       // a second read of the same page: the first read waits for it to settle instead.
       this.#deferred = settling(hold.state);
       this.#seen = hold.state.balance;
-      this.#unlisten = hold.onChange((state) => {
+      // Called at once with the state just read, which the checks below pass over.
+      this.#unlisten = hold.subscribe((state) => {
         if (this.#deferred) {
           if (settling(state)) return;
           this.#deferred = false;
@@ -201,13 +198,8 @@ export class HistoryFeed implements TxHistory {
     return this.#start("next");
   }
 
-  onChange(listener: (state: HistoryState) => void): () => void {
-    this.#listeners.add(listener);
-    return () => this.#listeners.delete(listener);
-  }
-
   subscribe(listener: (state: HistoryState) => void): () => void {
-    return store(this, listener);
+    return store(this.#state, this.#listeners, listener);
   }
 
   close(): void {
