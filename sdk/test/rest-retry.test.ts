@@ -150,12 +150,12 @@ test("routes are built under the root's path, with keys encoded", async () => {
   const { fetch, calls } = stub(page, page, page, page);
   const client = new RestClient("http://relay/hergmes", { fetch });
   await client.boxes({ address: "9f/x" }, { limit: 3, cursor: "c+/" });
-  await client.spendable({ tokenId: "ab" });
+  await client.spendable("9f/y");
   await client.headers();
   await client.submitTransaction("00", { broadcast: true });
   expect(calls.map((c) => c.url)).toEqual([
     "http://relay/hergmes/v1/addresses/9f%2Fx/boxes?cursor=c%2B%2F&limit=3",
-    "http://relay/hergmes/v1/tokens/ab/boxes/with-pool",
+    "http://relay/hergmes/v1/addresses/9f%2Fy/boxes/spendable",
     "http://relay/hergmes/v1/headers",
     "http://relay/hergmes/v1/transactions",
   ]);

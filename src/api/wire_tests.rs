@@ -169,7 +169,7 @@ fn status_names_the_network_and_has_a_null_tip_before_the_first_block() {
 fn a_view_with_the_pool_lists_confirmed_boxes_then_pending_ones_and_says_if_it_was_cut() {
     let confirmed = Arc::new(utxo());
     let pending = Arc::new(UTxO { id: digest(9), ..utxo() });
-    let view = WithPoolBoxes {
+    let view = SpendableBoxes {
         as_of: BlockRef { height: 12, header_id: digest(5) },
         confirmed: vec![StoredBox { utxo: confirmed.clone(), inclusion_height: 11 }],
         pending: vec![pending.clone()],
@@ -182,9 +182,9 @@ fn a_view_with_the_pool_lists_confirmed_boxes_then_pending_ones_and_says_if_it_w
             json(WireBox { utxo: &pending, inclusion_height: None }),
         )
     };
-    assert_eq!(json(WithPoolBody(&view)), body(false, 2));
-    let cut = WithPoolBoxes { total: 3, ..view };
-    assert_eq!(json(WithPoolBody(&cut)), body(true, 3));
+    assert_eq!(json(SpendableBody(&view)), body(false, 2));
+    let cut = SpendableBoxes { total: 3, ..view };
+    assert_eq!(json(SpendableBody(&cut)), body(true, 3));
 }
 
 /// A history: pending txs with no `height` or `timestamp`, signed amounts as strings, and no

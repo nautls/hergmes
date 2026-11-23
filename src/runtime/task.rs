@@ -124,7 +124,7 @@ impl Message {
             },
             Self::Query(query, _) => match query {
                 Query::Page { .. } => "query_page",
-                Query::WithPool { .. } => "query_with_pool",
+                Query::Spendable { .. } => "query_spendable",
                 Query::Overlay(_) => "query_overlay",
                 Query::Pending(_) => "query_pending",
                 Query::PendingTxs(_) => "query_pending_txs",

@@ -174,10 +174,8 @@ The relay has not been run above the default cap, so a higher one is not yet tes
 | ---------------------------------------------- | ------------------------------------------------- |
 | `GET /v1/addresses/{address}/boxes`            | A page of an address's unspent boxes              |
 | `GET /v1/tokens/{tokenId}/boxes`               | A page of a small-supply token's unspent boxes    |
-| `GET /v1/addresses/{address}/boxes/with-pool`  | An address's boxes with the mempool applied       |
-| `GET /v1/tokens/{tokenId}/boxes/with-pool`     | A token's boxes with the mempool applied          |
+| `GET /v1/addresses/{address}/boxes/spendable`  | An address's spendable boxes, mempool applied     |
 | `GET /v1/templates/{template}/boxes`           | A page of a contract template's unspent boxes     |
-| `GET /v1/templates/{template}/boxes/with-pool` | A template's boxes with the mempool applied       |
 | `GET /v1/addresses/{address}/balance`          | An address's balance, pending change and `used`   |
 | `GET /v1/addresses/{address}/transactions`     | An address's txs, newest first, pending on top    |
 | `GET /v1/headers`                              | The last block headers up to the tip, for signing |
@@ -203,13 +201,13 @@ as a key over `max_boxes_per_key` is. A template is bounded as an address is: by
 `max_boxes_per_key` when loaded, and by `max_tracked_units`. Neither checks it again as it grows,
 so a busy contract's template can hold far more boxes later than when it was loaded.
 
-`/boxes/with-pool` is for clients that fetch without keeping state: the key's confirmed boxes
-minus those pending txs spend, then the boxes pending txs create (these have no
-`inclusionHeight`), all at one tip and in one response with no cursor. It holds at most 1000
-confirmed boxes and every pending one; `truncated` says whether confirmed boxes were left out,
-and `total` is the whole view's size. Its `asOf` is the height only: the view can't be
-followed, so to stream a key, take the snapshot from `/boxes`. "Pending" means this relay's
-node's mempool.
+`/boxes/spendable` is what a tx can spend now from an address, with the mempool applied, for
+clients that fetch without keeping state: the address's confirmed boxes minus those pending
+txs spend, then the boxes pending txs create (these have no `inclusionHeight`), all at one tip
+and in one response with no cursor. It holds at most 1000 confirmed boxes and every pending
+one; `truncated` says whether confirmed boxes were left out, and `total` is the whole view's
+size. Its `asOf` is the height only: the view can't be followed, so to stream an address, take
+the snapshot from `/boxes`. "Pending" means this relay's node's mempool.
 
 `/balance` is `{ "asOf": { "height" }, "confirmed", "pending", "used" }`. `pending` is the
 signed net change the mempool's txs would make, per asset. `used` says whether the address ever
@@ -232,7 +230,7 @@ newest first, for a transaction's signing context: `{ "asOf": { "height", "heade
 came, Fleet SDK's `BlockHeader`. The tip is the best full block the relay serves boxes at, not
 the node's best header, which `/blocks/lastHeaders` follows and which can run ahead of it.
 
-`/boxes/{boxId}` is one box, as one item of `/boxes/with-pool`: confirmed with its
+`/boxes/{boxId}` is one box, as one item of `/boxes/spendable`: confirmed with its
 `inclusionHeight`, or created by a pending tx, without one. A box that is spent, by a block or
 by a pending tx, or unknown is `404 box_not_found`. A box id is not a key, so the key policy
 does not apply.

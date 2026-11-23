@@ -15,7 +15,7 @@ use crate::{
 };
 
 /// A box a tx can spend now: confirmed, with the height of the block that included it, or
-/// created by a pool tx, with none. One item of a view with the pool.
+/// created by a pool tx, with none. One item of a spendable view.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FoundBox {
     pub utxo: Arc<UTxO>,

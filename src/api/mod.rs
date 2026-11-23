@@ -2,7 +2,7 @@
 //!
 //! The services here hold what a request does, without HTTP: the page service reads a
 //! key's box ids from the engine, loading the key first if it is not tracked, and fills in
-//! full boxes, for pages pinned to a block and for the view with the pool (the overlay
+//! full boxes, for pages pinned to a block and for the spendable view (the overlay
 //! applied); the balance service answers an address's balance, from the engine if it is
 //! tracked and from the indexer and the engine's mempool snapshot if not; the history service
 //! reads an address's txs from the indexer; the header service walks back from the engine's
@@ -45,7 +45,7 @@ pub use headers::{Headers, HeadersPage};
 pub use history::{History, HistoryPage};
 pub use metrics::Metrics;
 pub use origins::OriginPolicy;
-pub use pages::{BoxPage, Pages, WithPoolBoxes};
+pub use pages::{BoxPage, Pages, SpendableBoxes};
 pub use policy::KeyPolicy;
 pub use tokens::Tokens;
 pub use transactions::{Refusal, Transactions};

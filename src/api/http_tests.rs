@@ -357,7 +357,7 @@ async fn a_token_snapshot_is_served_and_checked_first() {
 }
 
 /// A template's snapshot holds the boxes of every tree of the template; a template of trees
-/// without segregated constants is refused, and so is its view with the pool.
+/// without segregated constants is refused.
 #[tokio::test]
 async fn a_template_snapshot_is_served_across_its_trees() {
     let mut f = Fixture::new();
@@ -371,23 +371,19 @@ async fn a_template_snapshot_is_served_across_its_trees() {
     let expected = [f.tree(scripts).to_string(), f.tree(scripts + 1).to_string()];
     assert_eq!(trees, expected.iter().map(String::as_str).collect());
     let upper = template.to_string().to_uppercase();
-    f.ok(&format!("/v1/templates/{upper}/boxes/with-pool"))
-        .await;
+    f.ok(&format!("/v1/templates/{upper}/boxes")).await;
 
     // The node's template of a tree without segregated constants: its bytes after the header.
     let p2pk = hex::encode(&f.tree(0).0[1..]);
-    for uri in
-        [format!("/v1/templates/{p2pk}/boxes"), format!("/v1/templates/{p2pk}/boxes/with-pool")]
-    {
-        let code = f.error(&uri, StatusCode::UNPROCESSABLE_ENTITY).await;
-        assert_eq!(code, "unsupported_template", "{uri}");
-    }
+    let uri = format!("/v1/templates/{p2pk}/boxes");
+    assert_eq!(f.error(&uri, StatusCode::UNPROCESSABLE_ENTITY).await, "unsupported_template");
 }
 
-/// The view with the pool is one list with no cursor: confirmed boxes with `inclusionHeight`,
-/// then pending ones without, for addresses and tokens alike.
+/// What a key can spend is one list with no cursor: confirmed boxes with `inclusionHeight`,
+/// then pending ones without. Only an address has one: what it can spend is what a wallet
+/// builds a tx from.
 #[tokio::test]
-async fn boxes_with_pool_list_pending_boxes_after_confirmed_ones() {
+async fn spendable_lists_pending_boxes_after_confirmed_ones() {
     let mut f = Fixture::new();
     f.tick();
     let (spent, pending) = {
@@ -400,7 +396,7 @@ async fn boxes_with_pool_list_pending_boxes_after_confirmed_ones() {
     };
     f.tick();
     let view = f
-        .ok(&format!("/v1/addresses/{}/boxes/with-pool?limit=1", f.address(0)))
+        .ok(&format!("/v1/addresses/{}/boxes/spendable?limit=1", f.address(0)))
         .await;
     let tip = f.sim.lock().tip();
     // The height only: no `headerId`, so it can't be passed as a WebSocket `from`.
@@ -425,12 +421,13 @@ async fn boxes_with_pool_list_pending_boxes_after_confirmed_ones() {
         .count();
     assert_eq!(confirmed.len(), held - 1);
 
-    let token = f
-        .ok(&format!("/v1/tokens/{}/boxes/with-pool", token_id("small-100")))
-        .await;
-    assert_eq!(token["items"].as_array().unwrap().len(), 4);
-    let over = format!("/v1/tokens/{}/boxes/with-pool", token_id("over-101"));
-    assert_eq!(f.error(&over, StatusCode::UNPROCESSABLE_ENTITY).await, "supply_too_large");
+    let template = sim::script_template();
+    for uri in [
+        format!("/v1/tokens/{}/boxes/spendable", token_id("small-100")),
+        format!("/v1/templates/{template}/boxes/spendable"),
+    ] {
+        assert_eq!(f.get(&uri).await.status(), StatusCode::NOT_FOUND, "{uri}: addresses only");
+    }
 }
 
 #[tokio::test(start_paused = true)]
@@ -486,12 +483,10 @@ async fn bad_requests_are_refused_with_their_code() {
         (format!("/v1/addresses/{testnet}/balance"), "invalid_address"),
         ("/v1/addresses/%FF/balance".to_owned(), "invalid_address"),
         ("/v1/tokens/abcd/boxes".to_owned(), "invalid_token_id"),
-        ("/v1/addresses/notanaddress/boxes/with-pool".to_owned(), "invalid_address"),
-        (format!("/v1/addresses/{testnet}/boxes/with-pool"), "invalid_address"),
-        ("/v1/tokens/abcd/boxes/with-pool".to_owned(), "invalid_token_id"),
+        ("/v1/addresses/notanaddress/boxes/spendable".to_owned(), "invalid_address"),
+        (format!("/v1/addresses/{testnet}/boxes/spendable"), "invalid_address"),
         (format!("/v1/tokens/{token}0/boxes"), "invalid_token_id"),
         ("/v1/templates/abc/boxes".to_owned(), "invalid_template"),
-        ("/v1/templates/abc/boxes/with-pool".to_owned(), "invalid_template"),
         (format!("{boxes}?limit=0"), "invalid_limit"),
         (format!("{boxes}?limit=1001"), "invalid_limit"),
         (format!("{boxes}?limit=-1"), "invalid_limit"),
@@ -529,12 +524,10 @@ async fn every_route_refuses_a_key_the_policy_does_not_admit() {
     let template = sim::script_template();
     for uri in [
         format!("/v1/templates/{template}/boxes"),
-        format!("/v1/templates/{template}/boxes/with-pool"),
         format!("/v1/addresses/{}/boxes", f.address(0)),
         format!("/v1/addresses/{}/balance", f.address(0)),
         format!("/v1/tokens/{}/boxes", token_id("small-100")),
-        format!("/v1/addresses/{}/boxes/with-pool", f.address(0)),
-        format!("/v1/tokens/{}/boxes/with-pool", token_id("small-100")),
+        format!("/v1/addresses/{}/boxes/spendable", f.address(0)),
         format!("/v1/addresses/{}/transactions", f.address(0)),
     ] {
         assert_eq!(f.error(&uri, StatusCode::FORBIDDEN).await, "key_not_allowed", "{uri}");

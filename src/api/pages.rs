@@ -13,7 +13,7 @@ use crate::{
     api::{ApiError, Cursor},
     clients::NodeSource,
     engine::{
-        BlockRef, BoxKey, PageError, PageIds, Query, Reply, StoredBox, TrackingKey, WithPoolIds,
+        BlockRef, BoxKey, PageError, PageIds, Query, Reply, SpendableIds, StoredBox, TrackingKey,
     },
     runtime::Settled,
     types::ergo::{BoxId, UTxO},
@@ -22,7 +22,7 @@ use crate::{
 /// Boxes per page when the request names no limit.
 pub const DEFAULT_LIMIT: u32 = 500;
 /// The most boxes per page: one `withPool/byIds` chunk, so a cold page is one node call.
-/// Also the most confirmed boxes in a view with the pool, for the same reason.
+/// Also the most confirmed boxes in a spendable view, for the same reason.
 pub const MAX_LIMIT: u32 = crate::adapters::boxes::CHUNK as u32;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -36,7 +36,7 @@ pub struct BoxPage {
 /// A key's boxes at `as_of` with its overlay applied: the confirmed ones it leaves unspent,
 /// at most [`MAX_LIMIT`], then every pending one it creates and leaves unspent.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WithPoolBoxes {
+pub struct SpendableBoxes {
     pub as_of: BlockRef,
     pub confirmed: Vec<StoredBox>,
     pub pending: Vec<Arc<UTxO>>,
@@ -44,7 +44,7 @@ pub struct WithPoolBoxes {
     pub total: usize,
 }
 
-impl WithPoolBoxes {
+impl SpendableBoxes {
     /// Whether confirmed boxes were left out. Pending ones never are.
     pub fn truncated(&self) -> bool {
         self.confirmed.len() + self.pending.len() < self.total
@@ -118,25 +118,25 @@ impl<S: NodeSource> Pages<S> {
     /// confirmed boxes, the ones a node call may have to fill in, so a cold view is at most
     /// one call; every pending box, which costs none. A key that is not tracked is loaded
     /// first, as for a first page.
-    pub async fn with_pool(
+    pub async fn spendable(
         &self,
         engine: &impl EngineHandle,
         key: &TrackingKey,
-    ) -> Result<WithPoolBoxes, ApiError> {
-        let query = || Query::WithPool { key: key.clone(), limit: MAX_LIMIT as usize };
-        let ids = match with_pool_ids(engine, query()).await? {
+    ) -> Result<SpendableBoxes, ApiError> {
+        let query = || Query::Spendable { key: key.clone(), limit: MAX_LIMIT as usize };
+        let ids = match spendable_ids(engine, query()).await? {
             Some(ids) => ids,
             None => {
                 self.load(engine, key).await?;
                 // `None` again: untracked since the load, its load block orphaned.
-                with_pool_ids(engine, query())
+                spendable_ids(engine, query())
                     .await?
                     .ok_or(ApiError::NotReady { retry_after: self.loader.config().retry })?
             }
         };
-        let WithPoolIds { as_of, confirmed, pending, total } = ids;
+        let SpendableIds { as_of, confirmed, pending, total } = ids;
         let confirmed = self.fill(engine, &confirmed).await?;
-        Ok(WithPoolBoxes { as_of, confirmed, pending, total })
+        Ok(SpendableBoxes { as_of, confirmed, pending, total })
     }
 
     /// The full boxes of `boxes`, in order. Never leaves a box out.
@@ -225,13 +225,13 @@ async fn page_ids(
     }
 }
 
-async fn with_pool_ids(
+async fn spendable_ids(
     engine: &impl EngineHandle,
     query: Query,
-) -> Result<Option<WithPoolIds>, ApiError> {
+) -> Result<Option<SpendableIds>, ApiError> {
     match engine.query(query).await? {
-        Reply::WithPool(view) => Ok(view),
-        other => unreachable!("`Query::WithPool` answered {other:?}"),
+        Reply::Spendable(view) => Ok(view),
+        other => unreachable!("`Query::Spendable` answered {other:?}"),
     }
 }
 

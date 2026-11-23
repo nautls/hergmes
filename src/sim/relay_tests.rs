@@ -181,7 +181,7 @@ fn bad_keys_are_400() {
 }
 
 /// The boxes a tx can spend now, from an expected state: its confirmed boxes and pending
-/// outputs, minus every box a pending tx spends, as `with-pool` lists them.
+/// outputs, minus every box a pending tx spends, as `spendable` lists them.
 fn spendable(expected: &Value) -> Vec<Value> {
     let pending = expected["pending"].as_array().unwrap();
     let spent: HashSet<&str> = pending
@@ -203,7 +203,7 @@ fn spendable(expected: &Value) -> Vec<Value> {
 }
 
 /// Checks the expected state of each key against the relay's own answers: the key's page,
-/// its view with the pool and, for an address, its balance. The relay's services are checked
+/// and, for an address, its spendable boxes and balance. The relay's services are checked
 /// against the oracle by their own properties; this checks that the route reads the oracle
 /// at the engine's tip and the pool the engine was given.
 async fn agrees(router: &Router, tip: &Value) {
@@ -227,10 +227,9 @@ async fn agrees(router: &Router, tip: &Value) {
         assert_eq!(page["nextCursor"], Value::Null);
         assert_eq!(page["items"], expected["boxes"], "{kind} {key}'s boxes");
 
-        let (_, view) = get_json(router, &format!("/v1/{kind}/{key}/boxes/with-pool")).await;
-        assert_eq!(view["items"], json!(spendable(&expected)), "{kind} {key} with the pool");
-
         if kind == "addresses" {
+            let (_, view) = get_json(router, &format!("/v1/{kind}/{key}/boxes/spendable")).await;
+            assert_eq!(view["items"], json!(spendable(&expected)), "{key}'s spendable boxes");
             let (_, balance) = get_json(router, &format!("/v1/{kind}/{key}/balance")).await;
             assert_eq!(balance["confirmed"], expected["balance"]["confirmed"]);
             assert_eq!(balance["pending"], expected["balance"]["pending"]);

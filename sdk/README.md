@@ -99,17 +99,17 @@ history.close();
 `relay.rest` is a `RestClient`, also usable alone as `new RestClient(url)`. Each method answers
 the route's JSON as it came, amounts as base-10 strings:
 
-| Method                                 | Route                                              |
-| -------------------------------------- | -------------------------------------------------- |
-| `status()`                             | `GET /v1/status`                                   |
-| `boxes(key, { cursor, limit })`        | `GET /v1/{addresses,tokens}/{key}/boxes`           |
-| `spendable(key)`                       | `GET /v1/{addresses,tokens}/{key}/boxes/with-pool` |
-| `balance(address)`                     | `GET /v1/addresses/{address}/balance`              |
-| `history(address, { cursor, limit })`  | `GET /v1/addresses/{address}/transactions`         |
-| `headers({ limit })`                   | `GET /v1/headers`                                  |
-| `box(boxId)`                           | `GET /v1/boxes/{boxId}`                            |
-| `tokens(ids)`                          | `GET /v1/tokens/metadata?ids=...`                  |
-| `submitTransaction(tx, { broadcast })` | `POST /v1/transactions`                            |
+| Method                                 | Route                                         |
+| -------------------------------------- | --------------------------------------------- |
+| `status()`                             | `GET /v1/status`                              |
+| `boxes(key, { cursor, limit })`        | `GET /v1/{addresses,tokens}/{key}/boxes`      |
+| `spendable(address)`                   | `GET /v1/addresses/{address}/boxes/spendable` |
+| `balance(address)`                     | `GET /v1/addresses/{address}/balance`         |
+| `history(address, { cursor, limit })`  | `GET /v1/addresses/{address}/transactions`    |
+| `headers({ limit })`                   | `GET /v1/headers`                             |
+| `box(boxId)`                           | `GET /v1/boxes/{boxId}`                       |
+| `tokens(ids)`                          | `GET /v1/tokens/metadata?ids=...`             |
+| `submitTransaction(tx, { broadcast })` | `POST /v1/transactions`                       |
 
 `tokens` answers the metadata of the tokens the relay's node knows among `ids`, leaving out the
 others; more than 100 ids take a request per 100, one after another.

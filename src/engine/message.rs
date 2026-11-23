@@ -65,7 +65,7 @@ pub enum Query {
     /// A tracked key's boxes at the tip with its overlay applied, in one message so both
     /// halves are at one tip. At most `limit` confirmed boxes, the ones a node call may have
     /// to fill in; every pending box, which the snapshot holds in full.
-    WithPool {
+    Spendable {
         key: TrackingKey,
         limit: usize,
     },
@@ -118,7 +118,7 @@ pub enum Query {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Reply {
     Page(Result<PageIds, PageError>),
-    WithPool(Option<WithPoolIds>),
+    Spendable(Option<SpendableIds>),
     Overlay(Vec<PendingTx>),
     Pending(Option<PendingAt>),
     PendingTxs(Option<PendingTxsAt>),
@@ -206,12 +206,12 @@ pub enum PageError {
     CursorExpired,
 }
 
-/// A key's view with the pool: its boxes at `as_of` that the overlay leaves unspent, in keyset
+/// A key's spendable view: its boxes at `as_of` that the overlay leaves unspent, in keyset
 /// order and cut to the limit, then every box the overlay creates and leaves unspent, in
 /// overlay order. Confirmed boxes are ids, filled in by the box fetcher; pending ones are in
 /// full, from the snapshot.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WithPoolIds {
+pub struct SpendableIds {
     pub as_of: BlockRef,
     pub confirmed: Vec<BoxKey>,
     pub pending: Vec<Arc<UTxO>>,

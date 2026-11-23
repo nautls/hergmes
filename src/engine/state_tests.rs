@@ -64,7 +64,7 @@ enum Op {
         limit: u8,
     },
     /// A REST read of a key's boxes with the pool, with at most `limit` confirmed ones.
-    WithPool {
+    Spendable {
         key: Index,
         limit: u8,
     },
@@ -87,7 +87,7 @@ fn op() -> impl Strategy<Value = Op> {
         2 => any::<Index>().prop_map(Op::Resume),
         2 => (any::<Index>(), any::<Index>(), 1..5u8)
             .prop_map(|(key, at, limit)| Op::Page { key, at, limit }),
-        2 => (any::<Index>(), 0..6u8).prop_map(|(key, limit)| Op::WithPool { key, limit }),
+        2 => (any::<Index>(), 0..6u8).prop_map(|(key, limit)| Op::Spendable { key, limit }),
         4 => (0..=MAX_ADVANCE_SECS).prop_map(Op::Advance),
     ]
 }
@@ -337,9 +337,9 @@ impl Harness {
                 let at = blocks[at.index(blocks.len())];
                 self.page(&key, at, usize::from(*limit));
             }
-            Op::WithPool { key, limit } => {
+            Op::Spendable { key, limit } => {
                 let key = self.pick_key(key);
-                self.with_pool(&key, usize::from(*limit));
+                self.spendable(&key, usize::from(*limit));
             }
             Op::Advance(secs) => {
                 self.now += u64::from(*secs) * 1000;
@@ -1135,10 +1135,10 @@ impl Harness {
         }
     }
 
-    fn with_pool(&mut self, key: &TrackingKey, limit: usize) {
-        let query = Query::WithPool { key: key.clone(), limit };
-        let Reply::WithPool(reply) = self.engine.query(query) else {
-            panic!("a with-pool reply");
+    fn spendable(&mut self, key: &TrackingKey, limit: usize) {
+        let query = Query::Spendable { key: key.clone(), limit };
+        let Reply::Spendable(reply) = self.engine.query(query) else {
+            panic!("a spendable reply");
         };
         let (tip, now) = (self.tip(), self.now);
         let Some(model) = self.keys.get_mut(key).filter(|m| !m.balance_only) else {
@@ -1146,27 +1146,27 @@ impl Harness {
             return;
         };
         model.last_seen = now;
-        let (mut confirmed, pending) = self.reference_with_pool(key);
+        let (mut confirmed, pending) = self.reference_spendable(key);
         let total = confirmed.len() + pending.len();
         let held = self.engine.keys[&self.engine.ids[key]].boxes.len();
         if confirmed.len() > limit {
             // Only confirmed boxes are cut, the first ones in keyset order kept.
             confirmed.truncate(limit);
-            self.seen.insert("with-pool view cut to the limit");
+            self.seen.insert("spendable view cut to the limit");
             if !pending.is_empty() {
                 self.seen
-                    .insert("with-pool view cut to the limit lists every pending box");
+                    .insert("spendable view cut to the limit lists every pending box");
             }
         } else if held > limit {
             self.seen
-                .insert("with-pool view fits the limit only after pending spends");
+                .insert("spendable view fits the limit only after pending spends");
         }
-        assert_eq!(reply, Some(WithPoolIds { as_of: tip, confirmed, pending, total }));
+        assert_eq!(reply, Some(SpendableIds { as_of: tip, confirmed, pending, total }));
     }
 
-    /// `key`'s view with the pool at the engine's tip: the oracle's unspent boxes the reference
+    /// `key`'s spendable view at the engine's tip: the oracle's unspent boxes the reference
     /// overlay leaves unspent, then the boxes it creates and leaves unspent, in its order.
-    fn reference_with_pool(&self, key: &TrackingKey) -> (Vec<BoxKey>, Vec<Arc<UTxO>>) {
+    fn reference_spendable(&self, key: &TrackingKey) -> (Vec<BoxKey>, Vec<Arc<UTxO>>) {
         let oracle = self.oracle();
         let height = self.tip().height;
         let ids: HashSet<BoxId> = oracle.utxo(height).values().map(|b| b.id).collect();
@@ -1584,38 +1584,38 @@ impl Harness {
             }
         }
 
-        // Every tracked key's view with the pool is the reference one, and an address's sums to its
+        // Every tracked key's spendable view is the reference one, and an address's sums to its
         // balance: the overlay applied to the boxes, or to the totals, gives the same assets.
-        // Read without `Query::WithPool`, which would count as activity.
+        // Read without `Query::Spendable`, which would count as activity.
         for key in self
             .keys
             .iter()
             .filter(|(_, m)| m.balance_only)
             .map(|(k, _)| k)
         {
-            assert_eq!(self.engine.with_pool(key, usize::MAX), None, "{key:?} has no view");
+            assert_eq!(self.engine.spendable(key, usize::MAX), None, "{key:?} has no view");
         }
         for key in &self.box_keys() {
             let view = self
                 .engine
-                .with_pool(key, usize::MAX)
+                .spendable(key, usize::MAX)
                 .expect("a tracked key has a view");
-            let (confirmed, pending) = self.reference_with_pool(key);
+            let (confirmed, pending) = self.reference_spendable(key);
             let total = confirmed.len() + pending.len();
-            let expected = WithPoolIds { as_of: tip, confirmed, pending, total };
+            let expected = SpendableIds { as_of: tip, confirmed, pending, total };
             assert_eq!(view, expected, "{key:?}'s view");
             let held = &self.engine.keys[&self.engine.ids[key]].boxes;
             if view.confirmed.len() < held.len() {
-                self.seen.insert("with-pool view drops a pending-spent box");
+                self.seen.insert("spendable view drops a pending-spent box");
             }
             if !view.pending.is_empty() {
-                self.seen.insert("with-pool view lists a pending box");
+                self.seen.insert("spendable view lists a pending box");
             }
             let overlay = self.engine.mempool.overlay(key);
             let created = overlay.iter().map(|p| p.created.len()).sum::<usize>();
             if created > view.pending.len() {
                 self.seen
-                    .insert("with-pool view hides a box created and spent in the pool");
+                    .insert("spendable view hides a box created and spent in the pool");
             }
             if let Some(balance) = self.engine.balance(key) {
                 let boxes = view
@@ -1835,12 +1835,12 @@ fn random_histories_reach_the_hard_engine_cases() {
         "partial confirmation",
         "balance sent though confirmed + pending stayed",
         "reorg-returned tx in a snapshot after the rollback",
-        "with-pool view drops a pending-spent box",
-        "with-pool view lists a pending box",
-        "with-pool view hides a box created and spent in the pool",
-        "with-pool view cut to the limit",
-        "with-pool view cut to the limit lists every pending box",
-        "with-pool view fits the limit only after pending spends",
+        "spendable view drops a pending-spent box",
+        "spendable view lists a pending box",
+        "spendable view hides a box created and spent in the pool",
+        "spendable view cut to the limit",
+        "spendable view cut to the limit lists every pending box",
+        "spendable view fits the limit only after pending spends",
         "pending history of a conflict",
         "pending history lists a child above its parent",
         "pool box created and spent in the pool",
@@ -2094,8 +2094,8 @@ fn a_catch_up_from_a_block_resyncs_a_balance_only_key() {
     assert!(matches!(&f.catch_up(&zero, None)[..], [Output::Balance { .. }]));
     let page = Query::Page { key: zero.clone(), at: None, after: None, limit: 10 };
     assert_eq!(f.engine.query(page), Reply::Page(Err(PageError::NotTracked)));
-    let with_pool = Query::WithPool { key: zero.clone(), limit: 10 };
-    assert_eq!(f.engine.query(with_pool), Reply::WithPool(None));
+    let spendable = Query::Spendable { key: zero.clone(), limit: 10 };
+    assert_eq!(f.engine.query(spendable), Reply::Spendable(None));
 }
 
 /// A balance-only key that started from a wrong balance resyncs when a block spends more

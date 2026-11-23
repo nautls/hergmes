@@ -24,7 +24,7 @@ afterAll(() => {
   sim.stop();
 });
 
-/** The boxes a tx can spend now, as `with-pool` lists them: confirmed first, then pending. */
+/** The boxes a tx can spend now, as `spendable` lists them: confirmed first, then pending. */
 function spendable(expected: Expected): PoolBox[] {
   const spent = new Set(expected.pending.flatMap((tx) => tx.spent));
   const created = expected.pending.flatMap((tx) => tx.created);
@@ -76,7 +76,7 @@ async function rejection(promise: Promise<unknown>): Promise<RelayError> {
 const SEED = BigInt(process.env.SEED ?? Math.floor(Math.random() * 2 ** 48));
 
 describe(`the REST routes against the oracle (SEED=${String(SEED)})`, () => {
-  test("every key's pages, view with the pool and balance equal the oracle's", async () => {
+  test("every key's pages, spendable view and balance equal the oracle's", async () => {
     const next = seeds(SEED);
     const ops = [];
     for (let round = 0; round < 4; round++) {
@@ -121,14 +121,16 @@ describe(`the REST routes against the oracle (SEED=${String(SEED)})`, () => {
         }
         expect(pages, keyContext).toEqual(expected.boxes);
 
-        const view = await client.spendable(key);
         const now = spendable(expected);
-        expect(view, keyContext).toEqual({
-          asOf: { height: tip.height },
-          items: now,
-          truncated: false,
-          total: now.length,
-        });
+        if ("address" in key) {
+          const view = await client.spendable(key.address);
+          expect(view, keyContext).toEqual({
+            asOf: { height: tip.height },
+            items: now,
+            truncated: false,
+            total: now.length,
+          });
+        }
 
         if ("address" in key) {
           const balance = await client.balance(key.address);
@@ -162,7 +164,7 @@ describe(`the REST routes against the oracle (SEED=${String(SEED)})`, () => {
           }
         }
 
-        // A box by id is one item of the view: a confirmed one and a pending output.
+        // A box by id is one item of what is spendable: a confirmed one and a pending output.
         const confirmedBox = now.find((box) => box.inclusionHeight !== undefined);
         const pendingBox = now.find((box) => box.inclusionHeight === undefined);
         for (const box of [confirmedBox, pendingBox]) {

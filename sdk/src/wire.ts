@@ -23,7 +23,7 @@ export interface BlockRef {
 
 /**
  * The height a one-off read is as of. It has no `headerId`, so it can't be mistaken for a
- * point to stream from: a balance or a view with the pool has the mempool applied.
+ * point to stream from: a balance or a spendable view has the mempool applied.
  */
 export interface AsOfHeight {
   height: number;

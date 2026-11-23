@@ -17,7 +17,7 @@ use serde_json::value::RawValue;
 
 use crate::{
     api::{
-        AddressBalance, BoxPage, FoundBox, HeadersPage, WithPoolBoxes,
+        AddressBalance, BoxPage, FoundBox, HeadersPage, SpendableBoxes,
         history::{HistoryItem, HistoryPage},
     },
     engine::{BlockRef, StoredBox, Totals, overlay::PendingDelta},
@@ -147,14 +147,14 @@ impl Serialize for PageBody<'_> {
     }
 }
 
-/// `GET /v1/{addresses,tokens}/.../boxes/with-pool`: one list, confirmed boxes first. A pending
+/// `GET /v1/addresses/{address}/boxes/spendable`: one list, confirmed boxes first. A pending
 /// box is told apart by having no `inclusionHeight`, so clients hand the list to Fleet as it
 /// is. `truncated` is always present, and `total` is the whole view's size, so a client can
 /// tell a view cut to the limit from a complete one. `asOf` is the height only: the view has
 /// the pool applied, so it is no point to stream from.
-pub struct WithPoolBody<'a>(pub &'a WithPoolBoxes);
+pub struct SpendableBody<'a>(pub &'a SpendableBoxes);
 
-impl Serialize for WithPoolBody<'_> {
+impl Serialize for SpendableBody<'_> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let view = self.0;
         let pending = view
@@ -167,7 +167,7 @@ impl Serialize for WithPoolBody<'_> {
             .map(WireBox::from)
             .chain(pending)
             .collect();
-        let mut s = serializer.serialize_struct("WithPool", 4)?;
+        let mut s = serializer.serialize_struct("Spendable", 4)?;
         s.serialize_field("asOf", &AsOfHeight { height: view.as_of.height })?;
         s.serialize_field("items", &items)?;
         s.serialize_field("truncated", &view.truncated())?;
@@ -279,7 +279,7 @@ impl Serialize for HeadersBody<'_> {
     }
 }
 
-/// `GET /v1/boxes/{boxId}`: the box alone, as one item of a view with the pool, so a pending
+/// `GET /v1/boxes/{boxId}`: the box alone, as one item of a spendable view, so a pending
 /// one has no `inclusionHeight`. No `asOf`: a confirmed box carries its own height.
 pub struct BoxBody<'a>(pub &'a FoundBox);
 

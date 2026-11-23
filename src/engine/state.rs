@@ -14,7 +14,7 @@ use crate::{
     engine::{
         Balance, BlockDelta, BlockRef, BoxKey, Capacity, ChainLink, EngineError, Event, KeyDelta,
         KeyId, LoadedBox, Mempool, Output, PageError, PageIds, PendingAt, PendingTxsAt, Query,
-        Reply, ResyncReason, Spend, Stats, StoredBox, Totals, TrackingKey, WithPoolIds,
+        Reply, ResyncReason, Spend, SpendableIds, Stats, StoredBox, Totals, TrackingKey,
         has_templates,
         overlay::{self, PendingDelta},
     },
@@ -302,11 +302,11 @@ impl Engine {
     pub fn query(&mut self, query: Query) -> Reply {
         match query {
             Query::Page { key, at, after, limit } => Reply::Page(self.page(&key, at, after, limit)),
-            Query::WithPool { key, limit } => {
+            Query::Spendable { key, limit } => {
                 if !self.is_balance_only(&key) {
                     self.touch(&key);
                 }
-                Reply::WithPool(self.with_pool(&key, limit))
+                Reply::Spendable(self.spendable(&key, limit))
             }
             Query::Overlay(key) => Reply::Overlay(self.mempool.overlay(&key)),
             Query::Pending(key) => Reply::Pending(
@@ -1209,7 +1209,7 @@ impl Engine {
     /// A tracked key's boxes at the tip with its overlay applied, with at most `limit`
     /// confirmed ones. The limit is taken after the pending spends, so the boxes cut are ones
     /// a client could spend.
-    pub(crate) fn with_pool(&self, key: &TrackingKey, limit: usize) -> Option<WithPoolIds> {
+    pub(crate) fn spendable(&self, key: &TrackingKey, limit: usize) -> Option<SpendableIds> {
         if self.is_balance_only(key) {
             return None;
         }
@@ -1236,7 +1236,7 @@ impl Engine {
             .take(limit)
             .copied()
             .collect();
-        Some(WithPoolIds { as_of, confirmed, pending, total })
+        Some(SpendableIds { as_of, confirmed, pending, total })
     }
 
     fn catch_up(&mut self, key: TrackingKey, from: Option<BlockRef>) -> Vec<Output> {

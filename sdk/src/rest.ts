@@ -92,11 +92,12 @@ export class RestClient {
   }
 
   /**
-   * What a tx can spend now from a key, in one response: its confirmed boxes and the pool's
-   * outputs to it, less what pool txs spend. `boxes.spendable` on a subscription keeps it live.
+   * What a tx can spend now from an address, in one response: its confirmed boxes and the
+   * pool's outputs to it, less what pool txs spend. `boxes.spendable` on a subscription keeps
+   * it live.
    */
-  spendable(key: Key, options: RequestOptions = {}): Promise<Spendable> {
-    return this.#get(`${keyPath(key)}/boxes/with-pool`, {}, options);
+  spendable(address: string, options: RequestOptions = {}): Promise<Spendable> {
+    return this.#get(`${keyPath({ address })}/boxes/spendable`, {}, options);
   }
 
   /** An address's balance, confirmed and pending. */

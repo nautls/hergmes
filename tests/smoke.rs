@@ -255,8 +255,8 @@ async fn an_address_an_nft_and_a_small_supply_token_are_tracked_and_served() {
             TrackingKey::Tree(_) => assert!(!boxes.is_empty(), "the address holds boxes"),
             TrackingKey::Template(_) => unreachable!("no template here"),
         }
-        let view = relay.pages.with_pool(&relay.engine, &key).await.unwrap();
-        assert!(view.total >= view.pending.len(), "the view with the pool is served");
+        let view = relay.pages.spendable(&relay.engine, &key).await.unwrap();
+        assert!(view.total >= view.pending.len(), "the spendable view is served");
     }
     assert_eq!(boxes_of(&relay, &token("nft")).await.len(), 1, "an NFT is one box");
 

@@ -810,7 +810,7 @@ fn a_view_with_the_pool_loads_the_key_and_applies_it() {
     let pending = last.outputs[0].clone();
     submit(&sim, &engine, vec![middle, last]);
 
-    let view = ready(pages.with_pool(&engine, &key)).unwrap();
+    let view = ready(pages.spendable(&engine, &key)).unwrap();
     assert!(engine.lock().unwrap().is_tracked(&key));
     assert_eq!(view.as_of, sim.lock().tip());
     let confirmed: Vec<StoredBox> = (expected(&sim, &key).into_iter())
@@ -823,7 +823,7 @@ fn a_view_with_the_pool_loads_the_key_and_applies_it() {
     assert_eq!(count(&sim, Endpoint::BoxesWithPool), 0);
 
     let calls = sim.calls().len();
-    assert_eq!(ready(pages.with_pool(&engine, &key)).unwrap(), view);
+    assert_eq!(ready(pages.spendable(&engine, &key)).unwrap(), view);
     assert_eq!(sim.calls().len(), calls, "a tracked key is served from memory");
 }
 
@@ -854,7 +854,7 @@ fn a_view_holds_one_node_page_of_confirmed_boxes_and_every_pending_one() {
     let key = tree_key(&sim, 0);
     let limit = MAX_LIMIT as usize;
 
-    let view = ready(pages.with_pool(&engine, &key)).unwrap();
+    let view = ready(pages.spendable(&engine, &key)).unwrap();
     let all = expected(&sim, &key);
     assert_eq!(view.confirmed, all[..limit]);
     assert!(view.pending.is_empty());
@@ -868,7 +868,7 @@ fn a_view_holds_one_node_page_of_confirmed_boxes_and_every_pending_one() {
         chain.transfer(&[from], &tree)
     };
     submit(&sim, &engine, vec![incoming.clone()]);
-    let view = ready(pages.with_pool(&engine, &key)).unwrap();
+    let view = ready(pages.spendable(&engine, &key)).unwrap();
     assert_eq!(view.confirmed, all[..limit]);
     assert_eq!(view.pending, incoming.outputs);
     assert_eq!((view.total, view.truncated()), (limit + 2, true));
@@ -880,7 +880,7 @@ fn a_view_holds_one_node_page_of_confirmed_boxes_and_every_pending_one() {
         .transfer(&[all[0].utxo.id, all[1].utxo.id], &tree);
     submit(&sim, &engine, vec![merge.clone()]);
     let calls = count(&sim, Endpoint::BoxesWithPool);
-    let view = ready(pages.with_pool(&engine, &key)).unwrap();
+    let view = ready(pages.spendable(&engine, &key)).unwrap();
     assert_eq!(view.confirmed, all[2..]);
     // Two independent txs: overlay order puts the smaller tx id first.
     let mut txs = [&incoming, &merge];
@@ -896,18 +896,18 @@ fn a_view_holds_one_node_page_of_confirmed_boxes_and_every_pending_one() {
 fn a_view_with_the_pool_loads_like_a_first_page() {
     let (sim, engine, pages) = service(crate::sim::testing::new_chain(), 1 << 20);
     let over = TrackingKey::Token(token_id("over-101"));
-    let error = ready(pages.with_pool(&engine, &over)).unwrap_err();
+    let error = ready(pages.spendable(&engine, &over)).unwrap_err();
     assert_eq!(error, ApiError::SupplyTooLarge { emission: 101, limit: SUPPLY_LIMIT });
 
     let small = TrackingKey::Token(token_id("small-100"));
-    let view = ready(pages.with_pool(&engine, &small)).unwrap();
+    let view = ready(pages.spendable(&engine, &small)).unwrap();
     assert_eq!(view.confirmed, expected(&sim, &small));
     assert!(view.pending.is_empty(), "no snapshot yet");
 
     let (settled, _pending) = crate::runtime::settling(1);
     let (sim, engine, pages) = service(crate::sim::testing::new_chain(), 0);
     let pages = pages.waiting_for(settled);
-    let error = ready(pages.with_pool(&engine, &tree_key(&sim, 0))).unwrap_err();
+    let error = ready(pages.spendable(&engine, &tree_key(&sim, 0))).unwrap_err();
     assert!(matches!(error, ApiError::NotReady { .. }), "{error:?}");
     assert!(sim.calls().is_empty());
 }

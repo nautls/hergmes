@@ -36,8 +36,8 @@ use crate::{
         pages,
         transactions::{self, MAX_HEX_CHARS},
         wire::{
-            BalanceBody, BoxBody, ErrorBody, HeadersBody, HistoryBody, PageBody, StatusBody,
-            SubmittedBody, TokensBody, WithPoolBody,
+            BalanceBody, BoxBody, ErrorBody, HeadersBody, HistoryBody, PageBody, SpendableBody,
+            StatusBody, SubmittedBody, TokensBody,
         },
     },
     clients::NodeSource,
@@ -99,10 +99,8 @@ where
     Router::new()
         .route("/v1/addresses/{address}/boxes", get(address_boxes::<S, E>))
         .route("/v1/tokens/{token_id}/boxes", get(token_boxes::<S, E>))
-        .route("/v1/addresses/{address}/boxes/with-pool", get(address_with_pool::<S, E>))
-        .route("/v1/tokens/{token_id}/boxes/with-pool", get(token_with_pool::<S, E>))
+        .route("/v1/addresses/{address}/boxes/spendable", get(address_spendable::<S, E>))
         .route("/v1/templates/{template}/boxes", get(template_boxes::<S, E>))
-        .route("/v1/templates/{template}/boxes/with-pool", get(template_with_pool::<S, E>))
         .route("/v1/addresses/{address}/balance", get(address_balance::<S, E>))
         .route("/v1/addresses/{address}/transactions", get(address_history::<S, E>))
         .route("/v1/headers", get(last_headers::<S, E>))
@@ -193,39 +191,14 @@ async fn page<S: NodeSource, E: EngineHandle>(
     Ok(Json(PageBody(&page)).into_response())
 }
 
-async fn address_with_pool<S: NodeSource, E: EngineHandle>(
+async fn address_spendable<S: NodeSource, E: EngineHandle>(
     State(api): State<Arc<Api<S, E>>>,
     address: Result<Path<String>, PathRejection>,
 ) -> Result<Response, ApiError> {
     let address = address.map_err(|e| ApiError::InvalidAddress(e.body_text()))?;
     let key = address_key(&address, api.network, &api.policy)?;
-    with_pool(&api, &key).await
-}
-
-async fn token_with_pool<S: NodeSource, E: EngineHandle>(
-    State(api): State<Arc<Api<S, E>>>,
-    token_id: Result<Path<String>, PathRejection>,
-) -> Result<Response, ApiError> {
-    let token_id = token_id.map_err(|_| ApiError::InvalidTokenId)?;
-    let key = token_key(&token_id, &api.policy)?;
-    with_pool(&api, &key).await
-}
-
-async fn template_with_pool<S: NodeSource, E: EngineHandle>(
-    State(api): State<Arc<Api<S, E>>>,
-    template: Result<Path<String>, PathRejection>,
-) -> Result<Response, ApiError> {
-    let template = template.map_err(|_| ApiError::InvalidTemplate)?;
-    let key = template_key(&template, &api.policy)?;
-    with_pool(&api, &key).await
-}
-
-async fn with_pool<S: NodeSource, E: EngineHandle>(
-    api: &Api<S, E>,
-    key: &TrackingKey,
-) -> Result<Response, ApiError> {
-    let view = api.pages.with_pool(&api.engine, key).await?;
-    Ok(Json(WithPoolBody(&view)).into_response())
+    let view = api.pages.spendable(&api.engine, &key).await?;
+    Ok(Json(SpendableBody(&view)).into_response())
 }
 
 async fn address_balance<S: NodeSource, E: EngineHandle>(
