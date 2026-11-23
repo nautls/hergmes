@@ -13,7 +13,7 @@ mod state;
 pub use block::{
     BlockDelta, BlockRef, BoxKey, ChainLink, Change, KeyDelta, KeyId, Spend, StoredBox, Totals,
 };
-pub use key::TrackingKey;
+pub use key::{TrackingKey, has_templates};
 pub use mempool::Mempool;
 pub use message::{
     Balance, Capacity, EngineError, Event, LoadedBox, Output, PageError, PageIds, PendingAt,

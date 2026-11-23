@@ -13,11 +13,13 @@
 //! - `POST /sim/tick`: one follower tick; answers `{ tip, synced }`.
 //! - `POST /sim/settle`: the indexer brought to the tip (no lag, no recovery), then ticks
 //!   until the engine is at the node's tip with its mempool; answers `{ tip }`.
-//! - `GET /sim/expected/addresses/{address}`, `GET /sim/expected/tokens/{tokenId}`: the
+//! - `GET /sim/expected/addresses/{address}`, `GET /sim/expected/tokens/{tokenId}`,
+//!   `GET /sim/expected/templates/{hash}`: the
 //!   oracle's state for the key at the tip, in the relay's wire shapes: its boxes and overlay,
 //!   and for an address its balance and its whole history, as the history route's items. Only
 //!   right after a tick or settle that synced, with no op since: `409` otherwise.
-//! - `GET /sim/keys`: the chain's trees as addresses, and its tokens with their emission.
+//! - `GET /sim/keys`: the chain's trees as addresses, its tokens with their emission, and the
+//!   template its scripts share.
 
 use std::{
     sync::{Arc, Mutex, PoisonError},
@@ -48,7 +50,7 @@ use crate::{
         Balances, Boxes, Headers, History, KeyPolicy, Pages, Tokens, Transactions, balances,
         history,
         http::{self, Api},
-        keys::{address_key, token_key},
+        keys::{address_key, template_key, token_key},
         protocol::WirePendingTx,
         wire::{AsOf, Confirmed, Pending, WireBox},
         ws,
@@ -56,8 +58,8 @@ use crate::{
     engine::{self, BlockRef, Engine, TrackingKey},
     runtime::{Clock, Handle, ManualClock, Settled, spawn_with_clock},
     sim::{
-        Chain, HistoryEntry, SimChain, SimConfig, SimOp, reference_delta, strategy, timestamp,
-        totals,
+        Chain, HistoryEntry, SimChain, SimConfig, SimOp, reference_delta, script_template_hash,
+        strategy, timestamp, totals,
     },
     types::address::{self, Network},
 };
@@ -291,7 +293,8 @@ impl SimRelay {
         Ok(body)
     }
 
-    /// The chain's trees as addresses, and every token it knows with its emission.
+    /// The chain's trees as addresses, every token it knows with its emission, and the
+    /// scripts' template.
     pub fn keys(&self) -> Value {
         let chain = self.sim.lock();
         let addresses: Vec<String> = chain
@@ -304,7 +307,7 @@ impl SimRelay {
             .iter()
             .map(|(id, emission)| json!({ "tokenId": id, "emission": emission.to_string() }))
             .collect();
-        json!({ "addresses": addresses, "tokens": tokens })
+        json!({ "addresses": addresses, "tokens": tokens, "templates": [script_template_hash()] })
     }
 
     fn control(self: Arc<Self>) -> Router {
@@ -315,6 +318,7 @@ impl SimRelay {
             .route("/sim/settle", post(settle))
             .route("/sim/expected/addresses/{address}", get(expected_address))
             .route("/sim/expected/tokens/{token_id}", get(expected_token))
+            .route("/sim/expected/templates/{hash}", get(expected_template))
             .route("/sim/keys", get(keys))
             .with_state(self)
     }
@@ -413,6 +417,13 @@ async fn expected_address(State(relay): Relay, Path(address): Path<String>) -> R
 
 async fn expected_token(State(relay): Relay, Path(token_id): Path<String>) -> Response {
     match token_key(&token_id, &KeyPolicy::default()) {
+        Ok(key) => expected(&relay, &key).await,
+        Err(error) => (StatusCode::BAD_REQUEST, error.to_string()).into_response(),
+    }
+}
+
+async fn expected_template(State(relay): Relay, Path(hash): Path<String>) -> Response {
+    match template_key(&hash, &KeyPolicy::default()) {
         Ok(key) => expected(&relay, &key).await,
         Err(error) => (StatusCode::BAD_REQUEST, error.to_string()).into_response(),
     }

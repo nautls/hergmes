@@ -151,6 +151,7 @@ pub struct Stats {
     /// Addresses tracked balance-only.
     pub balance_keys: usize,
     pub token_keys: usize,
+    pub template_keys: usize,
     /// One per box and key. The cap counts these and the keys' charges, in `tracked_units`.
     pub tracked_boxes: usize,
     /// What the cap on tracked units counts: `tracked_boxes`, and every key's charge.

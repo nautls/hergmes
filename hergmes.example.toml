@@ -36,9 +36,10 @@
 
 # --- Keys ---
 
-# Addresses and token ids tracked for the life of the process. Always allowed.
+# Addresses, token ids and template hashes tracked for the life of the process. Always allowed.
 # track_addresses = []
 # track_tokens = []
+# track_templates = []
 
 # Largest token emission that can be tracked.
 # token_supply_limit = 100
@@ -53,6 +54,11 @@
 # Token ids clients may name. Omitted (the default), any token within the supply limit is
 # allowed; [] allows none. An example, which allows no token:
 # allow_tokens = []
+
+# Template hashes clients may name: the Blake2b256 of a constant-segregated tree's template, so
+# one names every instance of a contract. Omitted (the default), any template is allowed; []
+# allows none.
+# allow_templates = []
 
 # --- Memory ---
 

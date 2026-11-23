@@ -4,7 +4,7 @@ use crate::{
     clients::node::{IndexedHeightResponse, InfoResponse, NodeError},
     types::ergo::{
         AddressTransactions, Balance, BlockHeader, BoxById, BoxId, ErgoTree, HeaderId,
-        IndexedBlock, IndexedBox, TokenId, TokenInfo, TokenMetadata, TxId, UTxO,
+        IndexedBlock, IndexedBox, TemplateHash, TokenId, TokenInfo, TokenMetadata, TxId, UTxO,
         UnconfirmedTransaction,
     },
 };
@@ -62,6 +62,16 @@ pub trait NodeSource: Send + Sync {
     fn unspent_by_token(
         &self,
         token_id: &TokenId,
+        page: Page,
+    ) -> impl Future<Output = Result<Vec<IndexedBox>, NodeError>> + Send;
+
+    /// The unspent boxes whose tree's template hashes to `hash` (node 6.0.8,
+    /// `BlockchainApiRoute.getBoxesByTemplateHashUnspent`, paged as by tree). The node files
+    /// every box under a template hash, including trees without segregated constants, whose
+    /// template is what follows the header (`IndexedContractTemplateSerializer.hashTreeTemplate`).
+    fn unspent_by_template(
+        &self,
+        hash: &TemplateHash,
         page: Page,
     ) -> impl Future<Output = Result<Vec<IndexedBox>, NodeError>> + Send;
 

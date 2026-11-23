@@ -32,8 +32,8 @@ export interface RelayOptions extends RestOptions {
 export interface SubscribeOptions {
   /**
    * Follow the key's boxes: its confirmed set, the mempool's overlay and what is spendable
-   * now. `false` follows only an address's balance, which needs no snapshot. Token keys have
-   * no balance, so they always follow boxes. Defaults to `true`.
+   * now. `false` follows only an address's balance, which needs no snapshot. Token and template
+   * keys have no balance, so they always follow boxes. Defaults to `true`.
    */
   boxes?: boolean;
 }
@@ -143,7 +143,7 @@ export class Relay {
   }
 
   subscribe(key: Key, options: SubscribeOptions = {}): Subscription {
-    const boxes = "tokenId" in key || options.boxes !== false;
+    const boxes = !("address" in key) || options.boxes !== false;
     const name = keyName(key);
     let entry = this.#entries.get(name);
     if (!entry) {

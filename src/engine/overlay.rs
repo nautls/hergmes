@@ -16,6 +16,7 @@ use crate::{
     types::{
         Digest, HashDigest,
         ergo::{BoxAssets, BoxId, ErgoTree, Token, TokenId, TxId, UTxO, UnconfirmedTransaction},
+        ergo_tree::template_hash,
     },
 };
 
@@ -291,15 +292,23 @@ impl<'a> DeltaSides<'a> {
     }
 }
 
-/// The keys a box matches: its tree, and each token it holds, once each.
-pub fn keys_of(utxo: &UTxO) -> impl Iterator<Item = TrackingKey> + '_ {
+/// The keys a box matches: its tree, each token it holds, once each, and with `templates`
+/// its template, if its tree has segregated constants. Hashing the template costs a walk of
+/// the constants and a Blake2b, so callers ask for it only while a template key is tracked.
+pub fn keys_of(utxo: &UTxO, templates: bool) -> impl Iterator<Item = TrackingKey> + '_ {
     let tokens = utxo
         .tokens
         .iter()
         .enumerate()
         .filter(|(i, t)| !utxo.tokens[..*i].iter().any(|u| u.id == t.id))
         .map(|(_, t)| TrackingKey::Token(t.id));
-    std::iter::once(TrackingKey::Tree(utxo.ergo_tree.clone())).chain(tokens)
+    let template = templates
+        .then(|| template_hash(&utxo.ergo_tree.0))
+        .flatten()
+        .map(TrackingKey::Template);
+    std::iter::once(TrackingKey::Tree(utxo.ergo_tree.clone()))
+        .chain(tokens)
+        .chain(template)
 }
 
 #[cfg(test)]

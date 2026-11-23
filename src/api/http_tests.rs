@@ -43,6 +43,7 @@ fn every_error() -> Vec<(ApiError, StatusCode, Option<&'static str>)> {
     vec![
         (ApiError::InvalidAddress("bad".into()), S::BAD_REQUEST, None),
         (ApiError::InvalidTokenId, S::BAD_REQUEST, None),
+        (ApiError::InvalidTemplateHash, S::BAD_REQUEST, None),
         (ApiError::InvalidIds, S::BAD_REQUEST, None),
         (ApiError::InvalidBoxId, S::BAD_REQUEST, None),
         (ApiError::InvalidBroadcast, S::BAD_REQUEST, None),
@@ -62,6 +63,7 @@ fn every_error() -> Vec<(ApiError, StatusCode, Option<&'static str>)> {
         (ApiError::CursorExpired, S::GONE, None),
         (ApiError::SupplyTooLarge { emission: 101, limit: 100 }, S::UNPROCESSABLE_ENTITY, None),
         (ApiError::TooManyBoxes { max: 5 }, S::UNPROCESSABLE_ENTITY, None),
+        (ApiError::UnsupportedTemplate, S::UNPROCESSABLE_ENTITY, None),
         (ApiError::CapacityExceeded, S::SERVICE_UNAVAILABLE, Some("120")),
         (
             ApiError::NotReady { retry_after: Duration::from_millis(1500) },
@@ -119,7 +121,7 @@ async fn every_error_has_its_status_code_and_retry_after() {
 fn every_variant_is_in_the_table() {
     let codes: std::collections::BTreeSet<_> =
         every_error().iter().map(|(e, ..)| e.code()).collect();
-    assert_eq!(codes.len(), 20, "{codes:?}");
+    assert_eq!(codes.len(), 22, "{codes:?}");
 }
 
 #[test]
@@ -354,6 +356,33 @@ async fn a_token_snapshot_is_served_and_checked_first() {
     assert_eq!(f.error(&unknown, StatusCode::NOT_FOUND).await, "unknown_token");
 }
 
+/// A template's snapshot holds the boxes of every tree of the template; a template of trees
+/// without segregated constants is refused, and so is its view with the pool.
+#[tokio::test]
+async fn a_template_snapshot_is_served_across_its_trees() {
+    let mut f = Fixture::new();
+    f.tick();
+    let hash = sim::script_template_hash();
+    let page = f.ok(&format!("/v1/templates/{hash}/boxes")).await;
+    let trees: std::collections::BTreeSet<&str> = (page["items"].as_array().unwrap().iter())
+        .map(|b| b["ergoTree"].as_str().unwrap())
+        .collect();
+    let scripts = f.sim.lock().trees().len() - 2;
+    let expected = [f.tree(scripts).to_string(), f.tree(scripts + 1).to_string()];
+    assert_eq!(trees, expected.iter().map(String::as_str).collect());
+    let upper = hash.to_string().to_uppercase();
+    f.ok(&format!("/v1/templates/{upper}/boxes/with-pool"))
+        .await;
+
+    let p2pk = sim::node_template_hash(&f.tree(0).0);
+    for uri in
+        [format!("/v1/templates/{p2pk}/boxes"), format!("/v1/templates/{p2pk}/boxes/with-pool")]
+    {
+        let code = f.error(&uri, StatusCode::UNPROCESSABLE_ENTITY).await;
+        assert_eq!(code, "unsupported_template", "{uri}");
+    }
+}
+
 /// The view with the pool is one list with no cursor: confirmed boxes with `inclusionHeight`,
 /// then pending ones without, for addresses and tokens alike.
 #[tokio::test]
@@ -460,6 +489,8 @@ async fn bad_requests_are_refused_with_their_code() {
         (format!("/v1/addresses/{testnet}/boxes/with-pool"), "invalid_address"),
         ("/v1/tokens/abcd/boxes/with-pool".to_owned(), "invalid_token_id"),
         (format!("/v1/tokens/{token}0/boxes"), "invalid_token_id"),
+        ("/v1/templates/abcd/boxes".to_owned(), "invalid_template_hash"),
+        ("/v1/templates/abcd/boxes/with-pool".to_owned(), "invalid_template_hash"),
         (format!("{boxes}?limit=0"), "invalid_limit"),
         (format!("{boxes}?limit=1001"), "invalid_limit"),
         (format!("{boxes}?limit=-1"), "invalid_limit"),
@@ -490,11 +521,14 @@ async fn bad_requests_are_refused_with_their_code() {
 async fn every_route_refuses_a_key_the_policy_does_not_admit() {
     let chain = Chain::new(SimConfig::default());
     let denied = address::Address::from_ergo_tree(chain.trees()[0].clone(), Network::Mainnet);
-    let policy = KeyPolicy::new(None, [&denied], Some(&[]), &[]);
+    let policy = KeyPolicy::new(None, [&denied], Some(&[]), Some(&[]), &[]);
     let mut f = Fixture::with_policy(chain, policy);
     f.tick();
     let calls = f.sim.calls().len();
+    let template = sim::script_template_hash();
     for uri in [
+        format!("/v1/templates/{template}/boxes"),
+        format!("/v1/templates/{template}/boxes/with-pool"),
         format!("/v1/addresses/{}/boxes", f.address(0)),
         format!("/v1/addresses/{}/balance", f.address(0)),
         format!("/v1/tokens/{}/boxes", token_id("small-100")),
@@ -716,7 +750,7 @@ async fn a_box_by_id_is_outside_the_key_policy() {
     let chain = Chain::new(SimConfig::default());
     let tree = chain.trees()[0].clone();
     let denied = address::Address::from_ergo_tree(tree.clone(), Network::Mainnet);
-    let policy = KeyPolicy::new(None, [&denied], Some(&[]), &[]);
+    let policy = KeyPolicy::new(None, [&denied], Some(&[]), None, &[]);
     let mut f = Fixture::with_policy(chain, policy);
     f.tick();
     let held = f
@@ -735,7 +769,7 @@ async fn a_box_by_id_is_outside_the_key_policy() {
 /// still serves the metadata of one over the limit.
 #[tokio::test]
 async fn token_metadata_is_served_for_any_token() {
-    let policy = KeyPolicy::new(None, [], Some(&[]), &[]);
+    let policy = KeyPolicy::new(None, [], Some(&[]), None, &[]);
     let f = Fixture::with_policy(Chain::new(SimConfig::default()), policy);
     let large = token_id("large");
     let nft = token_id("nft-a");

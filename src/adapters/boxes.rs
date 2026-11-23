@@ -36,8 +36,9 @@ impl<S: NodeSource> BoxFetcher<S> {
 
     /// The boxes of `ids`, in the same order; `None` for an id no source knows.
     ///
-    /// Sources in order: the cache; the engine's ring buffer (boxes spent in the last N
-    /// blocks, gone from the node's UTXO set); the node's UTXO set and mempool
+    /// Sources in order: the cache; the engine's ring buffer (the boxes tracked keys gained
+    /// or lost in the last N blocks, the spent ones gone from the node's UTXO set); the
+    /// node's UTXO set and mempool
     /// (`withPool/byIds`, in chunks, matched by id since it leaves missing ids out); and the
     /// indexer (`box/byId`, which also has spent boxes, for a block the node applied before
     /// the engine). Boxes found are cached.

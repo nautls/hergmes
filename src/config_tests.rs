@@ -119,9 +119,11 @@ fn every_setting_is_read() {
         token_supply_limit = 7
         track_addresses = ["{MAINNET}"]
         track_tokens = ["{NFT}", "{TOKEN}"]
+        track_templates = ["{TOKEN}"]
         allow_addresses = ["p2pk", "P2SH", "{MAINNET}"]
         deny_addresses = ["{FEE_MAINNET}"]
         allow_tokens = ["{TOKEN}"]
+        allow_templates = ["{NFT}"]
         box_cache_mb = 3
         max_boxes_per_key = 40
         max_tracked_units = 900
@@ -154,6 +156,8 @@ fn every_setting_is_read() {
     );
     assert_eq!(config.deny_addresses, vec![Address::decode(FEE_MAINNET).unwrap()]);
     assert_eq!(config.allow_tokens, Some(vec![TOKEN.parse().unwrap()]));
+    assert_eq!(config.track_templates, vec![TOKEN.parse().unwrap()]);
+    assert_eq!(config.allow_templates, Some(vec![NFT.parse().unwrap()]));
     assert_eq!(config.box_cache_bytes, 3 * 1024 * 1024);
     assert_eq!(config.listen_addr.to_string(), "0.0.0.0:9000");
     assert_eq!(config.metrics_addr.unwrap().to_string(), "127.0.0.1:9100");
@@ -273,18 +277,19 @@ fn tracked_keys_are_trees_and_tokens_on_the_node_network() {
 
 #[test]
 fn an_empty_allowlist_allows_nothing() {
-    let config = config("allow_addresses = []\nallow_tokens = []").unwrap();
+    let config = config("allow_addresses = []\nallow_tokens = []\nallow_templates = []").unwrap();
     assert_eq!(config.allow_addresses, Some(vec![]));
     assert_eq!(config.allow_tokens, Some(vec![]));
+    assert_eq!(config.allow_templates, Some(vec![]));
     let policy = config.key_policy(Network::Mainnet, &[]).unwrap();
-    assert_eq!(policy.to_string(), "addresses: none; tokens: none");
+    assert_eq!(policy.to_string(), "addresses: none; tokens: none; templates: none");
 }
 
 #[test]
 fn an_omitted_allowlist_allows_any() {
     let config = config("").unwrap();
     let policy = config.key_policy(Network::Mainnet, &[]).unwrap();
-    assert_eq!(policy.to_string(), "addresses: any; tokens: any");
+    assert_eq!(policy.to_string(), "addresses: any; tokens: any; templates: any");
 }
 
 /// The words environment variables used are refused with a hint, rather than failing as an
@@ -458,9 +463,11 @@ fn the_named_keys_are_the_file_keys() {
         keys::TOKEN_SUPPLY_LIMIT,
         keys::TRACK_ADDRESSES,
         keys::TRACK_TOKENS,
+        keys::TRACK_TEMPLATES,
         keys::ALLOW_ADDRESSES,
         keys::DENY_ADDRESSES,
         keys::ALLOW_TOKENS,
+        keys::ALLOW_TEMPLATES,
         keys::BOX_CACHE_MB,
         keys::MAX_BOXES_PER_KEY,
         keys::MAX_TRACKED_UNITS,

@@ -171,7 +171,7 @@ impl Harness {
             (TrackingKey::Tree(_), Reply::Balance(Some(balance))) => {
                 assert_eq!(balance.confirmed, oracle.totals(key, tip.height), "{key:?}");
             }
-            (TrackingKey::Token(_), Reply::Balance(None)) => {}
+            (TrackingKey::Token(_) | TrackingKey::Template(_), Reply::Balance(None)) => {}
             other => panic!("{other:?}"),
         }
     }

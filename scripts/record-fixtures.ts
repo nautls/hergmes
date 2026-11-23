@@ -10,6 +10,7 @@
  *   node scripts/record-fixtures.ts --tx-only [--node URL] [--out DIR]
  *   node scripts/record-fixtures.ts --tokens-only [--node URL] [--out DIR]
  *   node scripts/record-fixtures.ts --minting-only [--node URL] [--out DIR]
+ *   node scripts/record-fixtures.ts --templates-only [--node URL] [--out DIR]
  *
  * --history-only records only the address tx history fixtures, for the sample address of
  * the existing manifest.json, and adds them to it, leaving every other fixture as it is.
@@ -18,6 +19,7 @@
  * --tx-only does the same for the transaction fixtures (see recordTransactions).
  * --tokens-only does the same for the token metadata batch, for the manifest's sample tokens.
  * --minting-only does the same for the EIP-4 minting boxes (see recordMinting).
+ * --templates-only does the same for the boxes by template hash (see recordTemplates).
  *
  * Runs on Node 23.6+ (native type stripping) with no dependencies.
  * The node URL defaults to $ERGO_NODE_URL. The node must run the extra indexer.
@@ -45,6 +47,13 @@ const UNUSED_ADDRESS = "9iKCdiitfAVb1Wux5nFXiMcdYXGkhdNksAxJHQ28qiAMkxXupbt";
 // with only a name, a description and decimals.
 const PICTURE_NFT = "a532e340b5b71cd16ebc2306a1e1b3cf17c1d60b12aa9fa690adb44c0a2fa260";
 const PLAIN_TOKEN = "36aba4b4a97b65be491cf9f5ca57b5408b0da8d0194f30ec8330d1e8946161c1";
+// Template hashes, Blake2b256 of a tree's template, which Node can't compute (its crypto has
+// Blake2b512 only, a different function from Blake2b256, not a prefix of it). The miner
+// reward contract (height-locked for 720 blocks, one per block, each miner's key a constant)
+// always holds boxes of several trees. The other is what the node files the manifest's sample
+// P2PK address under: a tree without segregated constants, hashed after its header.
+const MINER_REWARD_TEMPLATE = "2af229a1be3d59db211611085e8aa66ce2339805809417e54c2af0b6b401bb36";
+const SAMPLE_P2PK_TEMPLATE = "3ed9066d8b9b16b39fc7ec2604e66dbc7c35f05aba69e96460aed54cdd9002d3";
 const SMALL_SUPPLY_LIMIT = 100;
 const BLOCKS_TO_SCAN = 50;
 const MEMPOOL_LIMIT = 20;
@@ -317,6 +326,37 @@ async function recordTokens(rec: Recorder, samples: Json) {
   );
 }
 
+/** Unspent boxes by template hash (BlockchainApiRoute.getBoxesByTemplateHashUnspent): a
+ * constant-segregated template over several trees, a tree without segregated constants, which
+ * the node files under a template hash too (IndexedContractTemplateSerializer.hashTreeTemplate),
+ * and an unknown hash. */
+async function recordTemplates(rec: Recorder) {
+  // Twenty, so the oldest boxes are of more than one miner even if one left its rewards.
+  const unspent = (hash: string) =>
+    `/blockchain/box/unspent/byTemplateHash/${hash}?limit=20&sortDirection=asc`;
+  await rec.record(
+    "unspent_by_template",
+    "GET",
+    unspent(MINER_REWARD_TEMPLATE),
+    undefined,
+    "The miner reward contract: boxes of several miners' trees, one template.",
+  );
+  await rec.record(
+    "unspent_by_template_p2pk",
+    "GET",
+    unspent(SAMPLE_P2PK_TEMPLATE),
+    undefined,
+    "The sample address's tree, which has no segregated constants, hashed after its header.",
+  );
+  await rec.record(
+    "unspent_by_template_unknown",
+    "GET",
+    unspent(UNKNOWN_ID),
+    undefined,
+    "An unknown hash is 200 [], as for a token.",
+  );
+}
+
 /** EIP-4 mints: the indexer lists their name, description and decimals (R4 to R6) but not the
  * asset type and artwork (R7 to R9) (IndexedToken.fromBox), which are read from the minting
  * box, any box the indexer knows, spent or not. */
@@ -520,6 +560,7 @@ async function main() {
       "tx-only": { type: "boolean", default: false },
       "tokens-only": { type: "boolean", default: false },
       "minting-only": { type: "boolean", default: false },
+      "templates-only": { type: "boolean", default: false },
     },
   });
   if (!args.node) fail("Pass --node or set ERGO_NODE_URL");
@@ -548,6 +589,9 @@ async function main() {
   }
   if (args["minting-only"]) {
     return addTo(node, outDir, "minting box", (rec) => recordMinting(rec));
+  }
+  if (args["templates-only"]) {
+    return addTo(node, outDir, "template", (rec) => recordTemplates(rec));
   }
   const previous = (() => {
     try {
@@ -676,6 +720,7 @@ async function main() {
   await rec.record("token_unknown", "GET", `/blockchain/token/byId/${UNKNOWN_ID}`);
   await recordTokens(rec, { nft, smallSupplyToken: small, largeSupplyToken: large });
   await recordMinting(rec);
+  await recordTemplates(rec);
   await rec.record("unspent_by_token_nft", "GET", unspentByToken(nft));
   await rec.record("unspent_by_token_small_supply", "GET", unspentByToken(small));
   await rec.record(

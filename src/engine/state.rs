@@ -15,9 +15,13 @@ use crate::{
         Balance, BlockDelta, BlockRef, BoxKey, Capacity, ChainLink, EngineError, Event, KeyDelta,
         KeyId, LoadedBox, Mempool, Output, PageError, PageIds, PendingAt, PendingTxsAt, Query,
         Reply, ResyncReason, Spend, Stats, StoredBox, Totals, TrackingKey, WithPoolIds,
+        has_templates,
         overlay::{self, PendingDelta},
     },
-    types::ergo::{BoxId, ErgoTree, HeaderId, IndexedBlock, UTxO},
+    types::{
+        Digest,
+        ergo::{BoxId, ErgoTree, HeaderId, IndexedBlock, UTxO},
+    },
 };
 
 /// How far back the engine can serve, how long it keeps idle keys, and how many boxes it
@@ -100,7 +104,7 @@ const FIRST_TOKEN_BYTES: usize = 460;
 pub fn key_charge(key: &TrackingKey, tokens: usize) -> usize {
     let id = match key {
         TrackingKey::Tree(tree) => tree.0.len(),
-        TrackingKey::Token(id) => id.0.len(),
+        TrackingKey::Token(id) | TrackingKey::Template(id) => id.0.len(),
     };
     let tokens = match tokens {
         0 => 0,
@@ -340,17 +344,19 @@ impl Engine {
     }
 
     fn stats(&self) -> Stats {
-        let addresses = self
-            .ids
-            .keys()
-            .filter(|key| matches!(key, TrackingKey::Tree(_)))
-            .count();
+        // Keys in order, trees first, then tokens, then templates: two searches split them.
+        let tokens_from = TrackingKey::Token(Digest([0; 32]));
+        let templates_from = TrackingKey::Template(Digest([0; 32]));
+        let addresses = self.ids.range(..&tokens_from).count();
+        let template_keys = self.ids.range(&templates_from..).count();
+        let token_keys = self.ids.len() - addresses - template_keys;
         let balance_keys = self.balance_trees.len();
         Stats {
             tip: self.tip,
             address_keys: addresses - balance_keys,
             balance_keys,
-            token_keys: self.ids.len() - addresses,
+            token_keys,
+            template_keys,
             tracked_boxes: self.reverse.len(),
             tracked_units: self.units(),
             ring_blocks: self.ring.len(),
@@ -379,6 +385,7 @@ impl Engine {
         };
         let mut before: BTreeMap<KeyId, Totals> = BTreeMap::new();
         let mut mined = HashSet::new();
+        let templates = has_templates(&self.ids);
         let mut spent = HashSet::new();
 
         // Txs in order, so a box created and spent within the block nets out of each delta.
@@ -429,7 +436,7 @@ impl Engine {
                 }
             }
             for output in &tx.outputs {
-                let holders: Vec<KeyId> = overlay::keys_of(&output.utxo)
+                let holders: Vec<KeyId> = overlay::keys_of(&output.utxo, templates)
                     .filter_map(|k| self.ids.get(&k).copied())
                     .collect();
                 let id = output.utxo.id;
@@ -725,7 +732,7 @@ impl Engine {
                 .flat_map(|b| b.utxo.tokens.iter().filter(|t| t.amount > 0).map(|t| t.id))
                 .collect::<HashSet<_>>()
                 .len(),
-            TrackingKey::Token(_) => 0,
+            TrackingKey::Token(_) | TrackingKey::Template(_) => 0,
         };
         let charge = key_charge(&key, tokens);
         let was_charged = upgraded.map_or(0, |id| self.keys[&id].charge);
@@ -1312,6 +1319,8 @@ struct Confirmed<'a> {
     ids: &'a BTreeMap<TrackingKey, KeyId>,
     balance_trees: &'a HashMap<ErgoTree, KeyId>,
     reverse: &'a BTreeMap<(BoxId, KeyId), u32>,
+    /// Whether a template key is tracked, read once rather than for each box.
+    templates: bool,
 }
 
 impl<'a> Confirmed<'a> {
@@ -1320,7 +1329,7 @@ impl<'a> Confirmed<'a> {
         balance_trees: &'a HashMap<ErgoTree, KeyId>,
         reverse: &'a BTreeMap<(BoxId, KeyId), u32>,
     ) -> Self {
-        Self { ids, balance_trees, reverse }
+        Self { ids, balance_trees, reverse, templates: has_templates(ids) }
     }
 
     fn check(&self, b: &UTxO) -> bool {
@@ -1331,9 +1340,10 @@ impl<'a> Confirmed<'a> {
             .is_some();
         let with_boxes = |k: &TrackingKey| match k {
             TrackingKey::Tree(tree) => !self.balance_trees.contains_key(tree),
-            TrackingKey::Token(_) => true,
+            TrackingKey::Token(_) | TrackingKey::Template(_) => true,
         };
-        held || !overlay::keys_of(b).any(|k| self.ids.contains_key(&k) && with_boxes(&k))
+        held || !overlay::keys_of(b, self.templates)
+            .any(|k| self.ids.contains_key(&k) && with_boxes(&k))
     }
 }
 

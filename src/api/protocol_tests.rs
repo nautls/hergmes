@@ -90,6 +90,14 @@ fn subscribes_and_unsubscribes_parse() {
             },
         ),
         (
+            format!(r#"{{"op":"subscribe","key":{{"templateHash":"{}"}},"from":{from}}}"#, hex(3)),
+            ClientMessage::Subscribe {
+                key: ClientKey::TemplateHash(hex(3)),
+                from: Some(BlockRef { height: 12, header_id: digest(1) }),
+                id: None,
+            },
+        ),
+        (
             format!(r#"{{"op":"subscribe","id":0,"key":{{"address":"{ADDRESS}"}}}}"#),
             ClientMessage::Subscribe { key: address(), from: None, id: Some(0) },
         ),
@@ -174,8 +182,18 @@ fn keys_resolve_through_the_rest_checks() {
     assert_eq!(refused(ClientKey::TokenId("ab".into())), "invalid_token_id");
     let token = ClientKey::TokenId(hex(2).to_uppercase());
     assert_eq!(token.resolve(Network::Mainnet, &open), Ok(TrackingKey::Token(digest(2))));
-    let none = KeyPolicy::new(None, [], Some(&[]), &[]);
+    let none = KeyPolicy::new(None, [], Some(&[]), Some(&[]), &[]);
     assert_eq!(token.resolve(Network::Mainnet, &none).unwrap_err().code(), "key_not_allowed");
+    assert_eq!(refused(ClientKey::TemplateHash("ab".into())), "invalid_template_hash");
+    let template = ClientKey::TemplateHash(hex(3));
+    assert_eq!(template.resolve(Network::Mainnet, &open), Ok(TrackingKey::Template(digest(3))));
+    assert_eq!(
+        template
+            .resolve(Network::Mainnet, &none)
+            .unwrap_err()
+            .code(),
+        "key_not_allowed"
+    );
 }
 
 #[test]

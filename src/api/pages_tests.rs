@@ -249,9 +249,14 @@ impl Harness {
         self.seen.spent_during_fetch |= mined.load(Ordering::SeqCst) && result.is_ok();
         self.seen.indexer_fallback |= made.contains(&Endpoint::IndexedBox) && result.is_ok();
         self.seen.loaded |= result.is_ok()
-            && made
-                .iter()
-                .any(|e| matches!(e, Endpoint::UnspentByErgoTree | Endpoint::UnspentByToken));
+            && made.iter().any(|e| {
+                matches!(
+                    e,
+                    Endpoint::UnspentByErgoTree
+                        | Endpoint::UnspentByToken
+                        | Endpoint::UnspentByTemplate
+                )
+            });
 
         match result {
             Ok(page) => self.check_page(page),

@@ -36,6 +36,7 @@ use crate::{
             IndexedTransaction, NonMandatoryRegisters, Token, TokenBalance, TokenId, TokenInfo,
             TokenMetadata, TxId, UTxO, UnconfirmedTransaction,
         },
+        ergo_tree,
     },
 };
 
@@ -79,11 +80,41 @@ fn hash(parts: &[&[u8]]) -> HashDigest {
     Digest(out)
 }
 
-/// P2PK-shaped trees, and one arbitrary script as the last tree.
+/// The template the chain's scripts share: `sigmaProp(CONSTANT_0 == CONSTANT_0)`, of no
+/// meaning, only bytes after the constants.
+pub const SCRIPT_TEMPLATE: [u8; 6] = [0xd1, 0x93, 0x73, 0x00, 0x73, 0x00];
+
+/// P2PK-shaped trees, and scripts as the last two: constant-segregated, sharing
+/// [`SCRIPT_TEMPLATE`] and each with a 32-byte `Coll[Byte]` constant of its own, so a template
+/// key holds the boxes of two trees.
 fn make_tree(index: usize, script: bool) -> ErgoTree {
     let seed = hash(&[b"tree", &(index as u64).to_be_bytes()]);
-    let head: &[u8] = if script { &[0x10, 0x01, 0x04, 0x00] } else { &[0x00, 0x08, 0xcd, 0x02] };
-    HexBytes::from([head, &seed.0].concat())
+    let tree = if script {
+        [&[0x10, 0x01, 0x0e, 0x20][..], &seed.0, &SCRIPT_TEMPLATE].concat()
+    } else {
+        [&[0x00, 0x08, 0xcd, 0x02][..], &seed.0].concat()
+    };
+    HexBytes::from(tree)
+}
+
+/// The hash of [`SCRIPT_TEMPLATE`], which the chain's scripts share.
+pub fn script_template_hash() -> HashDigest {
+    hash(&[&SCRIPT_TEMPLATE])
+}
+
+/// The template hash the node files a box under (node 6.0.8,
+/// `IndexedContractTemplateSerializer.hashTreeTemplate`): the relay's for a segregated tree;
+/// for any other, what follows the header (the chain's trees have no size), or the whole tree
+/// if it can't be read.
+pub fn node_template_hash(tree: &[u8]) -> HashDigest {
+    if let Some(hash) = ergo_tree::template_hash(tree) {
+        return hash;
+    }
+    let template = match tree.first() {
+        Some(header) if header & 0x10 == 0 && header & 0x08 == 0 => &tree[1..],
+        _ => tree,
+    };
+    hash(&[template])
 }
 
 /// A transaction in a block or in the mempool, with full input boxes.
@@ -273,7 +304,7 @@ impl Chain {
         assert!(config.start_height >= 1, "heights start at 1");
 
         let trees = (0..config.trees)
-            .map(|i| make_tree(i, i + 1 == config.trees))
+            .map(|i| make_tree(i, i + 2 >= config.trees))
             .collect();
         let mut chain = Self {
             node: Ledger::new(config.start_height),
@@ -438,11 +469,12 @@ impl Chain {
         &self.known_tokens
     }
 
-    /// A key for every tree and every known token.
+    /// A key for every tree, every known token, and the scripts' template.
     pub fn keys(&self) -> Vec<TrackingKey> {
         let trees = self.trees.iter().cloned().map(TrackingKey::Tree);
         trees
             .chain(self.known_tokens.keys().copied().map(TrackingKey::Token))
+            .chain([TrackingKey::Template(script_template_hash())])
             .collect()
     }
 

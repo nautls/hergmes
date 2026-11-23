@@ -27,7 +27,7 @@ use crate::{
     engine::{self, TrackingKey},
     types::{
         address::{Address, Network},
-        ergo::TokenId,
+        ergo::{TemplateHash, TokenId},
     },
 };
 
@@ -54,9 +54,11 @@ pub mod keys {
     pub const TOKEN_SUPPLY_LIMIT: &str = "token_supply_limit";
     pub const TRACK_ADDRESSES: &str = "track_addresses";
     pub const TRACK_TOKENS: &str = "track_tokens";
+    pub const TRACK_TEMPLATES: &str = "track_templates";
     pub const ALLOW_ADDRESSES: &str = "allow_addresses";
     pub const DENY_ADDRESSES: &str = "deny_addresses";
     pub const ALLOW_TOKENS: &str = "allow_tokens";
+    pub const ALLOW_TEMPLATES: &str = "allow_templates";
     pub const BOX_CACHE_MB: &str = "box_cache_mb";
     pub const MAX_BOXES_PER_KEY: &str = "max_boxes_per_key";
     pub const MAX_TRACKED_UNITS: &str = "max_tracked_units";
@@ -90,12 +92,16 @@ struct File {
     track_addresses: Vec<String>,
     #[serde(default)]
     track_tokens: Vec<String>,
+    #[serde(default)]
+    track_templates: Vec<String>,
     /// Omitted, every address is allowed; empty, none is.
     allow_addresses: Option<Vec<String>>,
     #[serde(default)]
     deny_addresses: Vec<String>,
     /// Omitted, every token within the supply limit is allowed; empty, none is.
     allow_tokens: Option<Vec<String>>,
+    /// Omitted, every template is allowed; empty, none is.
+    allow_templates: Option<Vec<String>>,
     box_cache_mb: Option<u64>,
     max_boxes_per_key: Option<usize>,
     max_tracked_units: Option<usize>,
@@ -116,11 +122,14 @@ pub struct Config {
     /// Addresses tracked from the start, checked against the node's network once it is known.
     pub track_addresses: Vec<Address>,
     pub track_tokens: Vec<TokenId>,
+    pub track_templates: Vec<TemplateHash>,
     /// The address allowlist; `None` when omitted, empty when it allows nothing.
     pub allow_addresses: Option<Vec<AddressRule>>,
     pub deny_addresses: Vec<Address>,
     /// The token allowlist; `None` when omitted, empty when it allows nothing.
     pub allow_tokens: Option<Vec<TokenId>>,
+    /// The template allowlist; `None` when omitted, empty when it allows nothing.
+    pub allow_templates: Option<Vec<TemplateHash>>,
     /// The box cache's budget in bytes, read in MiB; 0 disables the cache.
     pub box_cache_bytes: u64,
     pub listen_addr: SocketAddr,
@@ -294,11 +303,13 @@ impl Config {
             token_supply_limit: file.token_supply_limit.unwrap_or(SUPPLY_LIMIT),
             track_addresses: list(keys::TRACK_ADDRESSES, &file.track_addresses, address)?,
             track_tokens: list(keys::TRACK_TOKENS, &file.track_tokens, token_id)?,
+            track_templates: list(keys::TRACK_TEMPLATES, &file.track_templates, template_hash)?,
             allow_addresses: allowlist(keys::ALLOW_ADDRESSES, file.allow_addresses, |a| {
                 AddressRule::parse(a).map_err(|e| e.to_string())
             })?,
             deny_addresses: list(keys::DENY_ADDRESSES, &file.deny_addresses, address)?,
             allow_tokens: allowlist(keys::ALLOW_TOKENS, file.allow_tokens, token_id)?,
+            allow_templates: allowlist(keys::ALLOW_TEMPLATES, file.allow_templates, template_hash)?,
             box_cache_bytes,
             listen_addr: either(keys::LISTEN_ADDR, file.listen_addr, vars::LISTEN_ADDR, &var)?
                 .unwrap_or(LISTEN_ADDR),
@@ -329,6 +340,11 @@ impl Config {
             keys.push(TrackingKey::Tree(address.ergo_tree().clone()));
         }
         keys.extend(self.track_tokens.iter().map(|id| TrackingKey::Token(*id)));
+        keys.extend(
+            self.track_templates
+                .iter()
+                .map(|hash| TrackingKey::Template(*hash)),
+        );
         keys.sort();
         keys.dedup();
         Ok(keys)
@@ -380,6 +396,7 @@ impl Config {
             self.allow_addresses.as_deref(),
             &self.deny_addresses,
             self.allow_tokens.as_deref(),
+            self.allow_templates.as_deref(),
             keys,
         ))
     }
@@ -391,6 +408,10 @@ fn address(entry: &str) -> Result<Address, String> {
 
 fn token_id(entry: &str) -> Result<TokenId, String> {
     entry.parse::<TokenId>().map_err(|e| e.to_string())
+}
+
+fn template_hash(entry: &str) -> Result<TemplateHash, String> {
+    entry.parse::<TemplateHash>().map_err(|e| e.to_string())
 }
 
 fn invalid(key: &'static str, reason: &str) -> ConfigError {
@@ -471,7 +492,8 @@ fn list<T>(
 
 /// An allowlist: `None` when omitted, which allows everything, and empty to allow nothing.
 /// The words `any` and `none` that environment variables needed are refused with a hint, as
-/// they would otherwise fail as an unknown address or token id.
+/// they would otherwise fail as an unknown address, token id or
+/// template hash.
 fn allowlist<T>(
     key: &'static str,
     entries: Option<Vec<String>>,

@@ -363,7 +363,7 @@ impl Harness {
     fn charge_at(&self, key: &TrackingKey, height: u32) -> usize {
         let tokens = match key {
             TrackingKey::Tree(_) => self.chain.oracle().totals(key, height).tokens.len(),
-            TrackingKey::Token(_) => 0,
+            TrackingKey::Token(_) | TrackingKey::Template(_) => 0,
         };
         key_charge(key, tokens)
     }
@@ -1340,7 +1340,12 @@ impl Harness {
             tip: Some(tip),
             address_keys: addresses - balance_keys,
             balance_keys,
-            token_keys: self.keys.len() - addresses,
+            token_keys: (self.keys.keys())
+                .filter(|k| matches!(k, TrackingKey::Token(_)))
+                .count(),
+            template_keys: (self.keys.keys())
+                .filter(|k| matches!(k, TrackingKey::Template(_)))
+                .count(),
             tracked_boxes: boxes,
             tracked_units: boxes + self.keys.values().map(|m| m.charge).sum::<usize>(),
             ring_blocks: self.ring_len as usize,
@@ -1378,9 +1383,19 @@ impl Harness {
             for b in &state.boxes {
                 reverse.insert((b.box_id, key_id), b.inclusion_height);
             }
+            if matches!(key, TrackingKey::Template(_))
+                && (state.boxes.iter())
+                    .map(|b| &utxo[b].ergo_tree)
+                    .collect::<HashSet<_>>()
+                    .len()
+                    >= 2
+            {
+                self.seen
+                    .insert("template key holds the boxes of two trees");
+            }
             if state.boxes.iter().any(|b| {
                 let held = &utxo[b];
-                overlay::keys_of(held)
+                overlay::keys_of(held, true)
                     .filter(|k| self.engine.ids.contains_key(k))
                     .count()
                     >= 2
@@ -1432,7 +1447,9 @@ impl Harness {
             .filter(|(_, m)| m.balance_only)
             .map(|(k, _)| match k {
                 TrackingKey::Tree(t) => (t, self.engine.ids[k]),
-                TrackingKey::Token(_) => panic!("a balance-only token key"),
+                TrackingKey::Token(_) | TrackingKey::Template(_) => {
+                    panic!("a balance-only {k:?}")
+                }
             })
             .collect();
         assert_eq!(trees, expected_trees, "balance-only trees");
@@ -1511,6 +1528,12 @@ impl Harness {
         for key in self.chain.keys() {
             let reference = self.reference_overlay(&key, &ids);
             assert_eq!(self.engine.mempool.overlay(&key), reference, "{key:?}'s overlay");
+            if matches!(key, TrackingKey::Template(_))
+                && self.engine.ids.contains_key(&key)
+                && !reference.is_empty()
+            {
+                self.seen.insert("tracked template key with an overlay");
+            }
         }
 
         // Every address's pending txs, tracked or not, are the reference overlay's, newest
@@ -1766,7 +1789,7 @@ fn random_histories_reach_the_hard_engine_cases() {
     use proptest::{strategy::ValueTree, test_runner::TestRunner};
     let mut runner = TestRunner::deterministic();
     let mut seen = BTreeSet::new();
-    for _ in 0..400 {
+    for _ in 0..500 {
         let ops = prop::collection::vec(op(), 100)
             .new_tree(&mut runner)
             .expect("strategy")
@@ -1806,6 +1829,8 @@ fn random_histories_reach_the_hard_engine_cases() {
         "page cursor expired",
         "page at an earlier block restores spent boxes",
         "box held by two tracked keys",
+        "template key holds the boxes of two trees",
+        "tracked template key with an overlay",
         "key kept by a subscriber",
         "partial confirmation",
         "balance sent though confirmed + pending stayed",
@@ -2532,6 +2557,33 @@ fn a_pending_spend_of_a_box_a_block_spent_is_left_out() {
     }
 }
 
+/// As for an address, a pending spend of a box a tracked template key held, which a block
+/// already spent, is in no overlay: the box is found to be a template key's by its template,
+/// with neither of its trees tracked.
+#[test]
+fn a_pending_spend_of_a_template_box_a_block_spent_is_left_out() {
+    let mut f = Fixture::new(Config::default());
+    let template = TrackingKey::Template(sim::script_template_hash());
+    f.load(&template);
+    let scripts = f.chain.trees().len() - 2;
+    let source = sim::testing::box_of(&f.chain, scripts);
+    let to = f.chain.trees()[scripts + 1].clone();
+    let mined = f.chain.transfer(&[source], &to);
+    let stale = f.chain.transfer(&[source], &to);
+    let txs: Arc<[UnconfirmedTransaction]> = vec![stale.to_unconfirmed()].into();
+
+    let block = f.chain.mine_txs(vec![mined]);
+    f.engine
+        .apply(Event::BlockApplied(f.chain.oracle().indexed_block(block.height)))
+        .expect("extends the tip");
+    let outputs = f
+        .engine
+        .apply(Event::MempoolSnapshot { txs, observed_tip: block })
+        .expect("no error");
+    assert!(!outputs.iter().any(|o| matches!(o, Output::Mempool { .. })), "{:?}", kinds(&outputs));
+    assert!(f.engine.mempool.overlay(&template).is_empty());
+}
+
 #[test]
 fn the_chain_query_lists_the_ring_oldest_first() {
     let mut f =
@@ -2594,10 +2646,10 @@ fn the_boxes_query_answers_from_the_ring_only() {
 fn cost(probe: &Fixture, key: &TrackingKey) -> (usize, usize, usize) {
     let height = probe.chain.height();
     let boxes = probe.chain.oracle().load(key, height).len();
-    // A token key has no totals: only an address is charged for its tokens.
+    // A token or a template key has no totals: only an address is charged for its tokens.
     let tokens = match key {
         TrackingKey::Tree(_) => probe.chain.oracle().totals(key, height).tokens.len(),
-        TrackingKey::Token(_) => 0,
+        TrackingKey::Token(_) | TrackingKey::Template(_) => 0,
     };
     (boxes, boxes + key_charge(key, tokens), key_charge(key, 0))
 }

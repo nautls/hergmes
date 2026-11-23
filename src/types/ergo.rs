@@ -10,6 +10,9 @@ pub type TxId = HashDigest;
 pub type TokenId = HashDigest;
 pub type HeaderId = HashDigest;
 pub type ErgoTree = HexBytes;
+/// The Blake2b256 of a constant-segregated tree's template (see
+/// [`crate::types::ergo_tree::template_hash`]).
+pub type TemplateHash = HashDigest;
 
 /// The genesis block's `parentId` (node 6.0.8, `Header.GenesisParentId`, all zeros): no
 /// header has this id, so a walk back through parents ends at the block naming it.

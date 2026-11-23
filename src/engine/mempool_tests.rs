@@ -316,7 +316,7 @@ fn random_histories_reach_the_hard_overlay_cases() {
         if order
             .iter()
             .flat_map(|&i| &snapshot[i].outputs)
-            .any(|b| keys_of(b).count() >= 3)
+            .any(|b| keys_of(b, true).count() >= 3)
         {
             seen.insert("pending box matching three keys");
         }
@@ -504,7 +504,7 @@ fn a_box_matching_several_tracked_keys_is_shared_between_their_overlays() {
     mempool.track(key(OWNER));
     mempool.track(token.clone());
     let mint = tx(0x10, vec![utxo(1, 0, OWNER, &[])], vec![utxo(0x11, 0x10, OWNER, &[(9, 1)])]);
-    assert_eq!(keys_of(&mint.outputs[0]).count(), 2);
+    assert_eq!(keys_of(&mint.outputs[0], false).count(), 2);
 
     let outputs = mempool.apply_snapshot(snapshot(vec![mint]), at(1), Some(at(1)), confirmed);
     let created: Vec<&Arc<UTxO>> = outputs

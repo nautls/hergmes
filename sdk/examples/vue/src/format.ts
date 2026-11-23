@@ -30,5 +30,6 @@ export function parseKey(text: string): Key {
 }
 
 export function keyText(key: Key): string {
-  return "address" in key ? key.address : key.tokenId;
+  if ("address" in key) return key.address;
+  return "tokenId" in key ? key.tokenId : key.templateHash;
 }

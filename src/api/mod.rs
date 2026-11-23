@@ -62,6 +62,8 @@ pub enum ApiError {
     InvalidAddress(String),
     #[error("a token id is 64 hex characters")]
     InvalidTokenId,
+    #[error("a template hash is 64 hex characters")]
+    InvalidTemplateHash,
     /// No `ids`, or more than [`tokens::MAX_IDS`].
     #[error("ids is 1 to {} comma-separated token ids", tokens::MAX_IDS)]
     InvalidIds,
@@ -96,6 +98,9 @@ pub enum ApiError {
     SupplyTooLarge { emission: u64, limit: u64 },
     #[error("the key has more than {max} boxes")]
     TooManyBoxes { max: usize },
+    /// A template whose trees have no segregated constants; permanent for the key.
+    #[error("the relay tracks templates of trees with segregated constants only")]
+    UnsupportedTemplate,
     #[error("the relay tracks as many boxes as it can; try again later")]
     CapacityExceeded,
     /// A load that did not settle, an untracked address's balance whose halves never met at
@@ -121,6 +126,7 @@ impl ApiError {
         match self {
             Self::InvalidAddress(_) => "invalid_address",
             Self::InvalidTokenId => "invalid_token_id",
+            Self::InvalidTemplateHash => "invalid_template_hash",
             Self::InvalidIds => "invalid_ids",
             Self::InvalidBoxId => "invalid_box_id",
             Self::InvalidBroadcast => "invalid_broadcast",
@@ -134,6 +140,7 @@ impl ApiError {
             Self::CursorExpired => "cursor_expired",
             Self::SupplyTooLarge { .. } => "supply_too_large",
             Self::TooManyBoxes { .. } => "too_many_boxes",
+            Self::UnsupportedTemplate => "unsupported_template",
             Self::CapacityExceeded => "capacity_exceeded",
             Self::NotReady { .. } => "not_ready",
             Self::NodeUnavailable { .. } => "node_unavailable",
@@ -163,6 +170,7 @@ impl From<&LoadError> for ApiError {
             error @ LoadError::Mismatch { .. } => Self::NodeError(error.to_string()),
             LoadError::GaveUp { wait, .. } => Self::NotReady { retry_after: *wait },
             LoadError::TooManyBoxes { max } => Self::TooManyBoxes { max: *max },
+            LoadError::UnsupportedTemplate => Self::UnsupportedTemplate,
             LoadError::CapacityExceeded { .. } => Self::CapacityExceeded,
             LoadError::EngineGone(gone) => Self::EngineGone(*gone),
         }

@@ -46,7 +46,7 @@ let nextId = Math.max(0, ...tracked.value.map((t) => t.id)) + 1;
 function track() {
   if (!keyDraft.value.trim()) return;
   const key = parseKey(keyDraft.value);
-  tracked.value.unshift({ id: nextId++, key, boxes: "tokenId" in key || !balanceOnly.value });
+  tracked.value.unshift({ id: nextId++, key, boxes: !("address" in key) || !balanceOnly.value });
   keyDraft.value = "";
 }
 

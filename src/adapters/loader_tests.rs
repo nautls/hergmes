@@ -12,7 +12,7 @@ use crate::{
     adapters::{BoxCache, BoxFetcher, EngineGone, Follower, Wake, follower},
     engine::{Config as EngineConfig, Engine, EngineError, Query, Reply},
     sim::{
-        Chain, Endpoint, SimChain, SimConfig,
+        self, Chain, Endpoint, SimChain, SimConfig,
         testing::{Yielding, finish, new_chain, poll_once, ready},
     },
 };
@@ -67,6 +67,45 @@ fn a_key_is_loaded_at_the_tip() {
     assert_eq!(boxes, expected);
     use Endpoint::{IndexedHeight, Info, UnspentByErgoTree};
     assert_eq!(sim.calls(), [Info, IndexedHeight, UnspentByErgoTree, Info]);
+}
+
+/// A template key holds the boxes of every tree of its template: the chain's two scripts.
+#[test]
+fn a_template_key_is_loaded_with_the_boxes_of_its_trees() {
+    let chain = new_chain();
+    let engine = synced_engine(&chain);
+    let sim = SimChain::new(chain);
+    let key = TrackingKey::Template(sim::script_template_hash());
+    let loader = Loader::new(sim.clone(), Config::default());
+    let outcome = ready(loader.try_load(&engine, &key)).unwrap();
+    let (boxes, expected) = engine_and_oracle(&sim, &engine, &key);
+    assert!(matches!(outcome, Attempt::Tracked { .. }), "{outcome:?}");
+    assert_eq!(boxes, expected);
+    let trees: std::collections::HashSet<_> = (sim.lock().utxo().values())
+        .filter(|b| key.matches(b))
+        .map(|b| b.ergo_tree.clone())
+        .collect();
+    assert_eq!(trees.len(), 2, "both scripts' boxes");
+    assert_eq!(count(&sim, Endpoint::UnspentByTemplate), 1);
+}
+
+/// The node files a tree without segregated constants under a template hash too, and lists
+/// its boxes under it. The relay refuses such a template, and remembers the refusal as it
+/// does a key over the per-key cap.
+#[test]
+fn a_template_of_trees_without_segregated_constants_is_refused_and_remembered() {
+    let chain = new_chain();
+    let engine = synced_engine(&chain);
+    let p2pk = chain.trees()[0].clone();
+    let sim = SimChain::new(chain);
+    let key = TrackingKey::Template(sim::node_template_hash(&p2pk.0));
+    let loader = Loader::new(sim.clone(), Config::default());
+    for _ in 0..2 {
+        let error = ready(loader.load(&engine, &key)).unwrap_err();
+        assert!(matches!(*error, LoadError::UnsupportedTemplate), "{error:?}");
+    }
+    assert_eq!(count(&sim, Endpoint::UnspentByTemplate), 1, "no node call while remembered");
+    assert!(!engine.lock().unwrap().is_tracked(&key));
 }
 
 #[test]

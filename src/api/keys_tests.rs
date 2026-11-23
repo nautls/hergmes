@@ -1,4 +1,5 @@
-//! Keys from addresses and token ids: the node's network only, and token ids in either case.
+//! Keys from addresses, token ids and template hashes: the node's network only, and ids and
+//! hashes in either case.
 
 use super::*;
 use crate::types::HexBytes;
@@ -43,11 +44,21 @@ fn a_token_id_is_64_hex_characters_in_either_case() {
     }
 }
 
+#[test]
+fn a_template_hash_is_64_hex_characters_in_either_case() {
+    let key = TrackingKey::Template(NFT.parse().unwrap());
+    assert_eq!(template_key(NFT, &open()), Ok(key.clone()));
+    assert_eq!(template_key(&NFT.to_uppercase(), &open()), Ok(key));
+    for hash in ["", &NFT[..62], &format!("{NFT}00"), &NFT.replace('a', "g")] {
+        assert_eq!(template_key(hash, &open()), Err(ApiError::InvalidTemplateHash), "{hash:?}");
+    }
+}
+
 /// A bad key is refused for what it is, before the policy is asked: the code tells the
 /// client to fix the request, not that the relay won't serve it.
 #[test]
 fn a_bad_key_is_invalid_whatever_the_policy() {
-    let nothing = KeyPolicy::new(Some(&[]), &[], Some(&[]), &[]);
+    let nothing = KeyPolicy::new(Some(&[]), &[], Some(&[]), Some(&[]), &[]);
     for (address, node) in [("0OIl", Network::Mainnet), (FEE_TESTNET, Network::Mainnet)] {
         let error = address_key(address, node, &nothing).unwrap_err();
         assert_eq!(error.code(), "invalid_address", "{address}");
@@ -55,4 +66,6 @@ fn a_bad_key_is_invalid_whatever_the_policy() {
     assert_eq!(token_key("abcd", &nothing), Err(ApiError::InvalidTokenId));
     assert_eq!(address_key(FEE_MAINNET, Network::Mainnet, &nothing), Err(ApiError::KeyNotAllowed));
     assert_eq!(token_key(NFT, &nothing), Err(ApiError::KeyNotAllowed));
+    assert_eq!(template_key("abcd", &nothing), Err(ApiError::InvalidTemplateHash));
+    assert_eq!(template_key(NFT, &nothing), Err(ApiError::KeyNotAllowed));
 }

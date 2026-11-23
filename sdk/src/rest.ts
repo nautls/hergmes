@@ -179,9 +179,10 @@ export class RestClient {
 type Query = Record<string, string | number | undefined>;
 
 function keyPath(key: Key): string {
-  return "address" in key
-    ? `v1/addresses/${encodeURIComponent(key.address)}`
-    : `v1/tokens/${encodeURIComponent(key.tokenId)}`;
+  if ("address" in key) return `v1/addresses/${encodeURIComponent(key.address)}`;
+  return "tokenId" in key
+    ? `v1/tokens/${encodeURIComponent(key.tokenId)}`
+    : `v1/templates/${encodeURIComponent(key.templateHash)}`;
 }
 
 function sleep(ms: number, signal: AbortSignal | undefined): Promise<void> {

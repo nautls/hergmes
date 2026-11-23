@@ -13,14 +13,15 @@ use crate::{
     api::{
         ApiError, KeyPolicy,
         http::seconds,
-        keys::{address_key, token_key},
+        keys::{address_key, template_key, token_key},
         wire::{AsOf, Confirmed, Pending, WireBox},
     },
     engine::{BlockRef, Output, PendingTx, ResyncReason, TrackingKey},
     types::{address::Network, ergo::BoxId},
 };
 
-/// A key as the client wrote it: `{ "address": ... }` or `{ "tokenId": ... }`, exactly one.
+/// A key as the client wrote it: `{ "address": ... }`, `{ "tokenId": ... }` or
+/// `{ "templateHash": ... }`, exactly one.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub enum ClientKey {
@@ -28,6 +29,8 @@ pub enum ClientKey {
     Address(String),
     #[serde(rename = "tokenId")]
     TokenId(String),
+    #[serde(rename = "templateHash")]
+    TemplateHash(String),
 }
 
 /// A key as every message for it spells it: the client's spelling, as JSON. Serialized once
@@ -41,11 +44,12 @@ impl ClientKey {
     }
 
     /// The tracking key, through the same checks as a REST route: the network, the token id's
-    /// form and the operator's policy.
+    /// or the template hash's form and the operator's policy.
     pub fn resolve(&self, network: Network, policy: &KeyPolicy) -> Result<TrackingKey, ApiError> {
         match self {
             Self::Address(address) => address_key(address, network, policy),
             Self::TokenId(id) => token_key(id, policy),
+            Self::TemplateHash(hash) => template_key(hash, policy),
         }
     }
 }
@@ -86,7 +90,8 @@ pub enum Reject {
     Api(ApiError),
     /// The connection holds as many subscriptions as it may.
     TooManySubscriptions,
-    /// A token key has no balance, so it is subscribed only from a snapshot's block.
+    /// A token or a template key has no balance, so it is subscribed only from a snapshot's
+    /// block.
     FromRequired,
 }
 

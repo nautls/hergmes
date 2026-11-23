@@ -13,10 +13,10 @@ use crate::{
         NodeError, NodeSource, Page,
         node::{IndexedHeightResponse, InfoResponse},
     },
-    sim::Chain,
+    sim::{Chain, node_template_hash},
     types::ergo::{
         AddressTransactions, Balance, BlockHeader, BoxById, BoxId, ErgoTree, HeaderId,
-        IndexedBlock, IndexedBox, TokenId, TokenInfo, TokenMetadata, TxId, UTxO,
+        IndexedBlock, IndexedBox, TemplateHash, TokenId, TokenInfo, TokenMetadata, TxId, UTxO,
         UnconfirmedTransaction,
     },
 };
@@ -31,6 +31,7 @@ pub enum Endpoint {
     Mempool,
     UnspentByErgoTree,
     UnspentByToken,
+    UnspentByTemplate,
     TokenInfo,
     Tokens,
     BoxesWithPool,
@@ -165,6 +166,17 @@ impl NodeSource for SimChain {
     ) -> Result<Vec<IndexedBox>, NodeError> {
         self.serve(Endpoint::UnspentByToken, |c| {
             c.indexed_unspent(|b| b.tokens.iter().any(|t| t.id == *token_id), page)
+        })
+        .await
+    }
+
+    async fn unspent_by_template(
+        &self,
+        hash: &TemplateHash,
+        page: Page,
+    ) -> Result<Vec<IndexedBox>, NodeError> {
+        self.serve(Endpoint::UnspentByTemplate, |c| {
+            c.indexed_unspent(|b| node_template_hash(&b.ergo_tree.0) == *hash, page)
         })
         .await
     }

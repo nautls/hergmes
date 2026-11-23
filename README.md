@@ -2,8 +2,9 @@
 
 A realtime, mempool-aware relay for the [Ergo](https://ergoplatform.org) blockchain.
 
-hergmes sits in front of an indexed Ergo node and lets clients track the boxes of **addresses**
-and **small-supply tokens** (NFTs and tokens with an emission of at most 100). A client gets a
+hergmes sits in front of an indexed Ergo node and lets clients track the boxes of **addresses**,
+**small-supply tokens** (NFTs and tokens with an emission of at most 100) and **contract
+templates** (every instance of a contract, whatever its constants). A client gets a
 key's confirmed boxes and an address's balance, then receives live updates: new boxes, spent
 boxes, pending mempool activity, balance changes and reorgs. Pending activity shows in the
 balance as a signed change on top of the confirmed amount ("10 ERG incoming", "10 ERG leaving").
@@ -55,9 +56,11 @@ variables instead, without a file: `ERGO_NODE_URL`, `HERGMES_LISTEN_ADDR` and
 | `token_supply_limit`               | 100            | Largest token emission that can be tracked                                        |
 | `track_addresses`                  | `[]`           | Addresses tracked for the life of the process                                     |
 | `track_tokens`                     | `[]`           | Token ids tracked for the life of the process                                     |
+| `track_templates`                  | `[]`           | Template hashes tracked for the life of the process                               |
 | `allow_addresses`                  | omitted: any   | Addresses clients may name: `"p2pk"`, `"p2sh"`, `"p2s"` and addresses             |
 | `deny_addresses`                   | `[]`           | Addresses clients may not name; deny wins over allow                              |
 | `allow_tokens`                     | omitted: any   | Token ids clients may name                                                        |
+| `allow_templates`                  | omitted: any   | Template hashes clients may name                                                  |
 | `box_cache_mb`                     | 128            | Memory for full boxes kept to serve pages, in MiB; 0 disables it                  |
 | `max_boxes_per_key`                | 16383          | Most boxes a key can hold to have its boxes tracked: one node page                |
 | `max_tracked_units`                | 2000000        | Most units tracked: a box is one, a key its memory's worth; ~860 MiB resident     |
@@ -66,11 +69,11 @@ variables instead, without a file: `ERGO_NODE_URL`, `HERGMES_LISTEN_ADDR` and
 | `max_subscriptions_per_connection` | 100            | Most subscriptions one WebSocket connection holds                                 |
 | `metrics_addr`                     |                | IP and port of `/metrics`, omitted: none; or `HERGMES_METRICS_ADDR`               |
 
-By default, with the allow lists omitted, the relay serves any address and any token within the
-supply limit. The allow and deny lists narrow that, for an instance run for one dapp or one
+By default, with the allow lists omitted, the relay serves any address, any token within the
+supply limit and any template. The allow and deny lists narrow that, for an instance run for one dapp or one
 wallet; an empty allow list (`[]`) allows nothing. A refused key is `403 key_not_allowed`, on
 every route that takes a key (a box id and a tx are not keys). Keys in `track_addresses` and
-`track_tokens` are always allowed. Denying one, or denying an address the allow list names, stops
+`track_tokens` and `track_templates` are always allowed. Denying one, or denying an address the allow list names, stops
 the relay at startup, and the startup log shows the policy in force. For example:
 
 ```toml
@@ -112,7 +115,7 @@ An unlimited hard limit leaves the soft one as it is.
 
 Set `metrics_addr` (e.g. `"127.0.0.1:9100"`) to serve Prometheus metrics on `GET /metrics`, on an
 address of its own and never on the public one: tracked keys by kind (`address` with its boxes,
-`balance` for balance-only, `token`), tracked boxes and units, the ring buffer's and the box cache's
+`balance` for balance-only, `token`, `template`), tracked boxes and units, the ring buffer's and the box cache's
 sizes, cache hits and misses, the boxes idle keys hold and the keys evicted, resident memory, and
 refusals and resyncs by reason. They are counts only and name no address or token.
 
@@ -169,6 +172,8 @@ The relay has not been run above the default cap, so a higher one is not yet tes
 | `GET /v1/tokens/{tokenId}/boxes`              | A page of a small-supply token's unspent boxes    |
 | `GET /v1/addresses/{address}/boxes/with-pool` | An address's boxes with the mempool applied       |
 | `GET /v1/tokens/{tokenId}/boxes/with-pool`    | A token's boxes with the mempool applied          |
+| `GET /v1/templates/{hash}/boxes`              | A page of a contract template's unspent boxes     |
+| `GET /v1/templates/{hash}/boxes/with-pool`    | A template's boxes with the mempool applied       |
 | `GET /v1/addresses/{address}/balance`         | An address's balance, pending change and `used`   |
 | `GET /v1/addresses/{address}/transactions`    | An address's txs, newest first, pending on top    |
 | `GET /v1/headers`                             | The last block headers up to the tip, for signing |
@@ -182,6 +187,16 @@ Box pages take `limit` (default 500, at most 1000) and the `cursor` from the pre
 Fleet SDK's `Box<string>` shape plus `inclusionHeight`, and every amount is a base-10 integer
 string. Errors are `{ "error": "<code>", "message": "..." }` (a refused tx adds a `reason`), and
 a `503` carries `Retry-After`.
+
+A template is named by its hash, as the node's indexer names it: the Blake2b256 of an ErgoTree's
+template, the tree's bytes after its header and constants. Its boxes are those of every tree of
+that template, so one key follows every instance of a contract, such as each order of a DEX.
+Only trees with segregated constants are tracked: the node files every other tree under a
+template hash too (its bytes after the header), and such a template is `422
+unsupported_template`, found when its boxes are first read and then remembered for ten minutes,
+as a key over `max_boxes_per_key` is. A template is bounded as an address is: by
+`max_boxes_per_key` when loaded, and by `max_tracked_units`. Neither checks it again as it grows,
+so a busy contract's template can hold far more boxes later than when it was loaded.
 
 `/boxes/with-pool` is for clients that fetch without keeping state: the key's confirmed boxes
 minus those pending txs spend, then the boxes pending txs create (these have no
@@ -251,6 +266,7 @@ only the last tip. Clients send JSON text:
 ```jsonc
 { "op": "subscribe", "key": { "address": "9f..." }, "from": { "height": 1234567, "headerId": "..." } }
 { "op": "subscribe", "key": { "tokenId": "..." }, "from": { "height": 1234567, "headerId": "..." } }
+{ "op": "subscribe", "key": { "templateHash": "..." }, "from": { "height": 1234567, "headerId": "..." } }
 { "op": "subscribe", "key": { "address": "9f..." }, "id": 7 }   // balance only; `id` is optional
 { "op": "unsubscribe", "key": { "address": "9f..." } }
 ```
@@ -286,7 +302,7 @@ moved.
 
 A refused subscribe gets `rejected`, with REST's error codes, `retryAfter` (seconds) where REST
 would send `Retry-After`, and two codes of its own: `too_many_subscriptions` and `from_required`
-(a token has no balance). `resync_required` means: take a new snapshot, or for a balance-only
+(a token or a template has no balance). `resync_required` means: take a new snapshot, or for a balance-only
 subscription, subscribe again. Its `reason` is one of `outside_window`, `fork_beyond_window`,
 `not_tracked`, `slow_consumer` and `balance_mismatch` (a block spent more than the balance read
 at the start held).

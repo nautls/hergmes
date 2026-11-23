@@ -8,7 +8,7 @@ use crate::{
         keys::{address_key, token_key},
     },
     types::{
-        HexBytes,
+        Digest, HexBytes,
         address::{Network, encode, encode_as_p2s},
     },
 };
@@ -30,6 +30,10 @@ fn token(id: &str) -> TrackingKey {
 }
 
 /// The address the relay's encoder gives a tree: P2PK and P2SH trees get their own type.
+fn template(byte: u8) -> TrackingKey {
+    TrackingKey::Template(Digest([byte; 32]))
+}
+
 fn address(hex: &str) -> String {
     encode(&hex::decode(hex).unwrap(), Network::Mainnet)
 }
@@ -87,12 +91,12 @@ fn no_rules_admit_every_key() {
         assert!(policy.admits(&tree(hex)), "{hex}");
     }
     assert!(policy.admits(&token(NFT)));
-    assert_eq!(KeyPolicy::new(None, &[], None, &[]), policy);
+    assert_eq!(KeyPolicy::new(None, &[], None, None, &[]), policy);
 }
 
 #[test]
 fn classes_are_judged_by_tree_whatever_the_encoding() {
-    let wallet = KeyPolicy::new(Some(&rules(&["p2pk", "P2SH"])), &[], None, &[]);
+    let wallet = KeyPolicy::new(Some(&rules(&["p2pk", "P2SH"])), &[], None, None, &[]);
     for hex in [P2PK_TREE, P2SH_TREE] {
         assert!(admits_address(&wallet, &address(hex)), "{hex}");
         assert!(admits_address(&wallet, &as_p2s(hex)), "{hex} re-encoded as P2S is still {hex}");
@@ -100,7 +104,7 @@ fn classes_are_judged_by_tree_whatever_the_encoding() {
     assert!(!admits_address(&wallet, &address(P2S_TREE)));
 
     // A P2S-only rule can't be met by writing a P2PK tree as a P2S address.
-    let contracts = KeyPolicy::new(Some(&rules(&["p2s"])), &[], None, &[]);
+    let contracts = KeyPolicy::new(Some(&rules(&["p2s"])), &[], None, None, &[]);
     assert!(admits_address(&contracts, &address(P2S_TREE)));
     for hex in [P2PK_TREE, P2SH_TREE] {
         assert!(!admits_address(&contracts, &address(hex)), "{hex}");
@@ -111,13 +115,13 @@ fn classes_are_judged_by_tree_whatever_the_encoding() {
 #[test]
 fn listed_addresses_are_admitted_besides_the_classes() {
     let fee = address(P2S_TREE);
-    let wallet = KeyPolicy::new(Some(&rules(&["p2pk", &fee])), &[], None, &[]);
+    let wallet = KeyPolicy::new(Some(&rules(&["p2pk", &fee])), &[], None, None, &[]);
     assert!(admits_address(&wallet, &fee));
     assert!(admits_address(&wallet, &address(P2PK_TREE)));
     assert!(!admits_address(&wallet, &address(P2SH_TREE)));
 
     // A listed P2PK tree, matched by tree, so under either encoding.
-    let one = KeyPolicy::new(Some(&rules(&[&as_p2s(P2PK_TREE)])), &[], None, &[]);
+    let one = KeyPolicy::new(Some(&rules(&[&as_p2s(P2PK_TREE)])), &[], None, None, &[]);
     assert!(admits_address(&one, &address(P2PK_TREE)));
     assert!(!admits_address(&one, &fee));
 }
@@ -125,7 +129,7 @@ fn listed_addresses_are_admitted_besides_the_classes() {
 #[test]
 fn none_admits_no_address_or_token_but_the_configured_ones() {
     let configured = [tree(P2S_TREE), token(NFT)];
-    let policy = KeyPolicy::new(Some(&[]), &[], Some(&[]), &configured);
+    let policy = KeyPolicy::new(Some(&[]), &[], Some(&[]), None, &configured);
     assert!(admits_address(&policy, &address(P2S_TREE)));
     assert!(admits_token(&policy, NFT));
     assert!(!admits_address(&policy, &address(P2PK_TREE)));
@@ -134,9 +138,9 @@ fn none_admits_no_address_or_token_but_the_configured_ones() {
 
 #[test]
 fn tokens_are_any_unless_listed() {
-    let open = KeyPolicy::new(Some(&rules(&["p2pk"])), &[], None, &[]);
+    let open = KeyPolicy::new(Some(&rules(&["p2pk"])), &[], None, None, &[]);
     assert!(admits_token(&open, NFT), "an address rule leaves tokens alone");
-    let dapp = KeyPolicy::new(None, &[], Some(&[NFT.parse().unwrap()]), &[]);
+    let dapp = KeyPolicy::new(None, &[], Some(&[NFT.parse().unwrap()]), None, &[]);
     assert!(admits_token(&dapp, NFT));
     assert!(admits_token(&dapp, &NFT.to_uppercase()));
     assert!(!admits_token(&dapp, TOKEN));
@@ -144,12 +148,25 @@ fn tokens_are_any_unless_listed() {
 }
 
 #[test]
+fn templates_are_any_unless_listed() {
+    let open = KeyPolicy::new(Some(&[]), &[], Some(&[]), None, &[]);
+    assert!(open.admits(&template(1)), "address and token rules leave templates alone");
+    let dapp = KeyPolicy::new(None, &[], None, Some(&[Digest([1; 32])]), &[template(3)]);
+    assert!(dapp.admits(&template(1)));
+    assert!(dapp.admits(&template(3)), "a configured template");
+    assert!(!dapp.admits(&template(2)));
+    assert!(admits_token(&dapp, NFT), "a template rule leaves tokens alone");
+    assert!(admits_address(&dapp, &address(P2S_TREE)), "and addresses");
+}
+
+#[test]
 fn deny_wins_over_every_allow_rule() {
     let fee = address(P2S_TREE);
     let denied = decoded(&[&fee, &as_p2s(P2PK_TREE)]);
-    let open = KeyPolicy::new(None, &denied, None, &[]);
-    let class = KeyPolicy::new(Some(&rules(&["p2pk", "p2s"])), &denied, None, &[]);
-    let listed = KeyPolicy::new(Some(&rules(&[&fee, &address(P2PK_TREE)])), &denied, None, &[]);
+    let open = KeyPolicy::new(None, &denied, None, None, &[]);
+    let class = KeyPolicy::new(Some(&rules(&["p2pk", "p2s"])), &denied, None, None, &[]);
+    let listed =
+        KeyPolicy::new(Some(&rules(&[&fee, &address(P2PK_TREE)])), &denied, None, None, &[]);
     for policy in [&open, &class, &listed] {
         assert!(!admits_address(policy, &fee), "{policy:?}");
         // Denied as a P2S address, so refused as its P2PK address too.
@@ -163,8 +180,13 @@ fn deny_wins_over_every_allow_rule() {
 #[test]
 fn configured_keys_are_admitted_whatever_the_rules() {
     let configured = [tree(P2S_TREE), token(TOKEN)];
-    let policy =
-        KeyPolicy::new(Some(&rules(&["p2pk"])), &[], Some(&[NFT.parse().unwrap()]), &configured);
+    let policy = KeyPolicy::new(
+        Some(&rules(&["p2pk"])),
+        &[],
+        Some(&[NFT.parse().unwrap()]),
+        None,
+        &configured,
+    );
     assert!(admits_address(&policy, &address(P2S_TREE)));
     assert!(admits_token(&policy, TOKEN));
     assert!(!admits_address(&policy, &address(P2SH_TREE)));
@@ -194,19 +216,36 @@ fn a_policy_reads_as_its_rules() {
     let fee = Address::decode(&address(P2S_TREE)).unwrap();
     let nft = NFT.parse().unwrap();
     for (policy, line) in [
-        (KeyPolicy::default(), "addresses: any; tokens: any"),
-        (KeyPolicy::new(Some(&[]), &[], Some(&[]), &[]), "addresses: none; tokens: none"),
+        (KeyPolicy::default(), "addresses: any; tokens: any; templates: any"),
         (
-            KeyPolicy::new(Some(&rules(&["p2pk", "p2sh", &address(P2S_TREE)])), &[], None, &[]),
-            "addresses: p2pk, p2sh, 1 by name; tokens: any",
+            KeyPolicy::new(Some(&[]), &[], Some(&[]), None, &[]),
+            "addresses: none; tokens: none; templates: any",
         ),
         (
-            KeyPolicy::new(None, [&fee], Some(&[nft]), &[token(TOKEN), tree(P2SH_TREE)]),
-            "addresses: any, 1 denied; tokens: 2 by name",
+            KeyPolicy::new(
+                Some(&rules(&["p2pk", "p2sh", &address(P2S_TREE)])),
+                &[],
+                None,
+                None,
+                &[],
+            ),
+            "addresses: p2pk, p2sh, 1 by name; tokens: any; templates: any",
         ),
         (
-            KeyPolicy::new(Some(&[]), [&fee], None, &[tree(P2PK_TREE)]),
-            "addresses: 1 by name, 1 denied; tokens: any",
+            KeyPolicy::new(None, [&fee], Some(&[nft]), None, &[token(TOKEN), tree(P2SH_TREE)]),
+            "addresses: any, 1 denied; tokens: 2 by name; templates: any",
+        ),
+        (
+            KeyPolicy::new(Some(&[]), [&fee], None, None, &[tree(P2PK_TREE)]),
+            "addresses: 1 by name, 1 denied; tokens: any; templates: any",
+        ),
+        (
+            KeyPolicy::new(None, &[], None, Some(&[Digest([1; 32])]), &[template(2)]),
+            "addresses: any; tokens: any; templates: 2 by name",
+        ),
+        (
+            KeyPolicy::new(None, &[], None, Some(&[]), &[]),
+            "addresses: any; tokens: any; templates: none",
         ),
     ] {
         assert_eq!(policy.to_string(), line);

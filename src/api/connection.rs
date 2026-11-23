@@ -262,7 +262,7 @@ impl<S: NodeSource + 'static, K: Socket> Connection<S, K> {
                 // A subscribe ends the key's old subscription whatever comes of it, so after
                 // `rejected` the client holds none, however the refusal came.
                 let replaced = self.take(&key);
-                let refusal = if matches!(key, TrackingKey::Token(_)) && from.is_none() {
+                let refusal = if !matches!(key, TrackingKey::Tree(_)) && from.is_none() {
                     Some(Reject::FromRequired)
                 } else if self.held() >= self.config.max_subscriptions {
                     Some(Reject::TooManySubscriptions)
@@ -548,8 +548,8 @@ async fn subscribe<S: NodeSource>(
     }
     let tracked = match key {
         TrackingKey::Tree(tree) => api.balances.track(&api.engine, tree).await,
-        // Refused before it gets here: a token has no balance.
-        TrackingKey::Token(_) => api.pages.load(&api.engine, key).await,
+        // Refused before it gets here: a token or a template has no balance.
+        TrackingKey::Token(_) | TrackingKey::Template(_) => api.pages.load(&api.engine, key).await,
     };
     match tracked {
         Ok(()) => once().await,

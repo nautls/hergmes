@@ -110,7 +110,8 @@ impl Metrics {
         );
         registry.register(
             "hergmes_tracked_keys",
-            "Tracked keys, by kind: addresses with their boxes, addresses balance-only, tokens",
+            "Tracked keys, by kind: addresses with their boxes, addresses balance-only, tokens, \
+             templates",
             tracked_keys.clone(),
         );
         registry.register(
@@ -209,6 +210,7 @@ impl Metrics {
         kind("address").set(gauge(stats.address_keys));
         kind("balance").set(gauge(stats.balance_keys));
         kind("token").set(gauge(stats.token_keys));
+        kind("template").set(gauge(stats.template_keys));
         inner.tracked_boxes.set(gauge(stats.tracked_boxes));
         inner.tracked_units.set(gauge(stats.tracked_units));
         inner.ring_blocks.set(gauge(stats.ring_blocks));

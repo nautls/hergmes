@@ -68,5 +68,6 @@ export type ServerMessage =
 
 /** A key's name for routing: its kind and the spelling sent, which the relay echoes. */
 export function keyName(key: Key): string {
-  return "address" in key ? `a:${key.address}` : `t:${key.tokenId}`;
+  if ("address" in key) return `a:${key.address}`;
+  return "tokenId" in key ? `t:${key.tokenId}` : `h:${key.templateHash}`;
 }

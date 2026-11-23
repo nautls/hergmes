@@ -31,7 +31,7 @@ use crate::{
     api::{
         ApiError, Balances, Boxes, Headers, History, KeyPolicy, Metrics, Pages, Tokens,
         Transactions, headers, history,
-        keys::{address_key, token_key},
+        keys::{address_key, template_key, token_key},
         metrics::Transport,
         pages,
         transactions::{self, MAX_HEX_CHARS},
@@ -101,6 +101,8 @@ where
         .route("/v1/tokens/{token_id}/boxes", get(token_boxes::<S, E>))
         .route("/v1/addresses/{address}/boxes/with-pool", get(address_with_pool::<S, E>))
         .route("/v1/tokens/{token_id}/boxes/with-pool", get(token_with_pool::<S, E>))
+        .route("/v1/templates/{hash}/boxes", get(template_boxes::<S, E>))
+        .route("/v1/templates/{hash}/boxes/with-pool", get(template_with_pool::<S, E>))
         .route("/v1/addresses/{address}/balance", get(address_balance::<S, E>))
         .route("/v1/addresses/{address}/transactions", get(address_history::<S, E>))
         .route("/v1/headers", get(last_headers::<S, E>))
@@ -168,6 +170,16 @@ async fn token_boxes<S: NodeSource, E: EngineHandle>(
     page(&api, &key, &params).await
 }
 
+async fn template_boxes<S: NodeSource, E: EngineHandle>(
+    State(api): State<Arc<Api<S, E>>>,
+    hash: Result<Path<String>, PathRejection>,
+    params: Params,
+) -> Result<Response, ApiError> {
+    let hash = hash.map_err(|_| ApiError::InvalidTemplateHash)?;
+    let key = template_key(&hash, &api.policy)?;
+    page(&api, &key, &params).await
+}
+
 async fn page<S: NodeSource, E: EngineHandle>(
     api: &Api<S, E>,
     key: &TrackingKey,
@@ -196,6 +208,15 @@ async fn token_with_pool<S: NodeSource, E: EngineHandle>(
 ) -> Result<Response, ApiError> {
     let token_id = token_id.map_err(|_| ApiError::InvalidTokenId)?;
     let key = token_key(&token_id, &api.policy)?;
+    with_pool(&api, &key).await
+}
+
+async fn template_with_pool<S: NodeSource, E: EngineHandle>(
+    State(api): State<Arc<Api<S, E>>>,
+    hash: Result<Path<String>, PathRejection>,
+) -> Result<Response, ApiError> {
+    let hash = hash.map_err(|_| ApiError::InvalidTemplateHash)?;
+    let key = template_key(&hash, &api.policy)?;
     with_pool(&api, &key).await
 }
 
@@ -303,6 +324,7 @@ impl ApiError {
         match self {
             Self::InvalidAddress(_)
             | Self::InvalidTokenId
+            | Self::InvalidTemplateHash
             | Self::InvalidIds
             | Self::InvalidBoxId
             | Self::InvalidBroadcast
@@ -312,7 +334,7 @@ impl ApiError {
             Self::KeyNotAllowed | Self::OriginNotAllowed => StatusCode::FORBIDDEN,
             Self::UnknownToken | Self::BoxNotFound => StatusCode::NOT_FOUND,
             Self::CursorExpired => StatusCode::GONE,
-            Self::SupplyTooLarge { .. } | Self::TooManyBoxes { .. } => {
+            Self::SupplyTooLarge { .. } | Self::TooManyBoxes { .. } | Self::UnsupportedTemplate => {
                 StatusCode::UNPROCESSABLE_ENTITY
             }
             Self::CapacityExceeded
@@ -334,6 +356,7 @@ impl ApiError {
             Self::BoxUnavailable { .. } => Some(DEFAULT_RETRY),
             Self::InvalidAddress(_)
             | Self::InvalidTokenId
+            | Self::InvalidTemplateHash
             | Self::InvalidIds
             | Self::InvalidBoxId
             | Self::InvalidBroadcast
@@ -347,6 +370,7 @@ impl ApiError {
             | Self::CursorExpired
             | Self::SupplyTooLarge { .. }
             | Self::TooManyBoxes { .. }
+            | Self::UnsupportedTemplate
             | Self::NodeError(_)
             | Self::EngineGone(_) => None,
         }

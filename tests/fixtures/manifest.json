@@ -323,6 +323,24 @@
       "path": "/blockchain/box/byId/159d1d534722cdd97dc8509abeb8c752ea757ac9a17b8fbcb45a936529df1334",
       "status": 200,
       "notes": "R4 to R6 only: no asset type."
+    },
+    "unspent_by_template": {
+      "method": "GET",
+      "path": "/blockchain/box/unspent/byTemplateHash/2af229a1be3d59db211611085e8aa66ce2339805809417e54c2af0b6b401bb36?limit=20&sortDirection=asc",
+      "status": 200,
+      "notes": "The miner reward contract: boxes of several miners' trees, one template."
+    },
+    "unspent_by_template_p2pk": {
+      "method": "GET",
+      "path": "/blockchain/box/unspent/byTemplateHash/3ed9066d8b9b16b39fc7ec2604e66dbc7c35f05aba69e96460aed54cdd9002d3?limit=20&sortDirection=asc",
+      "status": 200,
+      "notes": "The sample address's tree, which has no segregated constants, hashed after its header."
+    },
+    "unspent_by_template_unknown": {
+      "method": "GET",
+      "path": "/blockchain/box/unspent/byTemplateHash/abababababababababababababababababababababababababababababababab?limit=20&sortDirection=asc",
+      "status": 200,
+      "notes": "An unknown hash is 200 [], as for a token."
     }
   }
 }

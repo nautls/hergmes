@@ -20,6 +20,7 @@ fn sizes() -> Stats {
         address_keys: 3,
         balance_keys: 4,
         token_keys: 2,
+        template_keys: 1,
         tracked_boxes: 40,
         tracked_units: 75,
         ring_blocks: 5,
@@ -74,6 +75,7 @@ fn every_series_is_written_with_the_engines_sizes() {
         "hergmes_tracked_keys{kind=\"address\"} 3",
         "hergmes_tracked_keys{kind=\"balance\"} 4",
         "hergmes_tracked_keys{kind=\"token\"} 2",
+        "hergmes_tracked_keys{kind=\"template\"} 1",
         "process_resident_memory_bytes 4096",
     ];
     expected.sort_unstable();

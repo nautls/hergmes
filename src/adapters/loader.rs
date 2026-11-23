@@ -9,7 +9,8 @@
 //!
 //! Concurrent loads of one key are coalesced: one runs, and the other callers wait for its
 //! outcome instead of paging the key from the node again. A key refused for having too many
-//! boxes is remembered for a while, so asking again doesn't page it from the node again.
+//! boxes, or a template of trees without segregated constants, is remembered for a while, so
+//! asking again doesn't page it from the node again.
 
 use std::{
     sync::{Arc, Mutex},
@@ -28,7 +29,10 @@ use crate::{
     },
     clients::{NodeError, NodeSource, Page, source::MAX_PAGE_LIMIT},
     engine::{BlockRef, Capacity, Event, LoadedBox, Output, TrackingKey},
-    types::ergo::{BoxId, IndexedBox, UTxO},
+    types::{
+        ergo::{BoxId, IndexedBox, UTxO},
+        ergo_tree::template_hash,
+    },
 };
 
 /// The default cap on a key's boxes: the most that leave room in one page, so a key over it
@@ -125,6 +129,11 @@ pub enum LoadError {
     /// The key has more than `max` boxes. Loading it again won't change that.
     #[error("the key has more than {max} boxes")]
     TooManyBoxes { max: usize },
+    /// A template key whose boxes' trees have no segregated constants, such as P2PK
+    /// addresses': the node files those under a template hash too, but the relay tracks
+    /// templates of constant-segregated trees only. Loading it again won't change that.
+    #[error("the template's trees have no segregated constants")]
+    UnsupportedTemplate,
     /// The key's boxes and charge would pass the cap on tracked units: the engine refused
     /// them, or the loader stopped paging at the first page past the room the engine had
     /// left, idle keys' room counted. It frees up as keys go idle: once a key with no
@@ -156,12 +165,12 @@ pub struct Loader<S> {
     /// in a row on one key, which only that caller sees (moka 0.12.16,
     /// `future/value_initializer.rs`, `try_init_or_read`).
     loads: Cache<TrackingKey, ()>,
-    /// Keys refused for having more than `max_boxes`, until `refusal_ttl` passes. Expiring is
-    /// the whole invalidation: the count changes only through blocks, and following it for
-    /// untracked keys would mean engine state, rollbacks and a race at the refusal, to save a
-    /// wallet a few minutes once after a long consolidation. The total cap is not
-    /// remembered: it frees up as keys go idle.
-    refused: Cache<TrackingKey, usize>,
+    /// Keys refused for having more than `max_boxes`, or as an unsupported template, until
+    /// `refusal_ttl` passes. Expiring is the whole invalidation: the count changes only
+    /// through blocks, and following it for untracked keys would mean engine state, rollbacks
+    /// and a race at the refusal, to save a wallet a few minutes once after a long
+    /// consolidation. The total cap is not remembered: it frees up as keys go idle.
+    refused: Cache<TrackingKey, Arc<LoadError>>,
     /// The current run of attempts that stopped before the pages. Shared by every load, since
     /// the cause is the node's, the indexer's or the engine's and not a key's: loads started
     /// later (a keeper's after giving up, clients' of other keys) wait retries rather than
@@ -184,6 +193,7 @@ fn checks(outcome: &Result<Attempt, LoadError>) -> Checks {
         Ok(Attempt::Tracked { .. } | Attempt::TipMoved | Attempt::Rejected)
         | Err(
             LoadError::TooManyBoxes { .. }
+            | LoadError::UnsupportedTemplate
             | LoadError::CapacityExceeded { .. }
             | LoadError::Mismatch { .. },
         ) => Checks::Passed,
@@ -240,17 +250,22 @@ impl<S: NodeSource> Loader<S> {
     ///
     /// A call while another load of `key` runs waits for that one and gets its outcome. A key
     /// refused for too many boxes in the last `refusal_ttl` is refused again with no node
-    /// call.
+    /// call, and so is an unsupported template.
     pub async fn load(&self, engine: &impl EngineHandle, key: &TrackingKey) -> Loaded {
-        if let Some(max) = self.refused.get(key).await {
-            return Err(Arc::new(LoadError::TooManyBoxes { max }));
+        if let Some(refusal) = self.refused.get(key).await {
+            return Err(refusal);
         }
         let run = async {
-            let outcome = self.load_alone(engine, key).await;
-            if let Err(LoadError::TooManyBoxes { max }) = outcome {
-                self.refused.insert(key.clone(), max).await;
+            let outcome = self.load_alone(engine, key).await.map_err(Arc::new);
+            if let Err(error) = &outcome
+                && matches!(
+                    **error,
+                    LoadError::TooManyBoxes { .. } | LoadError::UnsupportedTemplate
+                )
+            {
+                self.refused.insert(key.clone(), error.clone()).await;
             }
-            Err::<(), Loaded>(outcome.map_err(Arc::new))
+            Err::<(), Loaded>(outcome)
         };
         match self.loads.try_get_with(key.clone(), run).await {
             Err(outcome) => (*outcome).clone(),
@@ -376,6 +391,21 @@ impl<S: NodeSource> Loader<S> {
             let mut read = match key {
                 TrackingKey::Tree(tree) => self.source.unspent_by_ergo_tree(tree, page).await?,
                 TrackingKey::Token(id) => self.source.unspent_by_token(id, page).await?,
+                TrackingKey::Template(hash) => {
+                    let read = self.source.unspent_by_template(hash, page).await?;
+                    // The node files every tree under a template hash; one without segregated
+                    // constants hashes as none here. Such a template is refused whole, even
+                    // in the odd one that also holds segregated trees (with no constants,
+                    // the two kinds can share template bytes), since serving it would leave
+                    // out boxes the node lists under it.
+                    if read
+                        .iter()
+                        .any(|b| template_hash(&b.utxo.ergo_tree.0).is_none())
+                    {
+                        return Err(LoadError::UnsupportedTemplate);
+                    }
+                    read
+                }
             };
             let full = read.len() as u32 >= limit;
             boxes.append(&mut read);

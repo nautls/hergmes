@@ -33,6 +33,7 @@ export interface Expected {
 export interface SimKeys {
   addresses: string[];
   tokens: { tokenId: string; emission: string }[];
+  templates: string[];
 }
 
 /** A sim relay process: its URL, and its control routes. */
@@ -85,7 +86,12 @@ export class SimRelay {
   }
 
   expected(key: Key): Promise<Expected> {
-    const path = "address" in key ? `addresses/${key.address}` : `tokens/${key.tokenId}`;
+    const path =
+      "address" in key
+        ? `addresses/${key.address}`
+        : "tokenId" in key
+          ? `tokens/${key.tokenId}`
+          : `templates/${key.templateHash}`;
     return this.#call("GET", `/sim/expected/${path}`);
   }
 

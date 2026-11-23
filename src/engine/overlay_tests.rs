@@ -133,7 +133,7 @@ fn a_keys_overlay_lists_only_txs_and_boxes_matching_it() {
     let holders = overlay(&mempool, &order, &token);
     assert_eq!(holders.len(), 1);
     assert_eq!(holders[0].created.len(), 1, "a box holding the token twice is listed once");
-    let keys: Vec<TrackingKey> = keys_of(&mempool[0].outputs[1]).collect();
+    let keys: Vec<TrackingKey> = keys_of(&mempool[0].outputs[1], true).collect();
     assert_eq!(keys, vec![TrackingKey::Tree(HexBytes::from(vec![OTHER])), token]);
 }
 

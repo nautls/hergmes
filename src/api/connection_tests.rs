@@ -17,7 +17,7 @@ use crate::{
     engine::{self, Engine, Event, Query, Reply},
     runtime::{Clock, ManualClock, Settled, settling, spawn_with_clock},
     sim::{
-        Chain, Endpoint, SimChain, SimConfig,
+        Chain, Endpoint, SimChain, SimConfig, script_template_hash,
         testing::{BLOCK_TIME, blocks},
         token_id,
     },
@@ -436,6 +436,11 @@ fn types(messages: &[Value]) -> Vec<&str> {
         .collect()
 }
 
+fn template_key() -> (TrackingKey, Value) {
+    let hash = script_template_hash();
+    (TrackingKey::Template(hash), json!({ "templateHash": hash.to_string() }))
+}
+
 fn token_key() -> (TrackingKey, Value) {
     let id = token_id("small-100");
     (TrackingKey::Token(id), json!({ "tokenId": id.to_string() }))
@@ -800,6 +805,8 @@ async fn refused_keys_are_rejected_and_the_connection_carries_on() {
         (json!({ "tokenId": "ab" }), Some(tip), "invalid_token_id"),
         (token_key().1, None, "from_required"),
         (json!({ "tokenId": token_id("large").to_string() }), None, "from_required"),
+        (json!({ "templateHash": "ab" }), Some(tip), "invalid_template_hash"),
+        (template_key().1, None, "from_required"),
     ];
     for (key, from, reason) in cases {
         client.subscribe(key.clone(), from).await;
@@ -814,7 +821,7 @@ async fn refused_keys_are_rejected_and_the_connection_carries_on() {
         ))
     };
     assert_eq!(count("ws", "invalid_address"), 1);
-    assert_eq!(count("ws", "from_required"), 2);
+    assert_eq!(count("ws", "from_required"), 3);
     assert_eq!(count("rest", "invalid_address"), 0);
 }
 

@@ -209,8 +209,8 @@ impl<S: NodeSource> Keeper<S> {
             }
             let wait = match &*error {
                 LoadError::EngineGone(gone) => return Err(*gone),
-                error @ LoadError::TooManyBoxes { .. } => {
-                    // The operator sets both the keys and the caps.
+                error @ (LoadError::TooManyBoxes { .. } | LoadError::UnsupportedTemplate) => {
+                    // The operator sets both the keys and the caps, and names the templates.
                     error!(?key, %error, "Configured key can't be tracked, giving it up");
                     return Ok(false);
                 }

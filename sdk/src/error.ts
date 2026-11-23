@@ -2,6 +2,7 @@
 export type ErrorCode =
   | "invalid_address"
   | "invalid_token_id"
+  | "invalid_template_hash"
   | "invalid_ids"
   | "invalid_box_id"
   | "invalid_broadcast"
@@ -14,6 +15,7 @@ export type ErrorCode =
   | "cursor_expired"
   | "supply_too_large"
   | "too_many_boxes"
+  | "unsupported_template"
   | "capacity_exceeded"
   | "not_ready"
   | "node_unavailable"

@@ -10,8 +10,8 @@ use crate::{
         address::{self, Network, UnknownNetwork},
         ergo::{
             AddressTransactions, Balance, BalanceResponse, BlockHeader, BoxById, BoxId, ErgoTree,
-            HeaderId, IndexedBlock, IndexedBox, NodeBox, TokenId, TokenInfo, TokenMetadata, TxId,
-            UTxO, UnconfirmedTransaction,
+            HeaderId, IndexedBlock, IndexedBox, NodeBox, TemplateHash, TokenId, TokenInfo,
+            TokenMetadata, TxId, UTxO, UnconfirmedTransaction,
         },
     },
 };
@@ -304,6 +304,18 @@ impl NodeSource for NodeClient {
         page: Page,
     ) -> Result<Vec<IndexedBox>, NodeError> {
         let request = self.get(&format!("blockchain/box/unspent/byTokenId/{token_id}"));
+        Ok(fetch_optional(Self::unspent_page(request, page))
+            .await?
+            .unwrap_or_default())
+    }
+
+    #[tracing::instrument(skip(self))]
+    async fn unspent_by_template(
+        &self,
+        hash: &TemplateHash,
+        page: Page,
+    ) -> Result<Vec<IndexedBox>, NodeError> {
+        let request = self.get(&format!("blockchain/box/unspent/byTemplateHash/{hash}"));
         Ok(fetch_optional(Self::unspent_page(request, page))
             .await?
             .unwrap_or_default())

@@ -148,7 +148,7 @@ impl TxCursor {
 }
 
 /// The first 8 bytes of a hash of the key, its kind included: a token id and a 32-byte tree
-/// with the same bytes are different keys.
+/// with the same bytes are different keys, and so are a token id and a template hash.
 fn fingerprint(key: &TrackingKey) -> [u8; 8] {
     let mut hasher = Blake2b256::new();
     match key {
@@ -159,6 +159,10 @@ fn fingerprint(key: &TrackingKey) -> [u8; 8] {
         TrackingKey::Token(id) => {
             hasher.update([1]);
             hasher.update(id.0);
+        }
+        TrackingKey::Template(hash) => {
+            hasher.update([2]);
+            hasher.update(hash.0);
         }
     }
     array(&hasher.finalize()[..8])

@@ -10,7 +10,7 @@ use tracing::debug;
 
 use crate::{
     engine::{
-        BlockRef, Output, PendingTx, PoolBox, TrackingKey,
+        BlockRef, Output, PendingTx, PoolBox, TrackingKey, has_templates,
         overlay::{self, DeltaSides, OverlayHash, PendingDelta, TxDelta},
     },
     types::ergo::{BoxId, ErgoTree, TxId, UTxO, UnconfirmedTransaction},
@@ -270,7 +270,7 @@ impl Mempool {
         if !self.sent.contains_key(&key) {
             let delta = match key {
                 TrackingKey::Tree(_) => self.pending_delta(&key),
-                TrackingKey::Token(_) => PendingDelta::default(),
+                TrackingKey::Token(_) | TrackingKey::Template(_) => PendingDelta::default(),
             };
             let overlay = self.overlay(&key);
             if !overlay.is_empty() {
@@ -335,11 +335,13 @@ impl Mempool {
             return BTreeMap::new();
         };
         let mut overlays: BTreeMap<TrackingKey, (Vec<PendingTx>, DeltaSides)> = BTreeMap::new();
+        let templates = has_templates(&self.sent);
         for tx in snapshot.order.iter().map(|&i| &snapshot.txs[i]) {
             let mut touched: BTreeMap<TrackingKey, PendingTx> = BTreeMap::new();
             for output in &tx.outputs {
                 let mut shared: Option<Arc<UTxO>> = None;
-                for key in overlay::keys_of(output).filter(|k| self.sent.contains_key(k)) {
+                for key in overlay::keys_of(output, templates).filter(|k| self.sent.contains_key(k))
+                {
                     let utxo = shared
                         .get_or_insert_with(|| Arc::new(output.clone()))
                         .clone();
@@ -351,7 +353,8 @@ impl Mempool {
                 }
             }
             for input in &tx.inputs {
-                for key in overlay::keys_of(input).filter(|k| self.sent.contains_key(k)) {
+                for key in overlay::keys_of(input, templates).filter(|k| self.sent.contains_key(k))
+                {
                     let entry = overlays.entry(key.clone()).or_default();
                     if matches!(key, TrackingKey::Tree(_)) {
                         entry.1.spent(input);

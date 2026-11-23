@@ -1,5 +1,7 @@
 //! Recorded node responses: their shapes, and `NodeClient` reading them over HTTP.
 
+use std::collections::HashSet;
+
 use serde_json::Value;
 use wiremock::{
     Mock, MockServer, ResponseTemplate,
@@ -10,7 +12,7 @@ use super::*;
 use crate::{
     engine::BlockRef,
     fixtures::{self, load, manifest, sample, status},
-    types::{HashDigest, HexBytes, address::Address, ergo::BoxAssets},
+    types::{HashDigest, HexBytes, address::Address, ergo::BoxAssets, ergo_tree::template_hash},
 };
 
 fn holds(b: &IndexedBox, token_id: &str) -> Option<u64> {
@@ -23,6 +25,22 @@ fn holds(b: &IndexedBox, token_id: &str) -> Option<u64> {
 
 fn digest(hex: &str) -> HashDigest {
     hex.parse().unwrap()
+}
+
+/// The template hash a `byTemplateHash` fixture was recorded for, from its path.
+fn recorded_template(name: &str) -> HashDigest {
+    let path = manifest()["fixtures"][name]["path"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let hash = path
+        .split('/')
+        .next_back()
+        .unwrap()
+        .split('?')
+        .next()
+        .unwrap();
+    digest(hash)
 }
 
 fn sample_tree() -> ErgoTree {
@@ -278,6 +296,42 @@ mod shapes {
     fn unspent_by_token_unknown_is_200_not_404() {
         assert_eq!(status("unspent_by_token_unknown"), 200);
         let boxes: Vec<IndexedBox> = load("unspent_by_token_unknown");
+        assert!(boxes.is_empty());
+    }
+
+    /// The relay's template hash is the node's: every box the node files under a
+    /// constant-segregated template hashes to it here, over several trees.
+    #[test]
+    fn unspent_by_template_hashes_as_the_node_does() {
+        let boxes: Vec<IndexedBox> = load("unspent_by_template");
+        let hash = recorded_template("unspent_by_template");
+        assert!(!boxes.is_empty());
+        for b in &boxes {
+            assert_eq!(template_hash(&b.utxo.ergo_tree.0), Some(hash), "{}", b.utxo.id);
+        }
+        let trees: HashSet<&ErgoTree> = boxes.iter().map(|b| &b.utxo.ergo_tree).collect();
+        assert!(trees.len() >= 2, "one template over several trees");
+    }
+
+    /// The node files a tree without segregated constants under a template hash too, which
+    /// the relay's hash leaves out: such a template is refused at load.
+    #[test]
+    fn unspent_by_template_lists_trees_without_segregated_constants() {
+        let boxes: Vec<IndexedBox> = load("unspent_by_template_p2pk");
+        assert!(!boxes.is_empty());
+        for b in &boxes {
+            assert_eq!(
+                b.utxo.ergo_tree, boxes[0].utxo.ergo_tree,
+                "one tree: its template is all of it"
+            );
+            assert_eq!(template_hash(&b.utxo.ergo_tree.0), None);
+        }
+    }
+
+    #[test]
+    fn unspent_by_template_unknown_is_200_not_404() {
+        assert_eq!(status("unspent_by_template_unknown"), 200);
+        let boxes: Vec<IndexedBox> = load("unspent_by_template_unknown");
         assert!(boxes.is_empty());
     }
 
@@ -603,6 +657,24 @@ mod source {
 
         let boxes = node.unspent_by_token(&token, page(0, 100)).await.unwrap();
         assert!(boxes.len() >= 2);
+    }
+
+    #[tokio::test]
+    async fn unspent_by_template() {
+        let (server, node) = node().await;
+        let hash = recorded_template("unspent_by_template");
+        Mock::given(method("GET"))
+            .and(path(format!("/blockchain/box/unspent/byTemplateHash/{hash}")))
+            .and(query_param("offset", "0"))
+            .and(query_param("limit", "20"))
+            .and(query_param("sortDirection", "asc"))
+            .respond_with(recorded("unspent_by_template"))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let boxes = node.unspent_by_template(&hash, page(0, 20)).await.unwrap();
+        assert!(!boxes.is_empty());
     }
 
     #[tokio::test]

@@ -8,8 +8,12 @@
 
 import type { BlockHeader, Box, TokenAmount } from "@fleet-sdk/common";
 
-/** A key the relay tracks: an address (any encoding of its ErgoTree) or a token id. */
-export type Key = { address: string } | { tokenId: string };
+/**
+ * A key the relay tracks: an address (any encoding of its ErgoTree), a token id, or a template
+ * hash (the Blake2b256 of a constant-segregated ErgoTree's template, naming every instance of a
+ * contract whatever its constants).
+ */
+export type Key = { address: string } | { tokenId: string } | { templateHash: string };
 
 /** A block: what a page is pinned to, and what a subscription resumes from. */
 export interface BlockRef {

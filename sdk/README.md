@@ -33,7 +33,8 @@ relay.close();
 ### Subscriptions
 
 `relay.subscribe(key, { boxes })` answers a `Subscription`: a hold on the key. The key is
-`{ address }` or `{ tokenId }`.
+`{ address }`, `{ tokenId }` or `{ templateHash }`: the boxes of every constant-segregated tree
+of one template, so every instance of a contract whatever its constants.
 
 - With boxes (the default) the SDK reads the key's confirmed boxes, subscribes from that block
   and applies every block, rollback and mempool change that touches the key. Its `state.view` has
@@ -43,7 +44,7 @@ relay.close();
   the key's last change: the relay sends a key only the blocks that change it, so the height to
   show is the relay's, `relay.tip`.
 - With `{ boxes: false }`, an address's balance alone: no snapshot, the lightest subscription.
-  Token keys have no balance and always follow boxes.
+  Token and template keys have no balance and always follow boxes.
 
 `state.balance` is the address's balance: `confirmed`, and `pending`, the signed change the
 mempool makes to it. Amounts are `bigint`s, tokens a `Map` from token id to amount.
