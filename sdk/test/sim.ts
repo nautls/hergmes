@@ -91,7 +91,7 @@ export class SimRelay {
         ? `addresses/${key.address}`
         : "tokenId" in key
           ? `tokens/${key.tokenId}`
-          : `templates/${key.templateHash}`;
+          : `templates/${key.template}`;
     return this.#call("GET", `/sim/expected/${path}`);
   }
 

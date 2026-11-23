@@ -62,8 +62,8 @@ pub enum ApiError {
     InvalidAddress(String),
     #[error("a token id is 64 hex characters")]
     InvalidTokenId,
-    #[error("a template hash is 64 hex characters")]
-    InvalidTemplateHash,
+    #[error("a template is 1 to 4,096 bytes in hex")]
+    InvalidTemplate,
     /// No `ids`, or more than [`tokens::MAX_IDS`].
     #[error("ids is 1 to {} comma-separated token ids", tokens::MAX_IDS)]
     InvalidIds,
@@ -126,7 +126,7 @@ impl ApiError {
         match self {
             Self::InvalidAddress(_) => "invalid_address",
             Self::InvalidTokenId => "invalid_token_id",
-            Self::InvalidTemplateHash => "invalid_template_hash",
+            Self::InvalidTemplate => "invalid_template",
             Self::InvalidIds => "invalid_ids",
             Self::InvalidBoxId => "invalid_box_id",
             Self::InvalidBroadcast => "invalid_broadcast",

@@ -26,7 +26,7 @@ pub(crate) mod testing;
 
 pub use chain::{
     Chain, GENESIS_TOKENS, OutputSpec, RETRY_AFTER, SCRIPT_TEMPLATE, SimBlock, SimConfig, SimOp,
-    SimTx, node_template_hash, script_template_hash, timestamp, token_id,
+    SimTx, node_template_hash, script_template, timestamp, token_id,
 };
 pub use oracle::{
     HistoryEntry, Oracle, filter_overlay, net_change, overlay, pending_order, reference_delta,

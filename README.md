@@ -56,11 +56,11 @@ variables instead, without a file: `ERGO_NODE_URL`, `HERGMES_LISTEN_ADDR` and
 | `token_supply_limit`               | 100            | Largest token emission that can be tracked                                        |
 | `track_addresses`                  | `[]`           | Addresses tracked for the life of the process                                     |
 | `track_tokens`                     | `[]`           | Token ids tracked for the life of the process                                     |
-| `track_templates`                  | `[]`           | Template hashes tracked for the life of the process                               |
+| `track_templates`                  | `[]`           | Templates, in hex, tracked for the life of the process                            |
 | `allow_addresses`                  | omitted: any   | Addresses clients may name: `"p2pk"`, `"p2sh"`, `"p2s"` and addresses             |
 | `deny_addresses`                   | `[]`           | Addresses clients may not name; deny wins over allow                              |
 | `allow_tokens`                     | omitted: any   | Token ids clients may name                                                        |
-| `allow_templates`                  | omitted: any   | Template hashes clients may name                                                  |
+| `allow_templates`                  | omitted: any   | Templates, in hex, clients may name                                               |
 | `box_cache_mb`                     | 128            | Memory for full boxes kept to serve pages, in MiB; 0 disables it                  |
 | `max_boxes_per_key`                | 16383          | Most boxes a key can hold to have its boxes tracked: one node page                |
 | `max_tracked_units`                | 2000000        | Most units tracked: a box is one, a key its memory's worth; ~860 MiB resident     |
@@ -70,11 +70,12 @@ variables instead, without a file: `ERGO_NODE_URL`, `HERGMES_LISTEN_ADDR` and
 | `metrics_addr`                     |                | IP and port of `/metrics`, omitted: none; or `HERGMES_METRICS_ADDR`               |
 
 By default, with the allow lists omitted, the relay serves any address, any token within the
-supply limit and any template. The allow and deny lists narrow that, for an instance run for one dapp or one
-wallet; an empty allow list (`[]`) allows nothing. A refused key is `403 key_not_allowed`, on
-every route that takes a key (a box id and a tx are not keys). Keys in `track_addresses` and
-`track_tokens` and `track_templates` are always allowed. Denying one, or denying an address the allow list names, stops
-the relay at startup, and the startup log shows the policy in force. For example:
+supply limit and any template. The allow and deny lists narrow that, for an instance run for one
+dapp or one wallet; an empty allow list (`[]`) allows nothing. A refused key is `403
+key_not_allowed`, on every route that takes a key (a box id and a tx are not keys). Keys in
+`track_addresses`, `track_tokens` and `track_templates` are always allowed. Denying one, or
+denying an address the allow list names, stops the relay at startup, and the startup log shows
+the policy in force. For example:
 
 ```toml
 # a dapp: its own contracts and tokens, with a higher supply limit
@@ -101,8 +102,11 @@ a container. The relay does not compress responses: Cloudflare does it on its ow
 nginx or Caddy turn it on there (`gzip on; gzip_types application/json;`, or `encode gzip`); a
 500-box page shrinks about five times. Addresses travel in the URL path, and the longest P2S
 address is about 5,600 characters: that fits nginx's default 8 KB request line and Cloudflare's
-16 KB URL limit, so keep any lower proxy limit above it. A tx body is at most 192 KiB of hex,
-under nginx's default `client_max_body_size` of 1 MB.
+16 KB URL limit, so keep any lower proxy limit above it. A template is up to 8,192 characters
+of hex, also in the path: past nginx's default request line, so to serve the longest ones raise
+it (`large_client_header_buffers 4 16k;`). Over the WebSocket a key travels in the message, with
+no such limit. A tx body is at most 192 KiB of hex, under nginx's default
+`client_max_body_size` of 1 MB.
 
 Logging uses `tracing`; set `RUST_LOG` (e.g. `RUST_LOG=hergmes=debug`) to adjust verbosity.
 
@@ -166,21 +170,21 @@ The relay has not been run above the default cap, so a higher one is not yet tes
 
 ## REST API
 
-| Route                                         | What                                              |
-| --------------------------------------------- | ------------------------------------------------- |
-| `GET /v1/addresses/{address}/boxes`           | A page of an address's unspent boxes              |
-| `GET /v1/tokens/{tokenId}/boxes`              | A page of a small-supply token's unspent boxes    |
-| `GET /v1/addresses/{address}/boxes/with-pool` | An address's boxes with the mempool applied       |
-| `GET /v1/tokens/{tokenId}/boxes/with-pool`    | A token's boxes with the mempool applied          |
-| `GET /v1/templates/{hash}/boxes`              | A page of a contract template's unspent boxes     |
-| `GET /v1/templates/{hash}/boxes/with-pool`    | A template's boxes with the mempool applied       |
-| `GET /v1/addresses/{address}/balance`         | An address's balance, pending change and `used`   |
-| `GET /v1/addresses/{address}/transactions`    | An address's txs, newest first, pending on top    |
-| `GET /v1/headers`                             | The last block headers up to the tip, for signing |
-| `GET /v1/boxes/{boxId}`                       | One box, if a tx can spend it now                 |
-| `GET /v1/tokens/metadata?ids={tokenId},...`   | Tokens' names, decimals, emissions and artwork    |
-| `POST /v1/transactions`                       | Send a signed tx, or only check it                |
-| `GET /v1/status`                              | Version, network, tip and readiness               |
+| Route                                          | What                                              |
+| ---------------------------------------------- | ------------------------------------------------- |
+| `GET /v1/addresses/{address}/boxes`            | A page of an address's unspent boxes              |
+| `GET /v1/tokens/{tokenId}/boxes`               | A page of a small-supply token's unspent boxes    |
+| `GET /v1/addresses/{address}/boxes/with-pool`  | An address's boxes with the mempool applied       |
+| `GET /v1/tokens/{tokenId}/boxes/with-pool`     | A token's boxes with the mempool applied          |
+| `GET /v1/templates/{template}/boxes`           | A page of a contract template's unspent boxes     |
+| `GET /v1/templates/{template}/boxes/with-pool` | A template's boxes with the mempool applied       |
+| `GET /v1/addresses/{address}/balance`          | An address's balance, pending change and `used`   |
+| `GET /v1/addresses/{address}/transactions`     | An address's txs, newest first, pending on top    |
+| `GET /v1/headers`                              | The last block headers up to the tip, for signing |
+| `GET /v1/boxes/{boxId}`                        | One box, if a tx can spend it now                 |
+| `GET /v1/tokens/metadata?ids={tokenId},...`    | Tokens' names, decimals, emissions and artwork    |
+| `POST /v1/transactions`                        | Send a signed tx, or only check it                |
+| `GET /v1/status`                               | Version, network, tip and readiness               |
 
 Box pages take `limit` (default 500, at most 1000) and the `cursor` from the previous page's
 `nextCursor`; every page of a snapshot is pinned to the first page's block (`asOf`). Boxes are in
@@ -188,12 +192,13 @@ Fleet SDK's `Box<string>` shape plus `inclusionHeight`, and every amount is a ba
 string. Errors are `{ "error": "<code>", "message": "..." }` (a refused tx adds a `reason`), and
 a `503` carries `Retry-After`.
 
-A template is named by its hash, as the node's indexer names it: the Blake2b256 of an ErgoTree's
-template, the tree's bytes after its header and constants. Its boxes are those of every tree of
-that template, so one key follows every instance of a contract, such as each order of a DEX.
-Only trees with segregated constants are tracked: the node files every other tree under a
-template hash too (its bytes after the header), and such a template is `422
-unsupported_template`, found when its boxes are first read and then remembered for ten minutes,
+A template is named by its bytes in hex, 1 to 4,096 of them, in either case: an ErgoTree's
+bytes after its header and constants, the same for every instance of a contract. Its boxes are
+those of every tree of that template, so one key follows every instance of a contract, such as
+each order of a DEX. Only trees with segregated constants are tracked. The relay reads the
+node's indexer by the template's hash, and the node files every other tree under one too (its
+bytes after the header): such a template is `422 unsupported_template`, found when its boxes
+are first read and then remembered for ten minutes,
 as a key over `max_boxes_per_key` is. A template is bounded as an address is: by
 `max_boxes_per_key` when loaded, and by `max_tracked_units`. Neither checks it again as it grows,
 so a busy contract's template can hold far more boxes later than when it was loaded.
@@ -266,7 +271,7 @@ only the last tip. Clients send JSON text:
 ```jsonc
 { "op": "subscribe", "key": { "address": "9f..." }, "from": { "height": 1234567, "headerId": "..." } }
 { "op": "subscribe", "key": { "tokenId": "..." }, "from": { "height": 1234567, "headerId": "..." } }
-{ "op": "subscribe", "key": { "templateHash": "..." }, "from": { "height": 1234567, "headerId": "..." } }
+{ "op": "subscribe", "key": { "template": "..." }, "from": { "height": 1234567, "headerId": "..." } }
 { "op": "subscribe", "key": { "address": "9f..." }, "id": 7 }   // balance only; `id` is optional
 { "op": "unsubscribe", "key": { "address": "9f..." } }
 ```

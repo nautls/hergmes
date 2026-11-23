@@ -19,7 +19,7 @@ use crate::{
         overlay::{self, PendingDelta},
     },
     types::{
-        Digest,
+        Digest, HexBytes,
         ergo::{BoxId, ErgoTree, HeaderId, IndexedBlock, UTxO},
     },
 };
@@ -103,8 +103,8 @@ const FIRST_TOKEN_BYTES: usize = 460;
 /// kilobytes) is stored once and counted once.
 pub fn key_charge(key: &TrackingKey, tokens: usize) -> usize {
     let id = match key {
-        TrackingKey::Tree(tree) => tree.0.len(),
-        TrackingKey::Token(id) | TrackingKey::Template(id) => id.0.len(),
+        TrackingKey::Tree(tree) | TrackingKey::Template(tree) => tree.0.len(),
+        TrackingKey::Token(id) => id.0.len(),
     };
     let tokens = match tokens {
         0 => 0,
@@ -346,7 +346,7 @@ impl Engine {
     fn stats(&self) -> Stats {
         // Keys in order, trees first, then tokens, then templates: two searches split them.
         let tokens_from = TrackingKey::Token(Digest([0; 32]));
-        let templates_from = TrackingKey::Template(Digest([0; 32]));
+        let templates_from = TrackingKey::Template(HexBytes::from(Vec::new()));
         let addresses = self.ids.range(..&tokens_from).count();
         let template_keys = self.ids.range(&templates_from..).count();
         let token_keys = self.ids.len() - addresses - template_keys;

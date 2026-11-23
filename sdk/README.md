@@ -33,8 +33,9 @@ relay.close();
 ### Subscriptions
 
 `relay.subscribe(key, { boxes })` answers a `Subscription`: a hold on the key. The key is
-`{ address }`, `{ tokenId }` or `{ templateHash }`: the boxes of every constant-segregated tree
-of one template, so every instance of a contract whatever its constants.
+`{ address }`, `{ tokenId }` or `{ template }`: a template in hex, a constant-segregated
+ErgoTree's bytes after its constants, for the boxes of every instance of a contract whatever its
+constants.
 
 - With boxes (the default) the SDK reads the key's confirmed boxes, subscribes from that block
   and applies every block, rollback and mempool change that touches the key. Its `state.view` has

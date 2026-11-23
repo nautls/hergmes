@@ -182,7 +182,7 @@ function keyPath(key: Key): string {
   if ("address" in key) return `v1/addresses/${encodeURIComponent(key.address)}`;
   return "tokenId" in key
     ? `v1/tokens/${encodeURIComponent(key.tokenId)}`
-    : `v1/templates/${encodeURIComponent(key.templateHash)}`;
+    : `v1/templates/${encodeURIComponent(key.template)}`;
 }
 
 function sleep(ms: number, signal: AbortSignal | undefined): Promise<void> {

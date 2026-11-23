@@ -1,4 +1,4 @@
-//! What tracking a template key costs the engine: hashing each box's template, over mainnet's
+//! What tracking a template key costs the engine: reading each box's template, over mainnet's
 //! own mix of trees.
 //!
 //! ```sh
@@ -9,15 +9,16 @@
 //! occurs there (`tests/fixtures/indexed_block.json`, `mempool.json`), so the share of
 //! segregated trees and their sizes are mainnet's.
 //!
-//! - `hash`: [`template_hash`] alone, per box, over the block's and the pool's mixes, and for
-//!   the kinds of tree in them: a tree without segregated constants answers at its header, a
-//!   segregated one is walked and hashed, so the largest tree is the slowest.
+//! - `trees`: per segregated tree, the walk of its constants to its template ([`template`]),
+//!   which is what the engine does per box while a template key is tracked, and for
+//!   comparison that and a Blake2b of the template ([`template_hash`]), which only a load
+//!   does now. A tree without segregated constants answers at its header (`plain_ns`).
 //! - `events`: two engines tracking `<keys>` address keys of ten boxes each, one of them also
 //!   a template key holding no box. Each is given the same events: a block of
 //!   `<block-outputs>` outputs, and mempool snapshots of `<pool-txs>` txs, built from the
-//!   mixes with fresh ids. The template key matches none of them, so the difference is the
-//!   hashing alone: every block output once; every pending input and output in the overlays,
-//!   and again in the check of which inputs are confirmed.
+//!   mixes with fresh ids. The template key matches none of them, so the difference is reading
+//!   the templates and looking each one up: every block output once; every pending input and
+//!   output in the overlays, and again in the check of which inputs are confirmed.
 //!
 //! Each figure is the median of [`RUNS`], the two engines taking turns. An example rather than
 //! a test: it measures, and a time is no assertion on a shared CI machine.
@@ -25,13 +26,13 @@
 use std::{hint::black_box, sync::Arc, time::Instant};
 
 use hergmes::{
-    engine::{Config, Engine, Event, TrackingKey},
+    engine::{Config, Engine, Event, Query, Reply, TrackingKey},
     types::{
         HexBytes,
         ergo::{
             BlockHeader, IndexedBlock, IndexedBox, IndexedTransaction, UTxO, UnconfirmedTransaction,
         },
-        ergo_tree::template_hash,
+        ergo_tree::{template, template_hash},
     },
 };
 use serde_json::Value;
@@ -53,7 +54,7 @@ fn main() {
     let [keys, outputs, pool] = args[..] else { usage() };
     let block_mix = trees("indexed_block");
     let pool_mix = trees("mempool");
-    hash(&block_mix, &pool_mix);
+    trees_line(&block_mix, &pool_mix);
     events(keys, outputs, pool, &block_mix, &pool_mix);
 }
 
@@ -88,43 +89,36 @@ fn collect(json: &Value, out: &mut Vec<HexBytes>) {
     }
 }
 
-/// Nanoseconds per call of `template_hash` over `trees`.
-fn hash_ns(trees: &[&HexBytes]) -> f64 {
+/// Nanoseconds per call of `f` over `trees`.
+fn per_tree<T>(trees: &[&HexBytes], f: impl Fn(&[u8]) -> T) -> f64 {
     let started = Instant::now();
     for _ in 0..HASH_PASSES {
         for tree in trees {
-            black_box(template_hash(black_box(&tree.0)));
+            black_box(f(black_box(&tree.0)));
         }
     }
     started.elapsed().as_nanos() as f64 / (HASH_PASSES * trees.len()) as f64
 }
 
-fn hash(block_mix: &[HexBytes], pool_mix: &[HexBytes]) {
+fn trees_line(block_mix: &[HexBytes], pool_mix: &[HexBytes]) {
     let all: Vec<&HexBytes> = block_mix.iter().chain(pool_mix).collect();
-    let segregated: Vec<&HexBytes> = all
-        .iter()
-        .copied()
-        .filter(|t| template_hash(&t.0).is_some())
-        .collect();
-    let plain: Vec<&HexBytes> = all
-        .iter()
-        .copied()
-        .filter(|t| template_hash(&t.0).is_none())
-        .collect();
+    let (segregated, plain): (Vec<&HexBytes>, Vec<&HexBytes>) =
+        all.iter().partition(|t| template(&t.0).is_some());
     let largest = *segregated.iter().max_by_key(|t| t.0.len()).unwrap();
-    let mean = |ts: &[&HexBytes]| ts.iter().map(|t| t.0.len()).sum::<usize>() / ts.len();
+    let mean = segregated.iter().map(|t| t.0.len()).sum::<usize>() / segregated.len();
+    let walk = |trees: &[&HexBytes]| per_tree(trees, |t| template(t).map(<[u8]>::len));
+    let hash = |trees: &[&HexBytes]| per_tree(trees, template_hash);
     println!(
-        "hash block_ns_per_box={:.0} pool_ns_per_box={:.0} segregated_ns={:.0} \
-         (n={} mean_bytes={}) plain_ns={:.1} (n={}) largest_ns={:.0} (bytes={})",
-        hash_ns(&block_mix.iter().collect::<Vec<_>>()),
-        hash_ns(&pool_mix.iter().collect::<Vec<_>>()),
-        hash_ns(&segregated),
+        "trees segregated={} (mean_bytes={mean}) plain={} walk_ns={:.0} hash_ns={:.0} \
+         plain_ns={:.1} largest_bytes={} largest_walk_ns={:.0} largest_hash_ns={:.0}",
         segregated.len(),
-        mean(&segregated),
-        hash_ns(&plain),
         plain.len(),
-        hash_ns(&[largest]),
+        walk(&segregated),
+        hash(&segregated),
+        walk(&plain),
         largest.0.len(),
+        walk(&[largest]),
+        hash(&[largest]),
     );
 }
 
@@ -185,19 +179,38 @@ fn median(mut v: Vec<f64>) -> f64 {
     v[v.len() / 2]
 }
 
-fn engine(keys: usize, template: bool) -> Engine {
+/// A template that matches no box: the template of the mix's commonest segregated tree, its
+/// last byte changed, so the lookups of that tree's boxes compare it to its last byte.
+fn decoy(mix: &[HexBytes]) -> HexBytes {
+    let mut counts = std::collections::HashMap::new();
+    for t in mix.iter().filter_map(|t| template(&t.0)) {
+        *counts.entry(t).or_insert(0) += 1;
+    }
+    let (common, _) = counts
+        .into_iter()
+        .max_by_key(|(t, n)| (*n, t.len()))
+        .unwrap();
+    let mut bytes = common.to_vec();
+    *bytes.last_mut().unwrap() ^= 0xff;
+    HexBytes::from(bytes)
+}
+
+fn engine(keys: usize, template: Option<&HexBytes>) -> Engine {
     let mut engine =
-        Engine::new(Config { max_tracked_units: keys * 10 + 1_000, ..Config::DEFAULT });
+        Engine::new(Config { max_tracked_units: keys * 20 + 10_000, ..Config::DEFAULT });
     engine
         .apply(Event::BlockApplied(block(FIRST, &[])))
         .expect("the first block");
     load(&mut engine, 0, keys, 10);
-    if template {
+    let Reply::Stats(stats) = engine.query(Query::Stats) else { unreachable!() };
+    assert_eq!(stats.address_keys, keys, "every address key fits the cap");
+    if let Some(template) = template {
         let as_of = tip(&mut engine);
-        let key = TrackingKey::Template(digest(IDS - 1));
-        engine
+        let key = TrackingKey::Template(template.clone());
+        let outputs = engine
             .apply(Event::KeyLoaded { key, as_of, boxes: Vec::new() })
             .expect("a load is never an error");
+        assert!(outputs.is_empty(), "the template key is tracked: {outputs:?}");
     }
     engine
 }
@@ -207,7 +220,8 @@ fn ms(started: Instant) -> f64 {
 }
 
 fn events(keys: usize, outputs: usize, pool: usize, block_mix: &[HexBytes], pool_mix: &[HexBytes]) {
-    let mut engines = [engine(keys, false), engine(keys, true)];
+    let decoy = decoy(block_mix);
+    let mut engines = [engine(keys, None), engine(keys, Some(&decoy))];
     let at = tip(&mut engines[0]);
     let snapshots = [mixed_pool(pool, pool_mix, 0), mixed_pool(pool, pool_mix, 1)];
     let mut snapshot_ms = [Vec::new(), Vec::new()];

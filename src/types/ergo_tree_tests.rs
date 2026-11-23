@@ -499,3 +499,15 @@ fn reads_no_truncated_register() {
         }
     }
 }
+
+#[test]
+fn parses_a_template_from_hex_in_either_case_within_the_box_size() {
+    let template = parse_template(FEE_TEMPLATE).unwrap();
+    assert_eq!(template.0[..], h(FEE_TEMPLATE)[..]);
+    assert_eq!(parse_template(&FEE_TEMPLATE.to_uppercase()), Ok(template));
+    let longest = "ab".repeat(MAX_TEMPLATE_BYTES);
+    assert_eq!(parse_template(&longest).unwrap().0.len(), MAX_TEMPLATE_BYTES);
+    for bad in ["", "a", "zz", &format!("{longest}ab")] {
+        assert!(parse_template(bad).is_err(), "{}", &bad[..bad.len().min(8)]);
+    }
+}

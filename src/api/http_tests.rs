@@ -43,7 +43,7 @@ fn every_error() -> Vec<(ApiError, StatusCode, Option<&'static str>)> {
     vec![
         (ApiError::InvalidAddress("bad".into()), S::BAD_REQUEST, None),
         (ApiError::InvalidTokenId, S::BAD_REQUEST, None),
-        (ApiError::InvalidTemplateHash, S::BAD_REQUEST, None),
+        (ApiError::InvalidTemplate, S::BAD_REQUEST, None),
         (ApiError::InvalidIds, S::BAD_REQUEST, None),
         (ApiError::InvalidBoxId, S::BAD_REQUEST, None),
         (ApiError::InvalidBroadcast, S::BAD_REQUEST, None),
@@ -362,19 +362,20 @@ async fn a_token_snapshot_is_served_and_checked_first() {
 async fn a_template_snapshot_is_served_across_its_trees() {
     let mut f = Fixture::new();
     f.tick();
-    let hash = sim::script_template_hash();
-    let page = f.ok(&format!("/v1/templates/{hash}/boxes")).await;
+    let template = sim::script_template();
+    let page = f.ok(&format!("/v1/templates/{template}/boxes")).await;
     let trees: std::collections::BTreeSet<&str> = (page["items"].as_array().unwrap().iter())
         .map(|b| b["ergoTree"].as_str().unwrap())
         .collect();
     let scripts = f.sim.lock().trees().len() - 2;
     let expected = [f.tree(scripts).to_string(), f.tree(scripts + 1).to_string()];
     assert_eq!(trees, expected.iter().map(String::as_str).collect());
-    let upper = hash.to_string().to_uppercase();
+    let upper = template.to_string().to_uppercase();
     f.ok(&format!("/v1/templates/{upper}/boxes/with-pool"))
         .await;
 
-    let p2pk = sim::node_template_hash(&f.tree(0).0);
+    // The node's template of a tree without segregated constants: its bytes after the header.
+    let p2pk = hex::encode(&f.tree(0).0[1..]);
     for uri in
         [format!("/v1/templates/{p2pk}/boxes"), format!("/v1/templates/{p2pk}/boxes/with-pool")]
     {
@@ -489,8 +490,8 @@ async fn bad_requests_are_refused_with_their_code() {
         (format!("/v1/addresses/{testnet}/boxes/with-pool"), "invalid_address"),
         ("/v1/tokens/abcd/boxes/with-pool".to_owned(), "invalid_token_id"),
         (format!("/v1/tokens/{token}0/boxes"), "invalid_token_id"),
-        ("/v1/templates/abcd/boxes".to_owned(), "invalid_template_hash"),
-        ("/v1/templates/abcd/boxes/with-pool".to_owned(), "invalid_template_hash"),
+        ("/v1/templates/abc/boxes".to_owned(), "invalid_template"),
+        ("/v1/templates/abc/boxes/with-pool".to_owned(), "invalid_template"),
         (format!("{boxes}?limit=0"), "invalid_limit"),
         (format!("{boxes}?limit=1001"), "invalid_limit"),
         (format!("{boxes}?limit=-1"), "invalid_limit"),
@@ -525,7 +526,7 @@ async fn every_route_refuses_a_key_the_policy_does_not_admit() {
     let mut f = Fixture::with_policy(chain, policy);
     f.tick();
     let calls = f.sim.calls().len();
-    let template = sim::script_template_hash();
+    let template = sim::script_template();
     for uri in [
         format!("/v1/templates/{template}/boxes"),
         format!("/v1/templates/{template}/boxes/with-pool"),

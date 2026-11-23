@@ -14,7 +14,7 @@
 //! - `POST /sim/settle`: the indexer brought to the tip (no lag, no recovery), then ticks
 //!   until the engine is at the node's tip with its mempool; answers `{ tip }`.
 //! - `GET /sim/expected/addresses/{address}`, `GET /sim/expected/tokens/{tokenId}`,
-//!   `GET /sim/expected/templates/{hash}`: the
+//!   `GET /sim/expected/templates/{template}`: the
 //!   oracle's state for the key at the tip, in the relay's wire shapes: its boxes and overlay,
 //!   and for an address its balance and its whole history, as the history route's items. Only
 //!   right after a tick or settle that synced, with no op since: `409` otherwise.
@@ -58,7 +58,7 @@ use crate::{
     engine::{self, BlockRef, Engine, TrackingKey},
     runtime::{Clock, Handle, ManualClock, Settled, spawn_with_clock},
     sim::{
-        Chain, HistoryEntry, SimChain, SimConfig, SimOp, reference_delta, script_template_hash,
+        Chain, HistoryEntry, SimChain, SimConfig, SimOp, reference_delta, script_template,
         strategy, timestamp, totals,
     },
     types::address::{self, Network},
@@ -307,7 +307,8 @@ impl SimRelay {
             .iter()
             .map(|(id, emission)| json!({ "tokenId": id, "emission": emission.to_string() }))
             .collect();
-        json!({ "addresses": addresses, "tokens": tokens, "templates": [script_template_hash()] })
+        let templates = [script_template().to_string()];
+        json!({ "addresses": addresses, "tokens": tokens, "templates": templates })
     }
 
     fn control(self: Arc<Self>) -> Router {
@@ -318,7 +319,7 @@ impl SimRelay {
             .route("/sim/settle", post(settle))
             .route("/sim/expected/addresses/{address}", get(expected_address))
             .route("/sim/expected/tokens/{token_id}", get(expected_token))
-            .route("/sim/expected/templates/{hash}", get(expected_template))
+            .route("/sim/expected/templates/{template}", get(expected_template))
             .route("/sim/keys", get(keys))
             .with_state(self)
     }
@@ -422,8 +423,8 @@ async fn expected_token(State(relay): Relay, Path(token_id): Path<String>) -> Re
     }
 }
 
-async fn expected_template(State(relay): Relay, Path(hash): Path<String>) -> Response {
-    match template_key(&hash, &KeyPolicy::default()) {
+async fn expected_template(State(relay): Relay, Path(template): Path<String>) -> Response {
+    match template_key(&template, &KeyPolicy::default()) {
         Ok(key) => expected(&relay, &key).await,
         Err(error) => (StatusCode::BAD_REQUEST, error.to_string()).into_response(),
     }

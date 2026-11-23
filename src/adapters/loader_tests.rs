@@ -75,7 +75,7 @@ fn a_template_key_is_loaded_with_the_boxes_of_its_trees() {
     let chain = new_chain();
     let engine = synced_engine(&chain);
     let sim = SimChain::new(chain);
-    let key = TrackingKey::Template(sim::script_template_hash());
+    let key = TrackingKey::Template(sim::script_template());
     let loader = Loader::new(sim.clone(), Config::default());
     let outcome = ready(loader.try_load(&engine, &key)).unwrap();
     let (boxes, expected) = engine_and_oracle(&sim, &engine, &key);
@@ -98,7 +98,8 @@ fn a_template_of_trees_without_segregated_constants_is_refused_and_remembered() 
     let engine = synced_engine(&chain);
     let p2pk = chain.trees()[0].clone();
     let sim = SimChain::new(chain);
-    let key = TrackingKey::Template(sim::node_template_hash(&p2pk.0));
+    // The node's template of a tree without segregated constants: its bytes after the header.
+    let key = TrackingKey::Template(crate::types::HexBytes::from(p2pk.0[1..].to_vec()));
     let loader = Loader::new(sim.clone(), Config::default());
     for _ in 0..2 {
         let error = ready(loader.load(&engine, &key)).unwrap_err();

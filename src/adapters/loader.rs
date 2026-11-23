@@ -31,7 +31,7 @@ use crate::{
     engine::{BlockRef, Capacity, Event, LoadedBox, Output, TrackingKey},
     types::{
         ergo::{BoxId, IndexedBox, UTxO},
-        ergo_tree::template_hash,
+        ergo_tree::{hash_template, template},
     },
 };
 
@@ -391,17 +391,15 @@ impl<S: NodeSource> Loader<S> {
             let mut read = match key {
                 TrackingKey::Tree(tree) => self.source.unspent_by_ergo_tree(tree, page).await?,
                 TrackingKey::Token(id) => self.source.unspent_by_token(id, page).await?,
-                TrackingKey::Template(hash) => {
-                    let read = self.source.unspent_by_template(hash, page).await?;
+                TrackingKey::Template(bytes) => {
+                    let hash = hash_template(&bytes.0);
+                    let read = self.source.unspent_by_template(&hash, page).await?;
                     // The node files every tree under a template hash; one without segregated
-                    // constants hashes as none here. Such a template is refused whole, even
+                    // constants has no template here. Such a template is refused whole, even
                     // in the odd one that also holds segregated trees (with no constants,
                     // the two kinds can share template bytes), since serving it would leave
                     // out boxes the node lists under it.
-                    if read
-                        .iter()
-                        .any(|b| template_hash(&b.utxo.ergo_tree.0).is_none())
-                    {
+                    if read.iter().any(|b| template(&b.utxo.ergo_tree.0).is_none()) {
                         return Err(LoadError::UnsupportedTemplate);
                     }
                     read

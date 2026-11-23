@@ -11,7 +11,7 @@ use crate::{
     engine::TrackingKey,
     types::{
         address::{Address, AddressError, AddressType},
-        ergo::{TemplateHash, TokenId},
+        ergo::{Template, TokenId},
     },
 };
 
@@ -39,7 +39,7 @@ impl AddressRule {
 }
 
 /// Which keys are admitted. It holds only the keys the rules name, as trees, token ids and
-/// template hashes, so it costs nothing per key it has not been told about.
+/// templates, so it costs nothing per key it has not been told about.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KeyPolicy {
     /// The address classes admitted whole; `None` when there is no address rule, so every
@@ -71,13 +71,13 @@ impl Default for KeyPolicy {
 
 impl KeyPolicy {
     /// `allow_addresses`, `allow_tokens` and `allow_templates` are `None` when unset, which
-    /// admits every key of that kind, and empty for `none`. `configured` are the keys tracked from the start,
-    /// always admitted: they are the operator's own choice.
+    /// admits every key of that kind, and empty for `none`. `configured` are the keys tracked
+    /// from the start, always admitted: they are the operator's own choice.
     pub fn new<'a>(
         allow_addresses: Option<&[AddressRule]>,
         deny_addresses: impl IntoIterator<Item = &'a Address>,
         allow_tokens: Option<&[TokenId]>,
-        allow_templates: Option<&[TemplateHash]>,
+        allow_templates: Option<&[Template]>,
         configured: &[TrackingKey],
     ) -> Self {
         let mut allowed: HashSet<TrackingKey> = configured.iter().cloned().collect();
@@ -100,7 +100,7 @@ impl KeyPolicy {
             allow_templates
                 .unwrap_or_default()
                 .iter()
-                .map(|hash| TrackingKey::Template(*hash)),
+                .map(|t| TrackingKey::Template(t.clone())),
         );
         let denied = deny_addresses
             .into_iter()

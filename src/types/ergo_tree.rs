@@ -11,12 +11,13 @@
 //!
 //! Only trees with segregated constants are read, and only the constants a tree can segregate,
 //! which are the ones a register can hold: no Box or Header, which a contract reads from its
-//! context and never embeds. Values are not checked (a group element is not decoded to a point, a length is not
-//! range-checked against its type), so a tree the node rejects may still be read here.
+//! context and never embeds. Values are not checked (a group element is not decoded to a point,
+//! a length is not range-checked against its type), so a tree the node rejects may still be
+//! read here.
 
 use blake2::{Blake2b256, Digest as _};
 
-use crate::types::HashDigest;
+use crate::types::{HashDigest, ergo::Template};
 
 /// The header bit marking segregated constants (sigma-state 6.0.7,
 /// `ErgoTree.ConstantSegregationFlag`).
@@ -72,10 +73,32 @@ pub fn template(tree: &[u8]) -> Option<&[u8]> {
     Some(&tree[start..])
 }
 
+/// The most bytes a template can take: a box is at most 4,096 bytes, its tree included
+/// (sigma-state 6.0.7, `ErgoBox.MaxBoxSize`), and the template is part of the tree.
+pub const MAX_TEMPLATE_BYTES: usize = 4096;
+
+/// A template's bytes from hex, in either case: 1 to [`MAX_TEMPLATE_BYTES`] bytes.
+pub fn parse_template(hex: &str) -> Result<Template, String> {
+    let bytes = hex::decode(hex).map_err(|e| e.to_string())?;
+    match bytes.len() {
+        0 => Err("a template is at least one byte".to_owned()),
+        n if n > MAX_TEMPLATE_BYTES => {
+            Err(format!("a template is at most {MAX_TEMPLATE_BYTES} bytes, got {n}"))
+        }
+        _ => Ok(Template::from(bytes)),
+    }
+}
+
 /// The hash the node indexes a tree's boxes by (node 6.0.8,
 /// `IndexedContractTemplateSerializer.hashTreeTemplate`). `None` as for [`template`].
 pub fn template_hash(tree: &[u8]) -> Option<HashDigest> {
-    template(tree).map(|t| crate::types::Digest(Blake2b256::digest(t).into()))
+    template(tree).map(hash_template)
+}
+
+/// The hash of a template's bytes, as the node indexes it (node 6.0.8,
+/// `IndexedContractTemplateSerializer.hashTreeTemplate`).
+pub fn hash_template(template: &[u8]) -> HashDigest {
+    crate::types::Digest(Blake2b256::digest(template).into())
 }
 
 /// A tree's constants, each as its type and value bytes, as a register holds one. `None` as

@@ -16,6 +16,7 @@ const urlDraft = ref(url.value);
 const urlError = ref<string>();
 const tracked = ref<Tracked[]>(saved.tracked);
 const keyDraft = ref("");
+const templateDraft = ref("");
 const balanceOnly = ref(false);
 
 // One relay for the page: one socket, shared by every key. A new URL closes the old relay.
@@ -48,6 +49,14 @@ function track() {
   const key = parseKey(keyDraft.value);
   tracked.value.unshift({ id: nextId++, key, boxes: !("address" in key) || !balanceOnly.value });
   keyDraft.value = "";
+}
+
+// A template has its own input: one of 32 bytes is 64 hex digits, as a token id is.
+function trackTemplate() {
+  const template = templateDraft.value.trim().toLowerCase();
+  if (!template) return;
+  tracked.value.unshift({ id: nextId++, key: { template }, boxes: true });
+  templateDraft.value = "";
 }
 
 function untrack(id: number) {
@@ -105,6 +114,16 @@ watch(
     <button :disabled="!relay || !keyDraft.trim()">Track</button>
   </form>
 
+  <form class="row" @submit.prevent="trackTemplate">
+    <input
+      v-model="templateDraft"
+      placeholder="Contract template, in hex"
+      aria-label="Contract template, in hex"
+      spellcheck="false"
+    />
+    <button :disabled="!relay || !templateDraft.trim()">Track</button>
+  </form>
+
   <main v-if="relay">
     <KeyCard
       v-for="t in tracked"
@@ -115,8 +134,8 @@ watch(
       @remove="untrack(t.id)"
     />
     <p v-if="tracked.length === 0" class="muted">
-      Track an address or a token id to follow its boxes and balance as blocks and mempool txs
-      arrive.
+      Track an address, a token id or a contract template to follow its boxes, and an address's
+      balance, as blocks and mempool txs arrive.
     </p>
   </main>
 </template>

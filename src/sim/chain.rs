@@ -97,9 +97,9 @@ fn make_tree(index: usize, script: bool) -> ErgoTree {
     HexBytes::from(tree)
 }
 
-/// The hash of [`SCRIPT_TEMPLATE`], which the chain's scripts share.
-pub fn script_template_hash() -> HashDigest {
-    hash(&[&SCRIPT_TEMPLATE])
+/// [`SCRIPT_TEMPLATE`] as a template key's bytes.
+pub fn script_template() -> HexBytes {
+    HexBytes::from(SCRIPT_TEMPLATE.to_vec())
 }
 
 /// The template hash the node files a box under (node 6.0.8,
@@ -474,7 +474,7 @@ impl Chain {
         let trees = self.trees.iter().cloned().map(TrackingKey::Tree);
         trees
             .chain(self.known_tokens.keys().copied().map(TrackingKey::Token))
-            .chain([TrackingKey::Template(script_template_hash())])
+            .chain([TrackingKey::Template(script_template())])
             .collect()
     }
 

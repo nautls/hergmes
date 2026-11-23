@@ -188,17 +188,17 @@ test(`subscriptions converge to the oracle at every checkpoint (SEED=${String(SE
 
   /**
    * Subscribes every key not yet subscribed: the addresses, the tokens under the supply limit,
-   * and the template the sim's scripts share. A token the indexer does not know yet (minted in the pool only) is refused, and
-   * tried again at the next call. A token no longer listed under the limit is let go: two
-   * conflicting pool txs with the same first input both mint its id, and the one built last
-   * gives its emission, which may be over the limit.
+   * and the template the sim's scripts share. A token the indexer does not know yet (minted in
+   * the pool only) is refused, and tried again at the next call. A token no longer listed under
+   * the limit is let go: two conflicting pool txs with the same first input both mint its id,
+   * and the one built last gives its emission, which may be over the limit.
    */
   const subscribeAll = async () => {
     const { addresses, tokens, templates } = await sim.keys();
     const keys: Key[] = [
       ...addresses.map((address) => ({ address })),
       ...tokens.filter((t) => BigInt(t.emission) <= 100n).map((t) => ({ tokenId: t.tokenId })),
-      ...templates.map((templateHash) => ({ templateHash })),
+      ...templates.map((template) => ({ template })),
     ];
     const listed = new Set(keys.map((key) => JSON.stringify(key)));
     for (const [name, sub] of subs) {

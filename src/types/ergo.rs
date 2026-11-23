@@ -10,7 +10,10 @@ pub type TxId = HashDigest;
 pub type TokenId = HashDigest;
 pub type HeaderId = HashDigest;
 pub type ErgoTree = HexBytes;
-/// The Blake2b256 of a constant-segregated tree's template (see
+/// A constant-segregated tree's template: its bytes after the constants, the same for every
+/// instance of a contract (see [`crate::types::ergo_tree::template`]).
+pub type Template = HexBytes;
+/// The Blake2b256 of a template, which the node's indexer files boxes under (see
 /// [`crate::types::ergo_tree::template_hash`]).
 pub type TemplateHash = HashDigest;
 

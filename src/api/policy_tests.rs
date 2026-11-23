@@ -8,7 +8,7 @@ use crate::{
         keys::{address_key, token_key},
     },
     types::{
-        Digest, HexBytes,
+        HexBytes,
         address::{Network, encode, encode_as_p2s},
     },
 };
@@ -29,11 +29,11 @@ fn token(id: &str) -> TrackingKey {
     TrackingKey::Token(id.parse().unwrap())
 }
 
-/// The address the relay's encoder gives a tree: P2PK and P2SH trees get their own type.
 fn template(byte: u8) -> TrackingKey {
-    TrackingKey::Template(Digest([byte; 32]))
+    TrackingKey::Template(HexBytes::from(vec![byte; 8]))
 }
 
+/// The address the relay's encoder gives a tree: P2PK and P2SH trees get their own type.
 fn address(hex: &str) -> String {
     encode(&hex::decode(hex).unwrap(), Network::Mainnet)
 }
@@ -151,7 +151,7 @@ fn tokens_are_any_unless_listed() {
 fn templates_are_any_unless_listed() {
     let open = KeyPolicy::new(Some(&[]), &[], Some(&[]), None, &[]);
     assert!(open.admits(&template(1)), "address and token rules leave templates alone");
-    let dapp = KeyPolicy::new(None, &[], None, Some(&[Digest([1; 32])]), &[template(3)]);
+    let dapp = KeyPolicy::new(None, &[], None, Some(&[HexBytes::from(vec![1; 8])]), &[template(3)]);
     assert!(dapp.admits(&template(1)));
     assert!(dapp.admits(&template(3)), "a configured template");
     assert!(!dapp.admits(&template(2)));
@@ -240,7 +240,7 @@ fn a_policy_reads_as_its_rules() {
             "addresses: 1 by name, 1 denied; tokens: any; templates: any",
         ),
         (
-            KeyPolicy::new(None, &[], None, Some(&[Digest([1; 32])]), &[template(2)]),
+            KeyPolicy::new(None, &[], None, Some(&[HexBytes::from(vec![1; 8])]), &[template(2)]),
             "addresses: any; tokens: any; templates: 2 by name",
         ),
         (

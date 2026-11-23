@@ -156,8 +156,14 @@ fn every_setting_is_read() {
     );
     assert_eq!(config.deny_addresses, vec![Address::decode(FEE_MAINNET).unwrap()]);
     assert_eq!(config.allow_tokens, Some(vec![TOKEN.parse().unwrap()]));
-    assert_eq!(config.track_templates, vec![TOKEN.parse().unwrap()]);
-    assert_eq!(config.allow_templates, Some(vec![NFT.parse().unwrap()]));
+    assert_eq!(
+        config.track_templates,
+        vec![crate::types::HexBytes::from(hex::decode(TOKEN).unwrap())]
+    );
+    assert_eq!(
+        config.allow_templates,
+        Some(vec![crate::types::HexBytes::from(hex::decode(NFT).unwrap())])
+    );
     assert_eq!(config.box_cache_bytes, 3 * 1024 * 1024);
     assert_eq!(config.listen_addr.to_string(), "0.0.0.0:9000");
     assert_eq!(config.metrics_addr.unwrap().to_string(), "127.0.0.1:9100");

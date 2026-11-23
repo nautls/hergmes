@@ -2563,7 +2563,7 @@ fn a_pending_spend_of_a_box_a_block_spent_is_left_out() {
 #[test]
 fn a_pending_spend_of_a_template_box_a_block_spent_is_left_out() {
     let mut f = Fixture::new(Config::default());
-    let template = TrackingKey::Template(sim::script_template_hash());
+    let template = TrackingKey::Template(sim::script_template());
     f.load(&template);
     let scripts = f.chain.trees().len() - 2;
     let source = sim::testing::box_of(&f.chain, scripts);

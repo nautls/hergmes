@@ -316,7 +316,7 @@ fn random_histories_reach_the_hard_overlay_cases() {
         if order
             .iter()
             .flat_map(|&i| &snapshot[i].outputs)
-            .any(|b| keys_of(b, true).count() >= 3)
+            .any(|b| keys_of(b, false).count() >= 3)
         {
             seen.insert("pending box matching three keys");
         }

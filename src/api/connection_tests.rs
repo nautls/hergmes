@@ -17,7 +17,7 @@ use crate::{
     engine::{self, Engine, Event, Query, Reply},
     runtime::{Clock, ManualClock, Settled, settling, spawn_with_clock},
     sim::{
-        Chain, Endpoint, SimChain, SimConfig, script_template_hash,
+        Chain, Endpoint, SimChain, SimConfig, script_template,
         testing::{BLOCK_TIME, blocks},
         token_id,
     },
@@ -437,8 +437,9 @@ fn types(messages: &[Value]) -> Vec<&str> {
 }
 
 fn template_key() -> (TrackingKey, Value) {
-    let hash = script_template_hash();
-    (TrackingKey::Template(hash), json!({ "templateHash": hash.to_string() }))
+    let template = script_template();
+    let spelling = json!({ "template": template.to_string() });
+    (TrackingKey::Template(template), spelling)
 }
 
 fn token_key() -> (TrackingKey, Value) {
@@ -805,7 +806,7 @@ async fn refused_keys_are_rejected_and_the_connection_carries_on() {
         (json!({ "tokenId": "ab" }), Some(tip), "invalid_token_id"),
         (token_key().1, None, "from_required"),
         (json!({ "tokenId": token_id("large").to_string() }), None, "from_required"),
-        (json!({ "templateHash": "ab" }), Some(tip), "invalid_template_hash"),
+        (json!({ "template": "a" }), Some(tip), "invalid_template"),
         (template_key().1, None, "from_required"),
     ];
     for (key, from, reason) in cases {

@@ -1,4 +1,4 @@
-//! Tracking keys from what clients send: an address, a token id, or a template hash.
+//! Tracking keys from what clients send: an address, a token id, or a template.
 //!
 //! Every route that takes a key gets it here, so the operator's [`KeyPolicy`] covers all of
 //! them, and a refused key costs no node call.
@@ -8,7 +8,8 @@ use crate::{
     engine::TrackingKey,
     types::{
         address::{Address, Network},
-        ergo::{TemplateHash, TokenId},
+        ergo::TokenId,
+        ergo_tree::parse_template,
     },
 };
 
@@ -31,11 +32,11 @@ pub fn token_key(id: &str, policy: &KeyPolicy) -> Result<TrackingKey, ApiError> 
     admitted(TrackingKey::Token(id), policy)
 }
 
-/// A template's key, if the policy admits it. The hash is 64 hex characters, in either case.
+/// A template's key, if the policy admits it: the template's bytes, in hex, in either case.
 /// Whether its trees have segregated constants shows only once its boxes are read.
-pub fn template_key(hash: &str, policy: &KeyPolicy) -> Result<TrackingKey, ApiError> {
-    let hash: TemplateHash = hash.parse().map_err(|_| ApiError::InvalidTemplateHash)?;
-    admitted(TrackingKey::Template(hash), policy)
+pub fn template_key(hex: &str, policy: &KeyPolicy) -> Result<TrackingKey, ApiError> {
+    let template = parse_template(hex).map_err(|_| ApiError::InvalidTemplate)?;
+    admitted(TrackingKey::Template(template), policy)
 }
 
 fn admitted(key: TrackingKey, policy: &KeyPolicy) -> Result<TrackingKey, ApiError> {

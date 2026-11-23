@@ -21,7 +21,7 @@ use crate::{
 };
 
 /// A key as the client wrote it: `{ "address": ... }`, `{ "tokenId": ... }` or
-/// `{ "templateHash": ... }`, exactly one.
+/// `{ "template": ... }`, exactly one.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub enum ClientKey {
@@ -29,8 +29,8 @@ pub enum ClientKey {
     Address(String),
     #[serde(rename = "tokenId")]
     TokenId(String),
-    #[serde(rename = "templateHash")]
-    TemplateHash(String),
+    #[serde(rename = "template")]
+    Template(String),
 }
 
 /// A key as every message for it spells it: the client's spelling, as JSON. Serialized once
@@ -44,12 +44,12 @@ impl ClientKey {
     }
 
     /// The tracking key, through the same checks as a REST route: the network, the token id's
-    /// or the template hash's form and the operator's policy.
+    /// or the template's form and the operator's policy.
     pub fn resolve(&self, network: Network, policy: &KeyPolicy) -> Result<TrackingKey, ApiError> {
         match self {
             Self::Address(address) => address_key(address, network, policy),
             Self::TokenId(id) => token_key(id, policy),
-            Self::TemplateHash(hash) => template_key(hash, policy),
+            Self::Template(template) => template_key(template, policy),
         }
     }
 }

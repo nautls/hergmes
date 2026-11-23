@@ -36,7 +36,7 @@
 
 # --- Keys ---
 
-# Addresses, token ids and template hashes tracked for the life of the process. Always allowed.
+# Addresses, token ids and templates tracked for the life of the process. Always allowed.
 # track_addresses = []
 # track_tokens = []
 # track_templates = []
@@ -55,8 +55,8 @@
 # allowed; [] allows none. An example, which allows no token:
 # allow_tokens = []
 
-# Template hashes clients may name: the Blake2b256 of a constant-segregated tree's template, so
-# one names every instance of a contract. Omitted (the default), any template is allowed; []
+# Templates clients may name, in hex: a constant-segregated tree's bytes after its constants,
+# so one names every instance of a contract. Omitted (the default), any template is allowed; []
 # allows none.
 # allow_templates = []
 

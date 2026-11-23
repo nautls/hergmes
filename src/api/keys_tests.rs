@@ -1,8 +1,8 @@
-//! Keys from addresses, token ids and template hashes: the node's network only, and ids and
-//! hashes in either case.
+//! Keys from addresses, token ids and templates: the node's network only, and ids and
+//! templates in either case.
 
 use super::*;
-use crate::types::HexBytes;
+use crate::types::{HexBytes, ergo_tree::MAX_TEMPLATE_BYTES};
 
 fn open() -> KeyPolicy {
     KeyPolicy::default()
@@ -44,13 +44,21 @@ fn a_token_id_is_64_hex_characters_in_either_case() {
     }
 }
 
+/// The miner fee contract's template, as `ergo_tree_tests.rs` splits it.
+const FEE_TEMPLATE: &str =
+    "d19683030193a38cc7b2a57300000193c2b2a57301007473027303830108cdeeac93b1a57304";
+
 #[test]
-fn a_template_hash_is_64_hex_characters_in_either_case() {
-    let key = TrackingKey::Template(NFT.parse().unwrap());
-    assert_eq!(template_key(NFT, &open()), Ok(key.clone()));
-    assert_eq!(template_key(&NFT.to_uppercase(), &open()), Ok(key));
-    for hash in ["", &NFT[..62], &format!("{NFT}00"), &NFT.replace('a', "g")] {
-        assert_eq!(template_key(hash, &open()), Err(ApiError::InvalidTemplateHash), "{hash:?}");
+fn a_template_is_its_bytes_in_hex_in_either_case_and_bounded() {
+    let key = TrackingKey::Template(HexBytes::from(hex::decode(FEE_TEMPLATE).unwrap()));
+    assert_eq!(template_key(FEE_TEMPLATE, &open()), Ok(key.clone()));
+    assert_eq!(template_key(&FEE_TEMPLATE.to_uppercase(), &open()), Ok(key));
+    let longest = "ab".repeat(MAX_TEMPLATE_BYTES);
+    assert!(template_key(&longest, &open()).is_ok());
+    let too_long = format!("{longest}ab");
+    for bad in ["", "a", "zz", &FEE_TEMPLATE[1..], &too_long] {
+        let error = template_key(bad, &open()).unwrap_err();
+        assert_eq!(error, ApiError::InvalidTemplate, "{bad:?}");
     }
 }
 
@@ -66,6 +74,6 @@ fn a_bad_key_is_invalid_whatever_the_policy() {
     assert_eq!(token_key("abcd", &nothing), Err(ApiError::InvalidTokenId));
     assert_eq!(address_key(FEE_MAINNET, Network::Mainnet, &nothing), Err(ApiError::KeyNotAllowed));
     assert_eq!(token_key(NFT, &nothing), Err(ApiError::KeyNotAllowed));
-    assert_eq!(template_key("abcd", &nothing), Err(ApiError::InvalidTemplateHash));
-    assert_eq!(template_key(NFT, &nothing), Err(ApiError::KeyNotAllowed));
+    assert_eq!(template_key("abc", &nothing), Err(ApiError::InvalidTemplate));
+    assert_eq!(template_key(FEE_TEMPLATE, &nothing), Err(ApiError::KeyNotAllowed));
 }

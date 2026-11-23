@@ -14,9 +14,9 @@ use blake2::{Blake2b256, Digest as _};
 use crate::{
     engine::{PendingTx, TrackingKey},
     types::{
-        Digest, HashDigest,
+        Digest, HashDigest, HexBytes,
         ergo::{BoxAssets, BoxId, ErgoTree, Token, TokenId, TxId, UTxO, UnconfirmedTransaction},
-        ergo_tree::template_hash,
+        ergo_tree::template,
     },
 };
 
@@ -292,9 +292,9 @@ impl<'a> DeltaSides<'a> {
     }
 }
 
-/// The keys a box matches: its tree, each token it holds, once each, and with `templates`
-/// its template, if its tree has segregated constants. Hashing the template costs a walk of
-/// the constants and a Blake2b, so callers ask for it only while a template key is tracked.
+/// The keys a box matches: its tree, each token it holds, once each, and with `templates` its
+/// template, if its tree has segregated constants. Reading the template walks the tree's
+/// constants, so callers ask for it only while a template key is tracked.
 pub fn keys_of(utxo: &UTxO, templates: bool) -> impl Iterator<Item = TrackingKey> + '_ {
     let tokens = utxo
         .tokens
@@ -303,9 +303,9 @@ pub fn keys_of(utxo: &UTxO, templates: bool) -> impl Iterator<Item = TrackingKey
         .filter(|(i, t)| !utxo.tokens[..*i].iter().any(|u| u.id == t.id))
         .map(|(_, t)| TrackingKey::Token(t.id));
     let template = templates
-        .then(|| template_hash(&utxo.ergo_tree.0))
+        .then(|| template(&utxo.ergo_tree.0))
         .flatten()
-        .map(TrackingKey::Template);
+        .map(|t| TrackingKey::Template(HexBytes::from(t.to_vec())));
     std::iter::once(TrackingKey::Tree(utxo.ergo_tree.clone()))
         .chain(tokens)
         .chain(template)

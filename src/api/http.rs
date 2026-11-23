@@ -101,8 +101,8 @@ where
         .route("/v1/tokens/{token_id}/boxes", get(token_boxes::<S, E>))
         .route("/v1/addresses/{address}/boxes/with-pool", get(address_with_pool::<S, E>))
         .route("/v1/tokens/{token_id}/boxes/with-pool", get(token_with_pool::<S, E>))
-        .route("/v1/templates/{hash}/boxes", get(template_boxes::<S, E>))
-        .route("/v1/templates/{hash}/boxes/with-pool", get(template_with_pool::<S, E>))
+        .route("/v1/templates/{template}/boxes", get(template_boxes::<S, E>))
+        .route("/v1/templates/{template}/boxes/with-pool", get(template_with_pool::<S, E>))
         .route("/v1/addresses/{address}/balance", get(address_balance::<S, E>))
         .route("/v1/addresses/{address}/transactions", get(address_history::<S, E>))
         .route("/v1/headers", get(last_headers::<S, E>))
@@ -172,11 +172,11 @@ async fn token_boxes<S: NodeSource, E: EngineHandle>(
 
 async fn template_boxes<S: NodeSource, E: EngineHandle>(
     State(api): State<Arc<Api<S, E>>>,
-    hash: Result<Path<String>, PathRejection>,
+    template: Result<Path<String>, PathRejection>,
     params: Params,
 ) -> Result<Response, ApiError> {
-    let hash = hash.map_err(|_| ApiError::InvalidTemplateHash)?;
-    let key = template_key(&hash, &api.policy)?;
+    let template = template.map_err(|_| ApiError::InvalidTemplate)?;
+    let key = template_key(&template, &api.policy)?;
     page(&api, &key, &params).await
 }
 
@@ -213,10 +213,10 @@ async fn token_with_pool<S: NodeSource, E: EngineHandle>(
 
 async fn template_with_pool<S: NodeSource, E: EngineHandle>(
     State(api): State<Arc<Api<S, E>>>,
-    hash: Result<Path<String>, PathRejection>,
+    template: Result<Path<String>, PathRejection>,
 ) -> Result<Response, ApiError> {
-    let hash = hash.map_err(|_| ApiError::InvalidTemplateHash)?;
-    let key = template_key(&hash, &api.policy)?;
+    let template = template.map_err(|_| ApiError::InvalidTemplate)?;
+    let key = template_key(&template, &api.policy)?;
     with_pool(&api, &key).await
 }
 
@@ -324,7 +324,7 @@ impl ApiError {
         match self {
             Self::InvalidAddress(_)
             | Self::InvalidTokenId
-            | Self::InvalidTemplateHash
+            | Self::InvalidTemplate
             | Self::InvalidIds
             | Self::InvalidBoxId
             | Self::InvalidBroadcast
@@ -356,7 +356,7 @@ impl ApiError {
             Self::BoxUnavailable { .. } => Some(DEFAULT_RETRY),
             Self::InvalidAddress(_)
             | Self::InvalidTokenId
-            | Self::InvalidTemplateHash
+            | Self::InvalidTemplate
             | Self::InvalidIds
             | Self::InvalidBoxId
             | Self::InvalidBroadcast
