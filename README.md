@@ -22,10 +22,28 @@ An Ergo node with:
 - a **UTXO state** (`stateType = "utxo"`, the default): in digest mode the node resolves no
   mempool inputs.
 
+## Install
+
+Each [release](https://github.com/nautls/hergmes/releases) has a Linux binary for `x86_64` and
+`aarch64`, built against glibc 2.39 (Ubuntu 24.04+, Debian 13+). Each archive holds the binary,
+`hergmes.example.toml` and this README:
+
+```sh
+version=0.1.0 target=x86_64-unknown-linux-gnu   # or aarch64-unknown-linux-gnu
+name=hergmes-v$version-$target
+curl -LO https://github.com/nautls/hergmes/releases/download/hergmes@v$version/$name.tar.gz
+curl -LO https://github.com/nautls/hergmes/releases/download/hergmes@v$version/$name.tar.gz.sha256
+sha256sum -c $name.tar.gz.sha256
+tar -xzf $name.tar.gz
+```
+
+On other platforms, or to build from source, use `cargo build --release` (the binary is
+`target/release/hergmes`).
+
 ## Getting started
 
 ```sh
-ERGO_NODE_URL=http://127.0.0.1:9053 cargo run
+ERGO_NODE_URL=http://127.0.0.1:9053 ./hergmes   # from source: cargo run
 ```
 
 The API then listens on `127.0.0.1:8080`. Check it with `curl localhost:8080/v1/status`.
