@@ -166,7 +166,7 @@ impl SimRelay {
             transactions: Transactions::new(sim.clone()),
             network: NETWORK,
             policy: KeyPolicy::default(),
-            synced: follower.synced(),
+            started: follower.started(),
             metrics: Default::default(),
         });
         let relay = Arc::new(Self {

@@ -1,8 +1,8 @@
 # AGENTS.md
 
 hergmes is a realtime, mempool-aware relay for the Ergo blockchain. It sits in front of an indexed
-Ergo node and streams box, balance and mempool changes for tracked addresses and small-supply
-tokens. See `README.md` for the overview.
+Ergo node and streams box, balance and mempool changes for tracked addresses, small-supply tokens
+and contract templates. See `README.md` for the overview.
 
 ## Commands
 
@@ -66,8 +66,9 @@ NodeSource (trait)  ──►  Engine (pure state machine)  ──►  Transport
   send events to the engine.
 - The engine refuses events that are not about its tip (`EngineError`) and changes nothing; the
   caller resynchronizes.
-- Within one event, outputs go `block` / `rollback` / `resync_required`, then `mempool`, then
-  `balance`, each in key order. Keep that order.
+- Within one event, outputs go `block` / `rollback` / `resync_required` / `LoadRejected` /
+  `CapacityExceeded`, then `mempool`, then `balance`, each in key order (`Engine::apply`). Keep
+  that order.
 - The engine task publishes the tip before routing an event's outputs, and a connection sends a
   changed tip before anything else, so a client's tip is never older than its boxes. The tip is
   not an engine output.

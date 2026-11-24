@@ -94,8 +94,8 @@ pub struct Follower<S> {
     blocks: BlockConsumer<S>,
     mempool: MempoolPoller<S>,
     config: Config,
-    /// Whether the last tick left the engine at the node's tip, for `/v1/status`.
-    synced: watch::Sender<bool>,
+    /// Whether a tick has left the engine at the node's tip, for `/v1/status`.
+    started: watch::Sender<bool>,
     wake: Wake,
 }
 
@@ -106,16 +106,17 @@ impl<S: NodeSource + Clone> Follower<S> {
             mempool: MempoolPoller::new(source.clone(), config.mempool),
             source,
             config,
-            synced: watch::Sender::new(false),
+            started: watch::Sender::new(false),
             wake: Wake::default(),
         }
     }
 
-    /// Whether the last tick left the engine at the node's tip: `false` before the first
-    /// tick, after a failed `/info` read, and while the engine is behind (the indexer lags,
-    /// a block sync failed). Read by the status route, which makes no node call of its own.
-    pub fn synced(&self) -> watch::Receiver<bool> {
-        self.synced.subscribe()
+    /// Whether a tick has left the engine at the node's tip. Once true it stays true: after
+    /// each block the engine is behind for a tick or two while the indexer catches up, and
+    /// loads already wait that out, so readiness doesn't flicker with it. Read by the status
+    /// route, which makes no node call of its own.
+    pub fn started(&self) -> watch::Receiver<bool> {
+        self.started.subscribe()
     }
 
     /// A handle that wakes this follower, for the readers that find the engine behind.
@@ -136,13 +137,7 @@ impl<S: NodeSource + Clone> Follower<S> {
         engine: &impl EngineHandle,
         now: Instant,
     ) -> Result<Tick, AdapterError> {
-        let info = match self.source.info().await {
-            Ok(info) => info,
-            Err(error) => {
-                self.synced.send_replace(false);
-                return Err(error.into());
-            }
-        };
+        let info = self.source.info().await?;
         let blocks = match best_full_block(&info) {
             Some(tip) => match self.blocks.sync(engine, tip).await {
                 Ok(sync) => Ok(sync),
@@ -150,11 +145,11 @@ impl<S: NodeSource + Clone> Follower<S> {
             },
             None => Ok(Sync::Idle),
         };
-        let synced = matches!(blocks, Ok(Sync::Idle | Sync::Synced { .. }));
-        self.synced.send_replace(synced);
-        if !synced {
+        if !matches!(blocks, Ok(Sync::Idle | Sync::Synced { .. })) {
             return Ok(Tick { blocks, mempool: None });
         }
+        self.started
+            .send_if_modified(|started| !std::mem::replace(started, true));
         let mempool = self.mempool.poll(info, now).await;
         if let Ok(Poll::Snapshot { txs, observed_tip }) = &mempool {
             let event = Event::MempoolSnapshot { txs: txs.clone(), observed_tip: *observed_tip };

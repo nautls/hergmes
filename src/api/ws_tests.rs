@@ -66,7 +66,7 @@ async fn server() -> Server {
         transactions: Transactions::new(sim.clone()),
         network: Network::Mainnet,
         policy: KeyPolicy::default(),
-        synced: follower.synced(),
+        started: follower.started(),
         metrics: Default::default(),
     });
     Server { sim, router: router(api, Config::default()) }

@@ -67,26 +67,26 @@ fn the_mempool_waits_while_the_engine_is_behind() {
 }
 
 #[test]
-fn synced_says_whether_the_last_tick_reached_the_nodes_tip() {
+fn started_once_a_tick_reaches_the_nodes_tip_and_stays_so() {
     let sim = SimChain::new(new_chain());
     let engine = engine();
     let mut follower = Follower::new(sim.clone(), Config::default());
-    let synced = follower.synced();
-    assert!(!*synced.borrow(), "not before the first tick");
+    let started = follower.started();
+    sim.lock().set_indexer_lag(1);
+    sim.lock().mine(0, 1, 1);
+    let tick = ready(follower.tick(&engine, Instant::now())).unwrap();
+    assert!(matches!(tick.blocks, Ok(Sync::WaitingForIndexer { .. })), "{tick:?}");
+    assert!(!*started.borrow(), "not until the engine reaches the tip");
+
+    sim.lock().settle_indexer();
     ready(follower.tick(&engine, Instant::now())).unwrap();
-    assert!(*synced.borrow());
+    assert!(*started.borrow());
 
     sim.lock().set_indexer_lag(1);
     sim.lock().mine(0, 1, 1);
     let tick = ready(follower.tick(&engine, Instant::now())).unwrap();
     assert!(matches!(tick.blocks, Ok(Sync::WaitingForIndexer { .. })), "{tick:?}");
-    assert!(!*synced.borrow(), "the engine is behind");
-
-    sim.lock().settle_indexer();
-    ready(follower.tick(&engine, Instant::now())).unwrap();
-    assert!(*synced.borrow());
-    ready(follower.tick(&engine, Instant::now())).unwrap();
-    assert!(*synced.borrow(), "an idle tick is still at the tip");
+    assert!(*started.borrow(), "a block's indexer lag leaves it started");
 }
 
 #[tokio::test(start_paused = true)]
@@ -223,13 +223,13 @@ mod node {
     }
 
     #[tokio::test]
-    async fn a_failed_info_read_is_not_synced() {
+    async fn a_failed_info_read_leaves_it_started() {
         let server = node(recorded("mempool")).await;
         let client = NodeClient::new(reqwest::Client::new(), &server.uri(), Network::Mainnet);
         let engine = engine();
         let mut follower = Follower::new(client, Config::default());
         follower.tick(&engine, Instant::now()).await.unwrap();
-        assert!(*follower.synced().borrow());
+        assert!(*follower.started().borrow());
 
         server.reset().await;
         Mock::given(method("GET"))
@@ -238,7 +238,7 @@ mod node {
             .mount(&server)
             .await;
         follower.tick(&engine, Instant::now()).await.unwrap_err();
-        assert!(!*follower.synced().borrow(), "the node's tip is unknown");
+        assert!(*follower.started().borrow(), "the tip shows how stale the relay is");
     }
 }
 

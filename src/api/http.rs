@@ -72,8 +72,8 @@ pub struct Api<S, E> {
     pub network: Network,
     /// The keys clients may name.
     pub policy: KeyPolicy,
-    /// Whether the follower's last tick left the engine at the node's tip.
-    pub synced: watch::Receiver<bool>,
+    /// Whether the follower has once brought the engine to the node's tip.
+    pub started: watch::Receiver<bool>,
     /// Counts the refusals sent to clients.
     pub metrics: Metrics,
 }
@@ -280,14 +280,16 @@ async fn submit_transaction<S: NodeSource, E: EngineHandle>(
     Ok(Json(SubmittedBody { transaction_id: &id }).into_response())
 }
 
-/// Cheap enough for health checks: one engine query and no node call. `ready` is the
-/// engine having a tip and being at the node's, and the configured keys having settled, so
-/// that a key not yet tracked can be loaded.
+/// Cheap enough for health checks: one engine query and no node call. `ready` is the relay
+/// having started: the engine has reached the node's tip once and the configured keys have
+/// settled. It stays true while the engine is behind, as it is for a moment after each
+/// block, so a load can still answer `not_ready` while the relay catches up. Whether it
+/// lags is for a monitor to tell, by comparing `tip` with the node's.
 async fn status<S: NodeSource, E: EngineHandle>(
     State(api): State<Arc<Api<S, E>>>,
 ) -> Result<Response, ApiError> {
     let tip = engine_tip(&api.engine).await?;
-    let ready = tip.is_some() && *api.synced.borrow() && api.pages.loads();
+    let ready = tip.is_some() && *api.started.borrow() && api.pages.loads();
     Ok(Json(StatusBody { network: api.network, tip: tip.as_ref(), ready }).into_response())
 }
 

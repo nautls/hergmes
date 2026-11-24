@@ -140,8 +140,11 @@ export interface Submitted {
 }
 
 /**
- * The relay's state. `tip` is `null` until it has applied a block; `ready` is whether it is
- * at the node's tip and can load a key it does not track yet.
+ * The relay's state. `tip` is `null` until it has applied a block; `ready` is whether it has
+ * started: it has reached the node's tip once and its configured keys have loaded. It stays
+ * true while the relay is behind, as it is for a moment after each block, so a load can
+ * still answer `not_ready` while the relay catches up. Comparing `tip` with the node's tells
+ * how far behind it is.
  */
 export interface Status {
   version: string;

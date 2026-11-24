@@ -180,7 +180,7 @@ impl Fixture {
             transactions: Transactions::new(sim.clone()),
             network: Network::Mainnet,
             policy,
-            synced: follower.synced(),
+            started: follower.started(),
             metrics: Default::default(),
         });
         let router = router(api.clone());
@@ -230,7 +230,7 @@ impl Fixture {
 }
 
 #[tokio::test]
-async fn status_is_ready_once_the_engine_is_at_the_nodes_tip() {
+async fn status_is_ready_once_the_engine_has_reached_the_nodes_tip() {
     let mut f = Fixture::new();
     let status = f.ok("/v1/status").await;
     assert_eq!(status["version"], env!("CARGO_PKG_VERSION"));
@@ -248,13 +248,14 @@ async fn status_is_ready_once_the_engine_is_at_the_nodes_tip() {
     f.ok("/v1/status").await;
     assert_eq!(f.sim.calls().len(), calls, "no node call");
 
-    // The node moves on and the indexer lags: the engine keeps its tip but is behind.
+    // The node moves on and the indexer lags, as after every block: the engine keeps its tip
+    // and the relay stays ready.
     f.sim.lock().set_indexer_lag(1);
     f.sim.lock().mine(0, 1, 1);
     f.tick();
     let status = f.ok("/v1/status").await;
     assert_eq!(status["tip"]["height"], tip.height);
-    assert_eq!(status["ready"], false, "the indexer lags, so the engine is behind");
+    assert_eq!(status["ready"], true, "a block's indexer lag leaves it ready");
 }
 
 /// Until the configured keys settle, a key not tracked can't be loaded, so the relay is not
@@ -897,7 +898,7 @@ async fn a_tx_is_answered_with_its_id_or_the_nodes_refusal() {
         transactions: Transactions::new(node),
         network: Network::Mainnet,
         policy: KeyPolicy::default(),
-        synced: f.follower.synced(),
+        started: f.follower.started(),
         metrics: Default::default(),
     });
     let router = router(api);

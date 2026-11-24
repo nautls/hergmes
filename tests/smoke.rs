@@ -85,15 +85,15 @@ impl Relay {
             .expect("the node answers");
         let (engine, _) = runtime::spawn(Engine::new(Default::default()));
         let follower = Follower::new(node.clone(), Default::default());
-        let mut synced = follower.synced();
+        let mut started = follower.started();
         let follower = tokio::spawn({
             let engine = engine.clone();
             async move {
                 follower.run(&engine).await;
             }
         });
-        synced
-            .wait_for(|synced| *synced)
+        started
+            .wait_for(|started| *started)
             .await
             .expect("the follower runs");
 

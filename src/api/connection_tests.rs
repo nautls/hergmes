@@ -80,7 +80,7 @@ impl Fixture {
             transactions: Transactions::new(sim.clone()),
             network: Network::Mainnet,
             policy: KeyPolicy::default(),
-            synced: follower.synced(),
+            started: follower.started(),
             metrics: Default::default(),
         });
         let mut f = Self { sim, clock, engine, _task: task, follower, api };
