@@ -6,8 +6,9 @@ the relay's REST routes.
 
 ## Install
 
-Not published yet; the package is `@hergmes/sdk`. It runs on Node 22 or later and in browsers
-(the built-in `fetch` and `WebSocket`, nothing else).
+```sh
+npm install @hergmes/sdk
+```
 
 ## Usage
 
