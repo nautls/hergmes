@@ -1,0 +1,80 @@
+name: Release
+
+on:
+    push:
+        tags:
+            - "hergmes@v*"
+
+jobs:
+    build:
+        name: Build ${{ matrix.target }}
+        runs-on: ${{ matrix.runner }}
+        timeout-minutes: 30
+        permissions:
+            contents: read
+        strategy:
+            fail-fast: false
+            matrix:
+                include:
+                    - target: x86_64-unknown-linux-gnu
+                      runner: ubuntu-24.04
+                    - target: aarch64-unknown-linux-gnu
+                      runner: ubuntu-24.04-arm
+        steps:
+            - uses: actions/checkout@v5
+            - uses: actions-rust-lang/setup-rust-toolchain@v1
+
+            # The tag names the version the binary reports, so the two must agree.
+            - name: Check version
+              env:
+                  TAG: ${{ github.ref_name }}
+              run: |
+                  version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "hergmes") | .version')
+                  if [ "${TAG#hergmes@v}" != "$version" ]; then
+                    echo "::error::Tag $TAG does not match Cargo.toml version $version"
+                    exit 1
+                  fi
+
+            - run: cargo build --release --locked --bin hergmes
+
+            - name: Package
+              env:
+                  TAG: ${{ github.ref_name }}
+                  TARGET: ${{ matrix.target }}
+              run: |
+                  name="hergmes-v${TAG#hergmes@v}-$TARGET"
+                  mkdir -p dist "$name"
+                  cp target/release/hergmes hergmes.example.toml README.md "$name/"
+                  tar -czf "dist/$name.tar.gz" "$name"
+                  (cd dist && sha256sum "$name.tar.gz" > "$name.tar.gz.sha256")
+
+            - uses: actions/upload-artifact@v7
+              with:
+                  name: ${{ matrix.target }}
+                  path: dist/*
+                  if-no-files-found: error
+
+    release:
+        name: Release
+        needs: build
+        runs-on: ubuntu-latest
+        timeout-minutes: 10
+        permissions:
+            contents: write
+        steps:
+            - uses: actions/download-artifact@v8
+              with:
+                  path: dist
+                  merge-multiple: true
+
+            - name: Create or update release
+              env:
+                  GH_TOKEN: ${{ github.token }}
+                  GH_REPO: ${{ github.repository }}
+                  TAG: ${{ github.ref_name }}
+              run: |
+                  if gh release view "$TAG" > /dev/null 2>&1; then
+                    gh release upload "$TAG" dist/* --clobber
+                  else
+                    gh release create "$TAG" dist/* --verify-tag --title "$TAG" --generate-notes
+                  fi
