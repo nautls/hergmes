@@ -76,6 +76,18 @@ fn main() -> Result<(), AppError> {
     result
 }
 
+/// Tells the service manager the relay is ready, for a unit with `Type=notify`. Does nothing
+/// when systemd did not start it (no `NOTIFY_SOCKET`).
+#[cfg(unix)]
+fn notify_ready() {
+    if let Err(error) = sd_notify::notify(&[sd_notify::NotifyState::Ready]) {
+        warn!(%error, "Could not tell systemd the relay is ready");
+    }
+}
+
+#[cfg(not(unix))]
+fn notify_ready() {}
+
 /// Binds the API's address, starts the engine task, the follower, a keeper per
 /// configured key and the server, and runs until the engine is gone or the server stops.
 /// The engine task ends only by panicking, which can leave it half-changed, and the
@@ -145,6 +157,14 @@ async fn run(flag: Option<PathBuf>) -> Result<(), AppError> {
     // The server starts at once, for the status route and tracked keys, but loads no key for
     // a client until the configured keys have settled.
     let (settled, pending) = runtime::settling(keys.len());
+    // Once `/v1/status` would answer `ready`, logged and told to systemd.
+    let ready = runtime::until_ready(engine.tip(), started.clone(), settled.clone());
+    tokio::spawn(async move {
+        if ready.await {
+            info!("Ready");
+            notify_ready();
+        }
+    });
     let api = Arc::new(Api {
         engine: engine.clone(),
         pages: Pages::new(loader.clone(), tokens.clone(), BoxFetcher::new(node.clone(), cache))

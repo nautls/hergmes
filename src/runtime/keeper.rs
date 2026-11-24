@@ -78,6 +78,12 @@ impl Settled {
     pub fn is_settled(&self) -> bool {
         *self.0.borrow() == 0
     }
+
+    /// Resolves once every configured key has settled.
+    pub async fn wait(&self) {
+        // The count reaches 0 before its last sender drops, so the wait never fails.
+        let _ = self.0.clone().wait_for(|n| *n == 0).await;
+    }
 }
 
 /// One configured key's part in [`Settled`]. It counts as settled once settled or dropped,

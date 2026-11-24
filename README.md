@@ -93,6 +93,9 @@ deny_addresses = ["<miner-fee-contract>"]
   with `large_client_header_buffers 4 16k;`.
 - **File descriptors.** Each WebSocket holds one. The relay raises its soft limit to the hard
   one and warns below 4,096; under systemd, set `LimitNOFILE` if needed.
+- **systemd.** Use `Type=notify`: the relay reports ready once `/v1/status` would, so units
+  ordered `After=` it start once it has reached the node's tip and loaded its configured keys.
+  Loading those from a cold node can take minutes, so raise `TimeoutStartSec` (e.g. `10min`).
 - **Logging.** `RUST_LOG` sets the verbosity (default `info`; e.g. `RUST_LOG=hergmes=debug`).
 - **Metrics.** Set `metrics_addr` (e.g. `"127.0.0.1:9100"`) to serve Prometheus metrics on a
   private address: tracked keys and boxes, cache hit rate, memory, refusals and resyncs.
