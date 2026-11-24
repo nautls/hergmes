@@ -85,5 +85,5 @@
 # balance subscription's, an empty address) still takes room. A load past it first evicts keys
 # with no subscribers that have been idle for a minute, least recently active first, and is
 # refused only if they can't make room. Memory grows about linearly with it: full at the
-# default, with about 100k keys on 1,000 connections, the relay held about 860 MiB resident.
+# default, with about 62k keys, the relay held about 710 MiB resident.
 # max_tracked_units = 2000000
