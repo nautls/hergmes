@@ -57,7 +57,6 @@ pub struct HistoryItem {
     pub tx_id: TxId,
     pub included: Option<Included>,
     pub delta: PendingDelta,
-    /// What the tx pays the miners' fee contract; `None` if it has no output to it.
     pub fee: Option<u64>,
 }
 
