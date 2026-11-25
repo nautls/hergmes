@@ -119,6 +119,7 @@ test("the tip follows the relay's", async () => {
   const tip = await mine(3);
   await until(() => relay.tip?.headerId === tip.headerId, "the tip");
   expect(tips.at(-1)).toEqual(tip);
+  expect(relay.parameters).toEqual(await relay.rest.parameters());
 });
 
 test("closing the relay ends every subscription", async () => {

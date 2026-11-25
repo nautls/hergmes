@@ -11,7 +11,8 @@
 //! only order the protocol promises.
 //!
 //! Every connection also follows the engine's tip, subscribed or not, and sends `tip` when it
-//! opens and whenever the tip changes.
+//! opens and whenever the tip changes, with the chain's parameters on the first and on the
+//! next after they change.
 
 use std::{collections::HashMap, sync::Arc};
 
@@ -40,6 +41,7 @@ use crate::{
     clients::NodeSource,
     engine::{BlockRef, Output, ResyncReason, TrackingKey},
     runtime::{Handle, Routed, Subscription, SubscriptionId},
+    types::ergo::Parameters,
 };
 
 /// The longest close reason a frame carries (RFC 6455, 5.5: a control frame's payload is at
@@ -55,9 +57,13 @@ where
     let mut tip = api.engine.tip();
     // Sent first, as soon as the engine has a tip.
     tip.mark_changed();
+    let mut parameters = api.parameters.clone();
+    // On the first tip.
+    parameters.mark_changed();
     let mut connection = Connection {
         api,
         tip,
+        parameters,
         config,
         socket,
         keys: HashMap::new(),
@@ -137,6 +143,11 @@ struct Connection<S, K> {
     api: Arc<Api<S, Handle>>,
     /// The engine's tip, published before the outputs of the event that moved it.
     tip: watch::Receiver<Option<BlockRef>>,
+    /// The chain's parameters, from the follower's `/info` reads. Not followed on their own:
+    /// they change only with the block that opens a voting epoch, so they ride on its tip.
+    /// The follower publishes them before it sends the engine that block, so they never come
+    /// after the tip they belong to.
+    parameters: watch::Receiver<Option<Parameters>>,
     config: Config,
     socket: K,
     keys: HashMap<TrackingKey, Entry>,
@@ -443,13 +454,18 @@ impl<S: NodeSource + 'static, K: Socket> Connection<S, K> {
         Ok(())
     }
 
-    /// Sends the tip, the latest only: a burst of blocks sends one.
+    /// Sends the tip, the latest only: a burst of blocks sends one. The parameters go with it
+    /// if they changed since the last sent; they are taken only when a tip goes out, so a
+    /// change seen before the engine has a tip waits for its first.
     async fn on_tip(&mut self) -> Step {
-        let tip = *self.tip.borrow_and_update();
-        match tip {
-            Some(tip) => self.write(&ServerMessage::Tip(tip)).await,
-            None => Ok(()),
-        }
+        let Some(tip) = *self.tip.borrow_and_update() else {
+            return Ok(());
+        };
+        let parameters = match self.parameters.has_changed() {
+            Ok(true) => *self.parameters.borrow_and_update(),
+            Ok(false) | Err(_) => None,
+        };
+        self.write(&ServerMessage::Tip { tip, parameters }).await
     }
 
     async fn on_ping(&mut self) -> Step {

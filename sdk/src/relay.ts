@@ -10,7 +10,7 @@ import {
 } from "./machine.ts";
 import { keyName, type ClientMessage, type ServerMessage } from "./protocol.ts";
 import { RestClient, type RestOptions } from "./rest.ts";
-import type { BlockRef, ConfirmedBox, Key } from "./wire.ts";
+import type { BlockRef, ChainParameters, ConfirmedBox, Key } from "./wire.ts";
 
 export interface RelayOptions extends RestOptions {
   /** Boxes per snapshot page, at most 1000, the relay's limit and one node call. */
@@ -102,6 +102,7 @@ export class Relay {
   /** Reconnects since a key last went live. */
   #attempt = 0;
   #tip: BlockRef | undefined;
+  #parameters: ChainParameters | undefined;
   #ids = 0;
   /** Keys whose state changed since their listeners were last called. */
   readonly #changed = new Set<Entry>();
@@ -129,6 +130,14 @@ export class Relay {
   /** The relay's tip, the block every box and balance it serves is at, once known. */
   get tip(): BlockRef | undefined {
     return this.#tip;
+  }
+
+  /**
+   * The chain's parameters, for building txs, once the socket's first tip has come. They come
+   * with the tip and stay current with it; `rest.parameters()` reads them without a socket.
+   */
+  get parameters(): ChainParameters | undefined {
+    return this.#parameters;
   }
 
   /** Calls `listener` on every new tip; answers a function that removes it. */
@@ -223,6 +232,7 @@ export class Relay {
     this.#socket = undefined;
     this.#queue = [];
     this.#tip = undefined;
+    this.#parameters = undefined;
     this.#stopReconnecting();
     socket?.close(1000);
     for (const history of this.#histories) history.close();
@@ -392,6 +402,7 @@ export class Relay {
     if (typeof message !== "object" || message === null) return;
     if (message.type === "tip") {
       const tip = { height: message.height, headerId: message.headerId };
+      if (message.parameters !== undefined) this.#parameters = message.parameters;
       this.#tip = tip;
       for (const listener of this.#tipListeners) call(listener, tip);
       return;

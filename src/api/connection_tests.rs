@@ -13,17 +13,20 @@ use tokio::{task::JoinHandle, time::sleep};
 use super::*;
 use crate::{
     adapters::{BoxCache, BoxFetcher, EngineHandle, Follower, HeaderReader, Loader, TokenChecker},
-    api::{Balances, Boxes, Headers, History, KeyPolicy, Pages, Tokens, Transactions, ws::Closed},
+    api::{
+        Balances, Boxes, Headers, History, KeyPolicy, Pages, Tokens, Transactions,
+        wire::ParametersBody, ws::Closed,
+    },
     engine::{self, Engine, Event, Query, Reply},
     runtime::{Clock, ManualClock, Settled, settling, spawn_with_clock},
     sim::{
-        Chain, Endpoint, SimChain, SimConfig, script_template,
+        Chain, Endpoint, MAINNET_PARAMETERS, SimChain, SimConfig, script_template,
         testing::{BLOCK_TIME, blocks},
         token_id,
     },
     types::{
         address::{self, Network},
-        ergo::BoxId,
+        ergo::{BoxId, Parameters},
     },
 };
 
@@ -280,7 +283,8 @@ impl Client {
                 Some(Message::Text(text)) => {
                     let message: Value = serde_json::from_str(&text).unwrap();
                     if message["type"] == "tip" {
-                        assert_eq!(message.as_object().unwrap().len(), 3, "{message}");
+                        let fields = 3 + usize::from(message.get("parameters").is_some());
+                        assert_eq!(message.as_object().unwrap().len(), fields, "{message}");
                         self.tips
                             .push(block_ref(&message["height"], &message["headerId"]));
                         if !self.keep_tips {
@@ -649,6 +653,38 @@ async fn a_subscription_with_from_to_an_untracked_key_is_not_tracked() {
     assert_eq!(messages[0]["reason"], "not_tracked");
     assert_eq!(messages[0]["id"], 4);
     assert!(!f.tracked(&f.tree_key(1)).await, "not loaded");
+}
+
+/// The parameters ride on a connection's first tip and, after that, only on the tip after they
+/// change.
+#[tokio::test(start_paused = true)]
+async fn the_parameters_ride_on_the_first_tip_and_after_each_change() {
+    let mut f = Fixture::new().await;
+    let mut client = f.connect();
+    client.keep_tips = true;
+    let first = client.texts().await;
+    assert_eq!(types(&first), ["tip"]);
+    let rest = serde_json::to_value(ParametersBody(&MAINNET_PARAMETERS)).unwrap();
+    assert_eq!(first[0]["parameters"], rest);
+
+    f.mine(0).await;
+    let next = client.texts().await;
+    assert_eq!(types(&next), ["tip"]);
+    assert!(next[0].get("parameters").is_none(), "unchanged: left out");
+
+    // A new epoch: the node's parameters change with the block that opens it.
+    let epoch = Parameters { height: MAINNET_PARAMETERS.height + 1024, ..MAINNET_PARAMETERS };
+    f.sim.lock().set_parameters(epoch);
+    f.mine(1).await;
+    let changed = client.texts().await;
+    assert_eq!(changed[0]["parameters"]["height"], epoch.height);
+    f.mine(2).await;
+    assert!(client.texts().await[0].get("parameters").is_none());
+
+    // A new connection gets them on its first tip, changed or not.
+    let mut late = f.connect();
+    late.keep_tips = true;
+    assert_eq!(late.texts().await[0]["parameters"]["height"], epoch.height);
 }
 
 /// A connection's first message is the tip, subscribed or not, and each block brings the new
@@ -1037,14 +1073,17 @@ async fn a_refused_replace_ends_the_old_subscription() {
     assert!(client.closed.is_none());
 }
 
-/// A connection built by hand, for the cases the simulator can't time, with the tip as it is
-/// taken as sent; `tip.mark_changed()` makes it unsent.
+/// A connection built by hand, for the cases the simulator can't time, with the tip and the
+/// parameters as they are taken as sent; `tip.mark_changed()` makes the tip unsent.
 fn connection<K: Socket>(f: &Fixture, socket: K) -> Connection<SimChain, K> {
     let mut tip = f.engine.tip();
     tip.borrow_and_update();
+    let mut parameters = f.api.parameters.clone();
+    parameters.borrow_and_update();
     Connection {
         api: f.api.clone(),
         tip,
+        parameters,
         config: Config::default(),
         socket,
         keys: HashMap::new(),

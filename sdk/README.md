@@ -75,7 +75,8 @@ Several holds on one key share its subscription, so components can each open the
 hold replaces a balance-only subscription; the key is unsubscribed when its last hold closes.
 
 `relay.tip` is the relay's tip, the block every box and balance it serves is at, and
-`relay.onTip(listener)` sees each new one.
+`relay.onTip(listener)` sees each new one. `parameters` are the chain's parameters, for
+building txs, which come with the tip and stay current with it.
 
 ### History
 
@@ -104,11 +105,11 @@ the route's JSON as it came, amounts as base-10 strings:
 | -------------------------------------- | --------------------------------------------- |
 | `status()`                             | `GET /v1/status`                              |
 | `parameters()`                         | `GET /v1/parameters`                          |
+| `headers({ limit })`                   | `GET /v1/headers`                             |
 | `boxes(key, { cursor, limit })`        | `GET /v1/{addresses,tokens}/{key}/boxes`      |
 | `spendable(address)`                   | `GET /v1/addresses/{address}/boxes/spendable` |
 | `balance(address)`                     | `GET /v1/addresses/{address}/balance`         |
 | `history(address, { cursor, limit })`  | `GET /v1/addresses/{address}/transactions`    |
-| `headers({ limit })`                   | `GET /v1/headers`                             |
 | `box(boxId)`                           | `GET /v1/boxes/{boxId}`                       |
 | `tokens(ids)`                          | `GET /v1/tokens/metadata?ids=...`             |
 | `submitTransaction(tx, { broadcast })` | `POST /v1/transactions`                       |

@@ -3,6 +3,19 @@ import { Relay, type SubscriptionState } from "../src/index.ts";
 import { FakeSocket } from "./fake-socket.ts";
 
 const key = { address: "9fAddress" };
+const parameters = {
+  height: 1024,
+  blockVersion: 4,
+  storageFeeFactor: 1250000,
+  minValuePerByte: 360,
+  maxBlockSize: 1271009,
+  maxBlockCost: 8001091,
+  tokenAccessCost: 100,
+  inputCost: 2407,
+  dataInputCost: 100,
+  outputCost: 298,
+  subblocksPerBlock: 30,
+};
 const at = (height: number) => ({ height, headerId: height.toString(16).padStart(64, "0") });
 const balance = (height: number, nanoErgs: number) => ({
   type: "balance",
@@ -360,13 +373,28 @@ test("the socket is under the same root as the routes", () => {
   relay.close();
 });
 
-test("closing the relay forgets its tip", async () => {
+test("closing the relay forgets its tip and parameters", async () => {
   const relay = new Relay("http://relay", { WebSocket: Socket });
   const { socket } = await liveBalance(relay);
-  socket.deliver({ type: "tip", ...at(10) });
+  socket.deliver({ type: "tip", ...at(10), parameters });
   expect(relay.tip).toEqual(at(10));
+  expect(relay.parameters).toEqual(parameters);
   relay.close();
   expect(relay.tip).toBeUndefined();
+  expect(relay.parameters).toBeUndefined();
+});
+
+test("the parameters are the last a tip carried", async () => {
+  const relay = new Relay("http://relay", { WebSocket: Socket });
+  const { socket } = await liveBalance(relay);
+  expect(relay.parameters).toBeUndefined();
+  socket.deliver({ type: "tip", ...at(10), parameters });
+  socket.deliver({ type: "tip", ...at(11) });
+  expect(relay.parameters).toEqual(parameters);
+  const next = { ...parameters, height: parameters.height + 1024 };
+  socket.deliver({ type: "tip", ...at(12), parameters: next });
+  expect(relay.parameters).toEqual(next);
+  relay.close();
 });
 
 test("subscribe calls at once with the state, then on changes, never twice with one state", async () => {

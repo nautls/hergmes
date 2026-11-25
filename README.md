@@ -194,7 +194,8 @@ Responses:
 
 The server sends:
 
-- `tip` on connect and whenever the tip changes;
+- `tip` on connect and whenever the tip changes, with the chain's `parameters` (as on
+  `/v1/parameters`) on the first and whenever they change;
 - `subscribed`, `rejected` or `resync_required` in answer to a subscribe, echoing its `id`;
 - `block` and `rollback` when a block changes the key's boxes, then `mempool` and `balance`
   updates.
