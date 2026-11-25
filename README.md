@@ -174,8 +174,9 @@ Responses:
   pending txs spend, plus those they create. To follow an address live, use `/boxes` and the
   WebSocket.
 - A pending tx is Fleet's `SignedTransaction`, each input also the box it spends. A tx just
-  sent is found once the relay's mempool poll sees it: usually within a second or two, longer
-  around a new block. Until then, and once it is confirmed or dropped, it is
+  sent is found once the relay's mempool poll sees it. A tx sent through the relay has that
+  poll come right after the node takes it; others wait for the next. Usually within a second or
+  two, longer around a new block. Until then, and once it is confirmed or dropped, it is
   `404 transaction_not_found`. For about a second after a chain reorganization the relay has
   no mempool view, and answers `503 not_ready`.
 - A template is an ErgoTree's bytes after its header and constants, in hex. Only trees with

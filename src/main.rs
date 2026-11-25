@@ -139,7 +139,8 @@ async fn run(flag: Option<PathBuf>) -> Result<(), AppError> {
     let follower = Follower::new(node.clone(), config.follower);
     let started = follower.started();
     let parameters = follower.parameters();
-    // For the loads that find the engine behind the node, so they don't wait for a tick.
+    // For the loads that find the engine behind the node, so they don't wait for a tick, and
+    // for a sent tx, so its mempool poll doesn't either.
     let wake = follower.waker();
     // Filled by the follower with the headers of the blocks it applies.
     let headers = HeaderReader::new(node.clone(), follower.headers());
@@ -172,12 +173,12 @@ async fn run(flag: Option<PathBuf>) -> Result<(), AppError> {
             .waiting_for(settled.clone()),
         balances: Balances::new(node.clone(), Default::default())
             .waiting_for(settled)
-            .waking(wake),
+            .waking(wake.clone()),
         history: History::new(node.clone(), Default::default()),
         headers: Headers::new(headers),
         boxes: Boxes::new(node.clone()),
         tokens: Tokens::new(node.clone()),
-        transactions: Transactions::new(node.clone()),
+        transactions: Transactions::new(node.clone()).waking(wake),
         network: node.network(),
         policy,
         started,

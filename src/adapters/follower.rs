@@ -12,7 +12,8 @@
 //!
 //! A load that finds the engine behind the node wakes the follower for an early tick (see
 //! [`Wake`]), so a block reaches the engine when a client is waiting for it, without reading
-//! the node more often when none is.
+//! the node more often when none is. So does a tx the node takes from a client, so the pool
+//! with it reaches the engine early too.
 
 use std::{sync::Arc, time::Duration};
 
@@ -39,9 +40,10 @@ pub struct Config {
     /// How often `/info` is read.
     pub interval: Duration,
     /// The least time from the end of a tick to a tick a [`Wake`] asks for. A wake comes from
-    /// a load that found the engine behind the node, and loads keep finding it so while the
-    /// indexer lags after a block, so without it the follower would read the node back to back
-    /// when the node is slowest. Counted from the end, so a slow `/info` doesn't shorten it.
+    /// a sent tx, or from a load that found the engine behind the node. Loads keep finding it
+    /// so while the indexer lags after a block, so without the gap the follower would read the
+    /// node back to back when the node is slowest. Counted from the end, so a slow `/info`
+    /// doesn't shorten it.
     pub wake_gap: Duration,
     pub mempool: mempool::Config,
 }
@@ -60,8 +62,9 @@ impl Default for Config {
 ///
 /// The engine learns of a block only from the follower, while a load reads the node's tip
 /// itself, so right after a block a load sees it first and would wait up to an interval for
-/// the engine. It wakes the follower instead. Wakes made before the follower gets to them
-/// count as one. A `Wake` made with `default` reaches no follower.
+/// the engine. It wakes the follower instead, as does a tx the node takes from a client, which
+/// would otherwise wait up to an interval for its mempool poll. Wakes made before the follower
+/// gets to them count as one. A `Wake` made with `default` reaches no follower.
 #[derive(Debug, Clone, Default)]
 pub struct Wake(Arc<Notify>);
 
