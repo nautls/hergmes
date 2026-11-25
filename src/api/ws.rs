@@ -62,7 +62,7 @@ pub struct Config {
 
 impl Default for Config {
     fn default() -> Self {
-        Self { max_subscriptions: 100 }
+        Self { max_subscriptions: 200 }
     }
 }
 
