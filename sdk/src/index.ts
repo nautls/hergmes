@@ -41,6 +41,8 @@ export type {
   HistoryPage,
   Key,
   ChainParameters,
+  MempoolInput,
+  MempoolTransaction,
   PoolBox,
   Status,
   Submitted,

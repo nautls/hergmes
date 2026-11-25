@@ -233,6 +233,20 @@ impl Mempool {
         created.map(|b| PoolBox::Created(Arc::new(b.clone())))
     }
 
+    /// Tx `id` if the snapshot in use has it among the txs valid at the tip; `None` without
+    /// a snapshot. A scan, as [`Mempool::pool_box`] is: a read of one tx is rare next to a
+    /// snapshot, and an index would be rebuilt with each.
+    pub fn pool_tx(&self, id: &TxId) -> Option<Option<UnconfirmedTransaction>> {
+        let s = self.snapshot.as_ref()?;
+        Some(
+            s.order
+                .iter()
+                .map(|&i| &s.txs[i])
+                .find(|tx| tx.id == *id)
+                .cloned(),
+        )
+    }
+
     /// `key`'s overlay, tracked or not. Empty without a snapshot.
     pub fn overlay(&self, key: &TrackingKey) -> Vec<PendingTx> {
         match &self.snapshot {

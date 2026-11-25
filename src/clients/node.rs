@@ -10,8 +10,8 @@ use crate::{
         address::{self, Network, UnknownNetwork},
         ergo::{
             AddressTransactions, Balance, BalanceResponse, BlockHeader, BoxById, BoxId, ErgoTree,
-            HeaderId, IndexedBlock, IndexedBox, IndexedToken, NodeBox, Parameters, TemplateHash,
-            TokenId, TokenInfo, TxId, UTxO, UnconfirmedTransaction,
+            HeaderId, IndexedBlock, IndexedBox, IndexedToken, NodeBox, Parameters, SpendingProof,
+            TemplateHash, TokenId, TokenInfo, TxId, UTxO, UnconfirmedTransaction,
         },
     },
 };
@@ -94,36 +94,56 @@ pub struct NodeClient {
 }
 
 /// A pool tx as `/transactions/unconfirmed` lists it: inputs the node could not resolve are
-/// `None` (only `boxId` and `spendingProof` are sent).
+/// `None` (only `boxId` and `spendingProof` are sent). Data inputs are ids only
+/// (`TransactionsApiRoute.createTransactionWithResolvedInputs`).
 #[derive(Debug, Clone, Deserialize)]
 pub(crate) struct MempoolTransactionResponse {
     pub id: TxId,
     pub inputs: Vec<MempoolTransactionInput>,
+    #[serde(rename = "dataInputs")]
+    pub data_inputs: Vec<DataInput>,
     pub outputs: Vec<UTxO>,
 }
 
-/// `None` unless every field of a box is there: the node sends only `boxId` and
-/// `spendingProof` for an input it could not resolve. A field that is there but malformed
-/// fails the whole list, as a malformed output does: it is the node's fault, not an
-/// unresolved input.
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct DataInput {
+    #[serde(rename = "boxId")]
+    pub id: BoxId,
+}
+
+/// The box is `None` unless every field of a box is there: the node sends only `boxId` and
+/// `spendingProof` for an input it could not resolve. A field that is there but malformed,
+/// or a missing proof, fails the whole list, as a malformed output does: the node writes a
+/// proof for every input (`createTransactionWithResolvedInputs`), so it is the node's fault,
+/// not an unresolved input.
 #[derive(Debug, Clone)]
 pub(crate) struct MempoolTransactionInput {
     pub utxo: Option<UTxO>,
+    pub proof: SpendingProof,
 }
 
 impl<'de> Deserialize<'de> for MempoolTransactionInput {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        Ok(Self { utxo: UTxO::try_from(NodeBox::deserialize(deserializer)?).ok() })
+        let mut read = NodeBox::<SpendingProof>::deserialize(deserializer)?;
+        let proof = (read.spending_proof.take())
+            .ok_or_else(|| serde::de::Error::missing_field("spendingProof"))?;
+        Ok(Self { utxo: UTxO::try_from(read).ok(), proof })
     }
 }
 
 impl MempoolTransactionResponse {
     /// The tx with its inputs, or its outputs if the node could not resolve any input.
     fn resolve(self) -> Result<UnconfirmedTransaction, Vec<UTxO>> {
-        match self.inputs.into_iter().map(|i| i.utxo).collect() {
-            Some(inputs) => {
-                Ok(UnconfirmedTransaction { id: self.id, inputs, outputs: self.outputs })
-            }
+        let (utxos, proofs): (Vec<_>, Vec<_>) =
+            self.inputs.into_iter().map(|i| (i.utxo, i.proof)).unzip();
+        match utxos.into_iter().collect() {
+            Some(inputs) => Ok(UnconfirmedTransaction {
+                id: self.id,
+                inputs,
+                proofs,
+                data_inputs: self.data_inputs.into_iter().map(|d| d.id).collect(),
+                outputs: self.outputs,
+            }),
             None => Err(self.outputs),
         }
     }

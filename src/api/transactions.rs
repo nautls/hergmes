@@ -1,16 +1,19 @@
 //! The transaction service: a signed tx, serialized, handed to the node to validate and
-//! broadcast, or only to validate.
+//! broadcast, or only to validate; and a pending tx read by id.
 //!
-//! The relay holds no tx type. It checks only that the body is hex within the node's size
-//! limit and forwards it unparsed; the node validates everything. No key policy and no
-//! engine: a broadcast tx reaches the overlay at the next mempool poll, like any other.
+//! A sent tx is not parsed. The relay checks only that the body is hex within the node's
+//! size limit and forwards it; the node validates everything. No key policy and no engine: a
+//! broadcast tx reaches the overlay at the next mempool poll, like any other, and only then
+//! can it be read back.
 
 use reqwest::StatusCode;
 
 use crate::{
-    api::ApiError,
+    adapters::EngineHandle,
+    api::{ApiError, http::DEFAULT_RETRY},
     clients::{NodeError, NodeSource},
-    types::ergo::TxId,
+    engine::{Query, Reply},
+    types::ergo::{TxId, UnconfirmedTransaction},
 };
 
 /// The node's default largest tx, in bytes (node 6.0.8, `maxTransactionSize` in
@@ -161,6 +164,26 @@ impl<S: NodeSource> Transactions<S> {
             }
             Err(error) => Err((&error).into()),
         }
+    }
+}
+
+/// Tx `id` if it is pending as the relay sees it: in the engine's pool snapshot, among the
+/// txs valid at its tip, so it is pending where the relay's boxes and balances say so. One
+/// engine query and no node call. `not_ready` while the engine has no snapshot, which can't
+/// tell a pending tx from any other: before the first, and after a revert until the next,
+/// which the poller fetches at once since the tip changed (`Mempool::block_reverted`).
+///
+/// Not the node's `/transactions/unconfirmed/byTransactionId`: a node call per read, and the
+/// node's pool can list a tx the relay's view leaves out.
+pub async fn pending(
+    engine: &impl EngineHandle,
+    id: &TxId,
+) -> Result<UnconfirmedTransaction, ApiError> {
+    match engine.query(Query::PoolTx(*id)).await? {
+        Reply::PoolTx(Some(Some(tx))) => Ok(tx),
+        Reply::PoolTx(Some(None)) => Err(ApiError::TransactionNotFound),
+        Reply::PoolTx(None) => Err(ApiError::NotReady { retry_after: DEFAULT_RETRY }),
+        other => unreachable!("`Query::PoolTx` answered {other:?}"),
     }
 }
 

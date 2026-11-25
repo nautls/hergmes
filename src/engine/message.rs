@@ -98,6 +98,9 @@ pub enum Query {
     /// of it spends or creates the box, or there is none. Its txs are the ones the overlay
     /// uses, valid at the tip. Not activity for any key.
     PoolBox(BoxId),
+    /// One tx of the snapshot in use, among the txs the overlay uses, valid at the tip. Not
+    /// activity for any key.
+    PoolTx(TxId),
     MempoolSnapshot,
     /// The messages that bring a client from `from` to the tip: replayed blocks or
     /// rollbacks, then the overlay and the balance, or a resync. Without `from` (a
@@ -128,6 +131,9 @@ pub enum Reply {
     Chain(Vec<ChainLink>),
     Boxes(Vec<Arc<UTxO>>),
     PoolBox(Option<PoolBox>),
+    /// `None` without a snapshot in use, so a tx can't be said to be pending or not; `Some`
+    /// of the tx if the snapshot has it.
+    PoolTx(Option<Option<UnconfirmedTransaction>>),
     MempoolSnapshot(Option<(Arc<[UnconfirmedTransaction]>, BlockRef)>),
     CatchUp(Vec<Output>),
     Stats(Stats),

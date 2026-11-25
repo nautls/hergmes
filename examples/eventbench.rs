@@ -63,6 +63,8 @@ fn snapshot(paid: std::ops::Range<u64>, variant: u64) -> Arc<[UnconfirmedTransac
         .map(|t| UnconfirmedTransaction {
             id: digest(POOL_IDS + 3 * t),
             inputs: vec![plain_box(POOL_IDS + 3 * t + 1, &stranger)],
+            proofs: vec![Default::default()],
+            data_inputs: Vec::new(),
             outputs: vec![plain_box(POOL_IDS + 3 * t + 2, &stranger)],
         })
         .collect();
@@ -70,6 +72,8 @@ fn snapshot(paid: std::ops::Range<u64>, variant: u64) -> Arc<[UnconfirmedTransac
     txs.extend(paid.map(|k| UnconfirmedTransaction {
         id: digest(base + 3 * k),
         inputs: vec![plain_box(base + 3 * k + 1, &stranger)],
+        proofs: vec![Default::default()],
+        data_inputs: Vec::new(),
         outputs: vec![plain_box(base + 3 * k + 2, &tree(k))],
     }));
     txs.into()

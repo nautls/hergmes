@@ -185,6 +185,23 @@ describe(`the REST routes against the oracle (SEED=${String(SEED)})`, () => {
         for (const box of [confirmedBox, pendingBox]) {
           if (box) expect(await client.box(box.boxId), keyContext).toEqual(box);
         }
+        // A pending tx by id spends and creates what it does for the key, in the wire shape.
+        for (const pending of expected.pending) {
+          const tx = await client.mempoolTransaction(pending.txId);
+          // Fleet takes it as it is.
+          const signed: SignedTransaction = tx;
+          expect(signed.id, keyContext).toBe(pending.txId);
+          expect(tx.id, keyContext).toBe(pending.txId);
+          const inputs = tx.inputs.map((input) => input.boxId);
+          expect(inputs, keyContext).toEqual(expect.arrayContaining(pending.spent));
+          expect(tx.outputs, keyContext).toEqual(expect.arrayContaining(pending.created));
+          for (const input of tx.inputs) {
+            expect(input.spendingProof, keyContext).toEqual({
+              proofBytes: input.boxId,
+              extension: {},
+            });
+          }
+        }
         const spentByPool = expected.pending.flatMap((tx) => tx.spent)[0];
         if (spentByPool) {
           const error = await rejection(client.box(spentByPool));
@@ -229,6 +246,7 @@ describe("errors", () => {
       [() => client.balance("nope"), 400, "invalid_address"],
       [() => client.boxes({ tokenId: "nope" }), 400, "invalid_token_id"],
       [() => client.box("nope"), 400, "invalid_box_id"],
+      [() => client.mempoolTransaction("nope"), 400, "invalid_transaction_id"],
       [() => client.tokens(["nope"]), 400, "invalid_token_id"],
       [() => client.boxes({ address }, { limit: 0 }), 400, "invalid_limit"],
       [() => client.boxes({ address }, { limit: 1001 }), 400, "invalid_limit"],
@@ -237,6 +255,7 @@ describe("errors", () => {
       [() => client.boxes({ address }, { cursor: "garbage" }), 400, "invalid_cursor"],
       [() => client.boxes({ tokenId: id }), 404, "unknown_token"],
       [() => client.box(id), 404, "box_not_found"],
+      [() => client.mempoolTransaction(id), 404, "transaction_not_found"],
     ];
     // An over-supply token the indexer knows: one minted in the pool only, or on an orphaned
     // branch, is `unknown_token` instead.

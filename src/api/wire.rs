@@ -25,7 +25,10 @@ use crate::{
         HexBytes,
         address::Network,
         eip4::{Eip4, Standard},
-        ergo::{HeaderId, NonMandatoryRegisters, Parameters, TokenId, TokenMetadata, TxId, UTxO},
+        ergo::{
+            BoxId, HeaderId, NonMandatoryRegisters, Parameters, SpendingProof, TokenId,
+            TokenMetadata, TxId, UTxO, UnconfirmedTransaction,
+        },
     },
 };
 
@@ -53,27 +56,35 @@ impl<'a> From<&'a StoredBox> for WireBox<'a> {
 
 impl Serialize for WireBox<'_> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let u = self.utxo;
-        let fields = if self.inclusion_height.is_some() { 9 } else { 8 };
+        let fields = BOX_FIELDS + usize::from(self.inclusion_height.is_some());
         let mut s = serializer.serialize_struct("Box", fields)?;
-        s.serialize_field("boxId", &u.id)?;
-        s.serialize_field("transactionId", &u.transaction_id)?;
-        s.serialize_field("index", &u.index)?;
-        s.serialize_field("ergoTree", &u.ergo_tree)?;
-        s.serialize_field("creationHeight", &u.creation_height)?;
-        s.serialize_field("value", &Amount(u.value))?;
-        let assets: Vec<_> = u
-            .tokens
-            .iter()
-            .map(|t| TokenAmount { token_id: &t.id, amount: Amount(t.amount) })
-            .collect();
-        s.serialize_field("assets", &assets)?;
-        s.serialize_field("additionalRegisters", &Registers(&u.registers))?;
+        box_fields(&mut s, self.utxo)?;
         if let Some(height) = self.inclusion_height {
             s.serialize_field("inclusionHeight", &height)?;
         }
         s.end()
     }
+}
+
+/// How many fields [`box_fields`] writes.
+const BOX_FIELDS: usize = 8;
+
+/// The fields of Fleet's `Box<string>`.
+fn box_fields<S: SerializeStruct>(s: &mut S, u: &UTxO) -> Result<(), S::Error> {
+    s.serialize_field("boxId", &u.id)?;
+    s.serialize_field("transactionId", &u.transaction_id)?;
+    s.serialize_field("index", &u.index)?;
+    s.serialize_field("ergoTree", &u.ergo_tree)?;
+    s.serialize_field("creationHeight", &u.creation_height)?;
+    s.serialize_field("value", &Amount(u.value))?;
+    let assets: Vec<_> = u
+        .tokens
+        .iter()
+        .map(|t| TokenAmount { token_id: &t.id, amount: Amount(t.amount) })
+        .collect();
+    s.serialize_field("assets", &assets)?;
+    s.serialize_field("additionalRegisters", &Registers(&u.registers))?;
+    Ok(())
 }
 
 /// A token and an amount: a box's `assets` and a balance's `tokens` alike.
@@ -293,6 +304,80 @@ impl Serialize for BoxBody<'_> {
         let found = self.0;
         WireBox { utxo: &found.utxo, inclusion_height: found.inclusion_height }
             .serialize(serializer)
+    }
+}
+
+/// `GET /v1/mempool/transactions/{txId}`: Fleet's `SignedTransaction`, its inputs also the
+/// boxes they spend. No `size` or `cost`: the relay keeps neither.
+pub struct MempoolTransactionBody<'a>(pub &'a UnconfirmedTransaction);
+
+impl Serialize for MempoolTransactionBody<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let tx = self.0;
+        debug_assert_eq!(tx.inputs.len(), tx.proofs.len(), "a proof per input");
+        let inputs: Vec<_> = (tx.inputs.iter().zip(&tx.proofs))
+            .map(|(utxo, proof)| WireInput { utxo, proof })
+            .collect();
+        let data_inputs: Vec<_> = tx
+            .data_inputs
+            .iter()
+            .map(|id| DataInput { box_id: id })
+            .collect();
+        let outputs: Vec<_> = (tx.outputs.iter())
+            .map(|utxo| WireBox { utxo, inclusion_height: None })
+            .collect();
+        let mut s = serializer.serialize_struct("Transaction", 4)?;
+        s.serialize_field("id", &tx.id)?;
+        s.serialize_field("inputs", &inputs)?;
+        s.serialize_field("dataInputs", &data_inputs)?;
+        s.serialize_field("outputs", &outputs)?;
+        s.end()
+    }
+}
+
+/// A pool tx's input: Fleet's `SignedInput` and the box it spends, which a pool tx's input
+/// carries in the node's listing too.
+struct WireInput<'a> {
+    utxo: &'a UTxO,
+    proof: &'a SpendingProof,
+}
+
+impl Serialize for WireInput<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut s = serializer.serialize_struct("Input", BOX_FIELDS + 1)?;
+        box_fields(&mut s, self.utxo)?;
+        s.serialize_field("spendingProof", &WireProof(self.proof))?;
+        s.end()
+    }
+}
+
+#[derive(Serialize)]
+struct DataInput<'a> {
+    #[serde(rename = "boxId")]
+    box_id: &'a BoxId,
+}
+
+/// Fleet's `ProverResult`, as the node writes it: the extension's ids are keys, in decimal.
+struct WireProof<'a>(&'a SpendingProof);
+
+impl Serialize for WireProof<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut s = serializer.serialize_struct("ProverResult", 2)?;
+        s.serialize_field("proofBytes", &self.0.proof_bytes)?;
+        s.serialize_field("extension", &Extension(&self.0.extension))?;
+        s.end()
+    }
+}
+
+struct Extension<'a>(&'a [(i8, HexBytes)]);
+
+impl Serialize for Extension<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut m = serializer.serialize_map(Some(self.0.len()))?;
+        for (id, value) in self.0 {
+            m.serialize_entry(&id.to_string(), value)?;
+        }
+        m.end()
     }
 }
 

@@ -33,8 +33,8 @@ use crate::{
         ergo::{
             AddressTransaction, AddressTransactions, Balance, BlockHeader, BoxAssets, BoxById,
             BoxId, ErgoTree, GENESIS_PARENT_ID, HeaderId, IndexedBlock, IndexedBox, IndexedToken,
-            IndexedTransaction, NonMandatoryRegisters, Parameters, Token, TokenBalance, TokenId,
-            TokenInfo, TxId, UTxO, UnconfirmedTransaction,
+            IndexedTransaction, NonMandatoryRegisters, Parameters, SpendingProof, Token,
+            TokenBalance, TokenId, TokenInfo, TxId, UTxO, UnconfirmedTransaction,
         },
         ergo_tree,
     },
@@ -144,9 +144,17 @@ impl SimTx {
         UnconfirmedTransaction {
             id: self.id,
             inputs: self.inputs.iter().map(|b| (**b).clone()).collect(),
+            proofs: self.inputs.iter().map(|b| proof(b)).collect(),
+            data_inputs: Vec::new(),
             outputs: self.outputs.iter().map(|b| (**b).clone()).collect(),
         }
     }
+}
+
+/// The proof the simulator writes for spending `b`: its id as the proof bytes, so a test can
+/// tell which input a proof went with. Nothing checks it.
+pub fn proof(b: &UTxO) -> SpendingProof {
+    SpendingProof { proof_bytes: b.id.0.to_vec().into(), extension: Box::new([]) }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -800,8 +808,10 @@ impl Chain {
                     .map(|i| MempoolTransactionInput {
                         utxo: (self.node.unspent.contains_key(&i.id) || produced.contains(&i.id))
                             .then(|| (**i).clone()),
+                        proof: proof(i),
                     })
                     .collect(),
+                data_inputs: Vec::new(),
                 outputs: tx.outputs.iter().map(|o| (**o).clone()).collect(),
             })
             .collect()

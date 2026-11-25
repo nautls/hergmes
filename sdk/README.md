@@ -113,6 +113,7 @@ the route's JSON as it came, amounts as base-10 strings:
 | `box(boxId)`                           | `GET /v1/boxes/{boxId}`                       |
 | `tokens(ids)`                          | `GET /v1/tokens/metadata?ids=...`             |
 | `submitTransaction(tx, { broadcast })` | `POST /v1/transactions`                       |
+| `mempoolTransaction(txId)`             | `GET /v1/mempool/transactions/{txId}`         |
 
 `tokens` answers the metadata of the tokens the relay's node knows among `ids`, leaving out the
 others; more than 100 ids take a request per 100, one after another.
@@ -131,6 +132,12 @@ serializes. With `broadcast: false` the node only checks it.
 ```ts
 const { transactionId } = await relay.rest.submitTransaction(signedTx);
 ```
+
+`mempoolTransaction` answers a pending tx as Fleet's `SignedTransaction`, each input also the
+box it spends. A tx just sent is found once the relay's mempool poll sees it: usually within a
+second or two, longer around a new block. Until then, and once it is confirmed or dropped, it
+is `transaction_not_found`. For about a second after a chain reorganization the relay has no
+mempool view and answers `not_ready`, which the client retries.
 
 Every method takes a `signal` to cancel it. A response other than 2xx throws a `RelayError`
 with its `status`, `code`, `reason` (why the node refused a tx) and `retryAfter`. A `503` is

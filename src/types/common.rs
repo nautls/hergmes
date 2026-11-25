@@ -75,7 +75,7 @@ impl<const N: usize> Serialize for Digest<N> {
 /// Bytes represented as a hex string in serialization. Shared, not owned: a clone is a
 /// reference count, so an ErgoTree the engine indexes under several maps is stored once, and
 /// a contract's tree (often kilobytes) is not paid for per map.
-#[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Clone, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct HexBytes(pub Arc<[u8]>);
 
 impl From<Vec<u8>> for HexBytes {

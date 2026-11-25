@@ -290,3 +290,48 @@ fn a_token_has_its_eip4_fields_only_under_eip4() {
         )
     );
 }
+
+/// A pool tx is the node's listing of it, less `size` and `cost`: the same proofs and data
+/// inputs, and boxes in the wire shape, so amounts are strings.
+#[test]
+fn a_mempool_tx_is_the_nodes_listing_in_the_wire_shape() {
+    let listed: Vec<serde_json::Value> = crate::fixtures::load("mempool");
+    let txs = crate::clients::node::filter_out_unresolved(crate::fixtures::load("mempool"));
+    for (tx, raw) in txs.iter().zip(&listed) {
+        let body: serde_json::Value =
+            serde_json::from_str(&json(MempoolTransactionBody(tx))).unwrap();
+        let keys: Vec<&str> = body
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(|k| k.as_str())
+            .collect();
+        assert_eq!(keys, ["dataInputs", "id", "inputs", "outputs"]);
+        assert_eq!(body["id"], raw["id"]);
+        assert_eq!(body["dataInputs"], raw["dataInputs"]);
+        let sides = [("inputs", &tx.inputs), ("outputs", &tx.outputs)];
+        for (side, boxes) in sides {
+            let (wire, node) = (body[side].as_array().unwrap(), raw[side].as_array().unwrap());
+            assert_eq!(wire.len(), node.len());
+            for ((wire, node), utxo) in wire.iter().zip(node).zip(boxes) {
+                let mut expected: serde_json::Value =
+                    serde_json::from_str(&json(WireBox { utxo, inclusion_height: None })).unwrap();
+                if side == "inputs" {
+                    assert_eq!(wire["spendingProof"], node["spendingProof"]);
+                    expected["spendingProof"] = node["spendingProof"].clone();
+                }
+                assert_eq!(wire, &expected);
+            }
+        }
+    }
+}
+
+/// Extension ids are decimal keys, negative ones included, as the node writes them.
+#[test]
+fn a_proofs_extension_is_keyed_by_signed_id() {
+    let proof = SpendingProof {
+        proof_bytes: HexBytes::from(vec![0xab]),
+        extension: Box::new([(-1, HexBytes::from(vec![0x04, 0x00])), (5, HexBytes::default())]),
+    };
+    assert_eq!(json(WireProof(&proof)), r#"{"proofBytes":"ab","extension":{"-1":"0400","5":""}}"#);
+}

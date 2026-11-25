@@ -1,6 +1,9 @@
 use std::sync::Arc;
 
-use serde::{Deserialize, Deserializer, Serialize, de::Error};
+use serde::{
+    Deserialize, Deserializer, Serialize,
+    de::{Error, IgnoredAny},
+};
 use serde_json::value::RawValue;
 
 use crate::types::{Digest, HashDigest, HexBytes, eip4::Standard};
@@ -84,12 +87,33 @@ fn compact(json: &str) -> String {
     out
 }
 
-/// A mempool transaction with its input boxes resolved.
+/// A mempool transaction with its input boxes resolved. The proofs and data inputs are kept
+/// to serve the tx whole; the overlay reads only the boxes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnconfirmedTransaction {
     pub id: TxId,
     pub inputs: Vec<UTxO>,
+    pub proofs: Vec<SpendingProof>,
+    pub data_inputs: Vec<BoxId>,
     pub outputs: Vec<UTxO>,
+}
+
+/// An input's spending proof, as the node writes a `ProverResult` (sigmastate 6.0.7,
+/// `org.ergoplatform.sdk.JsonCodecs`, `proverResultEncoder` and `contextExtensionEncoder`).
+/// `proofBytes` is empty for a script that needs no proof, like a storage-rent claim's.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+pub struct SpendingProof {
+    #[serde(rename = "proofBytes")]
+    pub proof_bytes: HexBytes,
+    #[serde(deserialize_with = "extension")]
+    pub extension: Box<[(i8, HexBytes)]>,
+}
+
+fn extension<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Box<[(i8, HexBytes)]>, D::Error> {
+    let map = std::collections::BTreeMap::<i8, HexBytes>::deserialize(deserializer)?;
+    Ok(map.into_iter().collect())
 }
 
 /// A box. Read through [`NodeBox`], which names the node's fields for every box shape; the
@@ -179,15 +203,18 @@ impl<'de> Deserialize<'de> for BoxById {
 }
 
 /// Every field the relay reads of a box, in any of the node's shapes: a bare box, an indexed
-/// one, and a pool tx's input. Each shape is built from it, so the field names live here
-/// alone. Not `#[serde(flatten)]` for the shapes that add fields to a box: it buffers every
+/// one, and a pool tx's input, with its proof. Each shape is built from it, so the field
+/// names live here alone. Not `#[serde(flatten)]` for the shapes that add fields to a box: it buffers every
 /// box into a map before reading it, about twice the bytes allocated per box.
 ///
 /// Only `boxId` is required here; each shape requires what it needs. A pool tx's input the
 /// node could not resolve has only `boxId` and `spendingProof` (see
 /// `clients::node::MempoolTransactionInput`).
+///
+/// `P` is what is read of `spendingProof`: skipped unless a pool tx's input asks for it, since
+/// the indexer writes one on every box a tx spent.
 #[derive(Deserialize)]
-pub(crate) struct NodeBox {
+pub(crate) struct NodeBox<P = IgnoredAny> {
     #[serde(rename = "boxId")]
     id: BoxId,
     #[serde(rename = "ergoTree")]
@@ -207,6 +234,8 @@ pub(crate) struct NodeBox {
     /// `None` if absent, else whether it is set.
     #[serde(rename = "spentTransactionId", default, deserialize_with = "is_set")]
     spent: Option<bool>,
+    #[serde(rename = "spendingProof")]
+    pub(crate) spending_proof: Option<P>,
 }
 
 /// A field a box shape requires, absent.
@@ -219,10 +248,10 @@ impl std::fmt::Display for MissingField {
     }
 }
 
-impl TryFrom<NodeBox> for UTxO {
+impl<P> TryFrom<NodeBox<P>> for UTxO {
     type Error = MissingField;
 
-    fn try_from(b: NodeBox) -> Result<Self, MissingField> {
+    fn try_from(b: NodeBox<P>) -> Result<Self, MissingField> {
         let need = MissingField;
         Ok(UTxO {
             id: b.id,

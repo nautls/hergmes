@@ -168,6 +168,8 @@ fn mixed_pool(txs: usize, mix: &[HexBytes], variant: u64) -> Arc<[UnconfirmedTra
         .map(|t| UnconfirmedTransaction {
             id: digest(base + (1 << 30) + t as u64),
             inputs: boxes(t, 2, 0),
+            proofs: vec![Default::default(); 2],
+            data_inputs: Vec::new(),
             outputs: boxes(t, 3, 2),
         })
         .collect::<Vec<_>>()
