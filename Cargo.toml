@@ -2,7 +2,7 @@
 authors = ["Alison Oliveira <arobsn@proton.me>"]
 edition = "2024"
 name = "hergmes"
-version = "0.1.0"
+version = "0.2.0"
 
 [lib]
 path = "src/lib.rs"

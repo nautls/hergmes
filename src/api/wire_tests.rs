@@ -187,8 +187,8 @@ fn a_view_with_the_pool_lists_confirmed_boxes_then_pending_ones_and_says_if_it_w
     assert_eq!(json(SpendableBody(&cut)), body(true, 3));
 }
 
-/// A history: pending txs with no `height` or `timestamp`, signed amounts as strings, and no
-/// `asOf`.
+/// A history: pending txs with no `height` or `timestamp`, signed amounts as strings, a fee
+/// as a string and none without a fee output, and no `asOf`.
 #[test]
 fn a_history_page() {
     use crate::api::history::{HistoryItem, HistoryPage, Included};
@@ -201,11 +201,13 @@ fn a_history_page() {
                     nano_ergs: -(ABOVE_2_53 as i128),
                     tokens: BTreeMap::from([(digest(2), 3)]),
                 },
+                fee: Some(ABOVE_2_53),
             },
             HistoryItem {
                 tx_id: digest(4),
                 included: Some(Included { height: 12, timestamp: 1_731_600_000_000 }),
                 delta: PendingDelta::default(),
+                fee: None,
             },
         ],
         next_cursor: Some("abc".to_owned()),
@@ -215,7 +217,7 @@ fn a_history_page() {
         format!(
             concat!(
                 r#"{{"items":["#,
-                r#"{{"txId":"{tx1}","delta":{{"nanoErgs":"-9007199254740993","tokens":[{{"tokenId":"{token}","amount":"3"}}]}}}},"#,
+                r#"{{"txId":"{tx1}","delta":{{"nanoErgs":"-9007199254740993","tokens":[{{"tokenId":"{token}","amount":"3"}}]}},"fee":"9007199254740993"}},"#,
                 r#"{{"txId":"{tx4}","height":12,"timestamp":1731600000000,"delta":{{"nanoErgs":"0","tokens":[]}}}}"#,
                 r#"],"nextCursor":"abc"}}"#
             ),

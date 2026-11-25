@@ -117,10 +117,16 @@ test.each<[string, Verdict, SimOp]>([
   const sub = relay.subscribe(key);
   let tip = await sim.settle();
   await converged(sub, tip);
-  // A block above the key's load block, so a reorg of one block has something to undo.
-  await sim.ops([mine()]);
-  tip = await sim.settle();
-  await converged(sub, tip);
+  // A block above the key's load block that changes the key, so a reorg of one block has
+  // something of the key's to undo. Mined until one does: which boxes a block spends follows
+  // the simulator's box ids, which any change to its txs moves.
+  for (let blocks = 1; ; blocks++) {
+    await sim.ops([mine()]);
+    tip = await sim.settle();
+    await converged(sub, tip);
+    if (sub.state.boxes?.lastChange.height === tip.height) break;
+    if (blocks === 20) throw new Error("no block changed the key");
+  }
 
   filter.armed = true;
   await sim.ops([op]);

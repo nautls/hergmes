@@ -6,7 +6,7 @@
 
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
-    sync::Arc,
+    sync::{Arc, LazyLock},
 };
 
 use blake2::{Blake2b256, Digest as _};
@@ -216,11 +216,38 @@ pub fn tx_delta<B: Assets>(tree: &ErgoTree, inputs: &[B], outputs: &[B]) -> Opti
     touched.then_some(delta)
 }
 
-/// A pending tx as an address's history lists it: its id and its net change for the address.
+/// The miners' fee contract: `ErgoTreePredef.feeProposition(minerRewardDelay)`, which the
+/// node's wallet pays a tx's fee to (node 6.0.8, `TransactionBuilder.buildUnsignedTx`), with
+/// the delay of 720 blocks that mainnet and testnet both set (`minerRewardDelay` in
+/// `application.conf` and `testnet.conf`).
+static FEE_TREE: LazyLock<Box<[u8]>> = LazyLock::new(|| {
+    hex::decode(concat!(
+        "1005040004000e36100204a00b08cd0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2",
+        "815b16f81798ea02d192a39a8cc7a701730073011001020402d19683030193a38cc7b2a57300000193c2",
+        "b2a57301007473027303830108cdeeac93b1a57304",
+    ))
+    .expect("the fee contract is hex")
+    .into()
+});
+
+/// A tx's fee: the nanoERGs its outputs pay to the miners' fee contract. `None` for a tx with
+/// no such output, which is valid: nothing makes a tx pay a fee, and a miner may include one
+/// that pays none, or pays itself some other way.
+pub fn tx_fee<B: Assets>(outputs: &[B]) -> Option<u64> {
+    outputs
+        .iter()
+        .filter(|b| *b.ergo_tree().0 == **FEE_TREE)
+        .map(|b| b.value())
+        .reduce(|a, b| a + b)
+}
+
+/// A pending tx as an address's history lists it: its id, its net change for the address and
+/// its fee.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TxDelta {
     pub tx_id: TxId,
     pub delta: PendingDelta,
+    pub fee: Option<u64>,
 }
 
 /// The pending txs of `order` that spend from or pay to `tree`, newest first: `order`
@@ -236,7 +263,7 @@ pub fn pending_txs(
         .map(|&i| &txs[i])
         .filter_map(|tx| {
             let delta = tx_delta(tree, &tx.inputs, &tx.outputs)?;
-            Some(TxDelta { tx_id: tx.id, delta })
+            Some(TxDelta { tx_id: tx.id, delta, fee: tx_fee(&tx.outputs) })
         })
         .collect()
 }

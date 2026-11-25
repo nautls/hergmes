@@ -50,13 +50,14 @@ impl Default for Config {
     }
 }
 
-/// A tx of an address's history: its net change for the address, and the block that
-/// included it, or none while it is pending.
+/// A tx of an address's history: its net change for the address, its fee, and the block
+/// that included it, or none while it is pending.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HistoryItem {
     pub tx_id: TxId,
     pub included: Option<Included>,
     pub delta: PendingDelta,
+    pub fee: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -292,11 +293,12 @@ fn confirmed_item(tree: &ErgoTree, tx: AddressTransaction) -> HistoryItem {
         // The indexer lists only txs that touch the address; an empty delta if it ever
         // listed one that doesn't.
         delta: overlay::tx_delta(tree, &tx.inputs, &tx.outputs).unwrap_or_default(),
+        fee: overlay::tx_fee(&tx.outputs),
     }
 }
 
 fn pending_item(tx: overlay::TxDelta) -> HistoryItem {
-    HistoryItem { tx_id: tx.tx_id, included: None, delta: tx.delta }
+    HistoryItem { tx_id: tx.tx_id, included: None, delta: tx.delta, fee: tx.fee }
 }
 
 /// The pending txs that touch the address guarded by `tree`, tracked or not, and the tip they

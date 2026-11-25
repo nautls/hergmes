@@ -585,7 +585,9 @@ async fn an_address_history_pages_newest_first_with_pending_on_top() {
     assert_eq!(first.as_object().unwrap().keys().collect::<Vec<_>>(), ["items", "nextCursor"]);
     let items = first["items"].as_array().unwrap();
     assert_eq!(items.len(), 2, "the pending tx, then one confirmed");
-    assert_eq!(items[0].as_object().unwrap().keys().collect::<Vec<_>>(), ["delta", "txId"]);
+    let keys = items[0].as_object().unwrap().keys().collect::<Vec<_>>();
+    // The simulator's txs pay no fee box, so none has a `fee`.
+    assert_eq!(keys, ["delta", "txId"]);
     assert!(items[0]["delta"]["nanoErgs"].is_string());
     let keys = items[1].as_object().unwrap().keys().collect::<Vec<_>>();
     assert_eq!(keys, ["delta", "height", "timestamp", "txId"]);

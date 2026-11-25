@@ -18,8 +18,8 @@ import type { RestClient } from "./rest.ts";
 import type { HistoryItem as WireHistoryItem, HistoryPage } from "./wire.ts";
 
 /**
- * A tx in an address's history: its signed net change for the address, and when it was
- * included. A pending tx has no `height` and no `timestamp`.
+ * A tx in an address's history: its signed net change for the address, its fee, and when it
+ * was included. A pending tx has no `height` and no `timestamp`.
  */
 export interface HistoryItem {
   txId: string;
@@ -27,6 +27,8 @@ export interface HistoryItem {
   /** The including block's time, in milliseconds. */
   timestamp?: number;
   delta: Assets;
+  /** What the tx pays the miners' fee contract, in nanoERGs; absent if it has no output to it. */
+  fee?: bigint;
 }
 
 /** A history's state, replaced whole on every change. */
@@ -382,11 +384,12 @@ function settling(state: SubscriptionState): boolean {
 }
 
 function item(wire: WireHistoryItem): HistoryItem {
-  const { txId, height, timestamp } = wire;
+  const { txId, height, timestamp, fee } = wire;
   return Object.freeze({
     txId,
     ...(height === undefined ? {} : { height }),
     ...(timestamp === undefined ? {} : { timestamp }),
     delta: assets(wire.delta),
+    ...(fee === undefined ? {} : { fee: BigInt(fee) }),
   });
 }

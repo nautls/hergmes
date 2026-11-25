@@ -1195,7 +1195,7 @@ impl Harness {
 
     /// `key`'s pending txs as a history lists them: the reference overlay newest first, each
     /// with what it pays to the address minus what it takes from it, from the snapshot's full
-    /// txs and summed with the oracle's totals.
+    /// txs and summed with the oracle's totals, and its fee by the oracle's.
     fn reference_pending_txs(&self, key: &TrackingKey, utxo: &HashSet<BoxId>) -> Vec<TxDelta> {
         let mut overlay = self.reference_overlay(key, utxo);
         overlay.reverse();
@@ -1219,7 +1219,7 @@ impl Harness {
                     *delta.tokens.entry(id).or_default() -= i128::from(a);
                 }
                 delta.tokens.retain(|_, a| *a != 0);
-                TxDelta { tx_id: p.tx_id, delta }
+                TxDelta { tx_id: p.tx_id, delta, fee: sim::fee(&tx.outputs) }
             })
             .collect()
     }

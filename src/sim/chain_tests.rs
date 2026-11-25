@@ -7,7 +7,7 @@ use proptest::prelude::*;
 
 use super::*;
 use crate::sim::{
-    pending_order, strategy,
+    FEE_CONTRACT, pending_order, strategy,
     testing::{ALL, box_of, new_chain, sample_history},
     totals,
 };
@@ -50,7 +50,7 @@ fn the_same_ops_give_the_same_chain() {
 fn random_histories_reach_the_hard_cases() {
     let mut chain = new_chain();
     let mut seen = HashSet::new();
-    for op in sample_history(400) {
+    for op in sample_history(800) {
         let listed_before: HashSet<TxId> = chain.visible_pool().iter().map(|tx| tx.id).collect();
         chain.apply(&op);
         let visible = chain.visible_pool();
@@ -118,6 +118,18 @@ fn random_histories_reach_the_hard_cases() {
             if tx.outputs.iter().any(|o| o.tokens.len() >= 2) {
                 seen.insert("new box matching three keys");
             }
+            let fees: Vec<u64> = tx
+                .outputs
+                .iter()
+                .filter(|o| hex::encode(&*o.ergo_tree.0) == FEE_CONTRACT)
+                .map(|o| o.value)
+                .collect();
+            match fees[..] {
+                [0] => seen.insert("tx paying a zero fee"),
+                [_] => seen.insert("tx paying a fee"),
+                [_, _, ..] => seen.insert("tx paying two fees"),
+                [] => false,
+            };
             for token in tx.inputs.iter().chain(&tx.outputs).flat_map(|b| &b.tokens) {
                 let holders = |boxes: &[Arc<UTxO>]| -> Vec<(ErgoTree, u64)> {
                     boxes
@@ -168,6 +180,9 @@ fn random_histories_reach_the_hard_cases() {
         "token merged",
         "token burned",
         "token changed owner",
+        "tx paying a fee",
+        "tx paying two fees",
+        "tx paying a zero fee",
     ] {
         assert!(seen.contains(feature), "no random history reached: {feature}");
     }

@@ -128,16 +128,17 @@ impl Oracle {
         let order = pending_order(&self.confirmed_ids(), mempool);
         let pending = order.iter().rev().filter_map(|tx| {
             let delta = net_change(tree, &tx.inputs, &tx.outputs)?;
-            Some(HistoryEntry { tx_id: tx.id, height: None, delta })
+            Some(HistoryEntry { tx_id: tx.id, height: None, delta, fee: fee(&tx.outputs) })
         });
         let mut confirmed = Vec::new();
         for block in &self.blocks {
             for tx in &block.txs {
                 let (inputs, outputs) =
                     (tx.inputs.iter().map(|b| &**b), tx.outputs.iter().map(|b| &**b));
-                if let Some(delta) = net_change(tree, inputs, outputs) {
+                if let Some(delta) = net_change(tree, inputs, outputs.clone()) {
                     let height = Some(block.header.height);
-                    confirmed.push(HistoryEntry { tx_id: tx.id, height, delta });
+                    let fee = fee(outputs);
+                    confirmed.push(HistoryEntry { tx_id: tx.id, height, delta, fee });
                 }
             }
         }
@@ -153,13 +154,28 @@ impl Oracle {
     }
 }
 
-/// A tx in an address's history: its net change for the address, and the height of the
-/// block that included it, `None` while it is pending.
+/// A tx in an address's history: its net change for the address, its fee, and the height of
+/// the block that included it, `None` while it is pending.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HistoryEntry {
     pub tx_id: TxId,
     pub height: Option<u32>,
     pub delta: PendingDelta,
+    pub fee: Option<u64>,
+}
+
+/// The miners' fee contract in hex, as the node's wallet pays a tx's fee to it.
+pub const FEE_CONTRACT: &str = "1005040004000e36100204a00b08cd0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798ea02d192a39a8cc7a701730073011001020402d19683030193a38cc7b2a57300000193c2b2a57301007473027303830108cdeeac93b1a57304";
+
+/// What `outputs` pay to [`FEE_CONTRACT`], `None` if none pays to it: another way than the
+/// engine's `tx_fee`.
+pub fn fee<'a>(outputs: impl IntoIterator<Item = &'a UTxO>) -> Option<u64> {
+    let paid: Vec<u64> = outputs
+        .into_iter()
+        .filter(|b| hex::encode(&*b.ergo_tree.0) == FEE_CONTRACT)
+        .map(|b| b.value)
+        .collect();
+    (!paid.is_empty()).then(|| paid.iter().sum())
 }
 
 /// What a tx pays to `tree` minus what it takes from it, summed with [`totals`]: another way

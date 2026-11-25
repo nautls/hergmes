@@ -5,7 +5,10 @@ use std::{cell::RefCell, collections::HashSet};
 
 use super::*;
 use crate::{
-    sim::testing::{digest, tx, utxo},
+    sim::{
+        FEE_CONTRACT,
+        testing::{digest, tx, utxo},
+    },
     types::{HexBytes, ergo::Token},
 };
 
@@ -256,9 +259,27 @@ fn a_tx_with_no_net_change_is_an_empty_delta() {
     assert_eq!(delta, Some(PendingDelta::default()));
 }
 
+fn to_fee(n: u8, value: u64) -> UTxO {
+    let ergo_tree = HexBytes::from(hex::decode(FEE_CONTRACT).unwrap());
+    UTxO { ergo_tree, ..valued(n, OWNER, value, &[]) }
+}
+
+/// The fee is what the outputs pay the fee contract, summed if more than one does, and
+/// `None` with no output to it: not zero, which a tx paying a zero-value fee box would be.
+#[test]
+fn a_tx_fee_is_its_outputs_to_the_fee_contract() {
+    let paid = |outputs| tx_fee(&tx(0x50, vec![valued(1, OWNER, 100, &[])], outputs).outputs);
+    assert_eq!(paid(vec![valued(0x51, OTHER, 99, &[]), to_fee(0x52, 1)]), Some(1));
+    assert_eq!(paid(vec![to_fee(0x51, 2), valued(0x52, OTHER, 95, &[]), to_fee(0x53, 3)]), Some(5));
+    assert_eq!(paid(vec![to_fee(0x51, 0)]), Some(0));
+    // The owner's tree is not the fee contract, though `valued` gives every box one byte.
+    assert_eq!(paid(vec![valued(0x51, OWNER, 100, &[])]), None);
+    assert_eq!(paid(Vec::new()), None);
+}
+
 /// Newest first: a child above the parent it spends from, and only txs touching the address.
 #[test]
-fn pending_txs_are_the_overlay_reversed_with_each_txs_delta() {
+fn pending_txs_are_the_overlay_reversed_with_each_txs_delta_and_fee() {
     let mut mempool = family();
     mempool.push(tx(0x60, vec![utxo(3, 0, OTHER, &[])], vec![utxo(0x61, 0x60, OTHER, &[])]));
     let confirmed: HashSet<BoxId> = [1, 2, 3].iter().map(|&n| digest(n)).collect();
@@ -266,6 +287,13 @@ fn pending_txs_are_the_overlay_reversed_with_each_txs_delta() {
     let txs = pending_txs(&mempool, &order, &owner_tree());
     let ids: Vec<u8> = txs.iter().map(|t| t.tx_id.0[0]).collect();
     assert_eq!(ids, vec![0x10, 0x30, 0x20], "the overlay's order [0x20, 0x30, 0x10] reversed");
-    // Each moves one box of value 1 from the owner to the owner.
+    // Each moves one box of value 1 from the owner to the owner, and none pays a fee.
     assert!(txs.iter().all(|t| t.delta == PendingDelta::default()));
+    assert!(txs.iter().all(|t| t.fee.is_none()));
+
+    // With a fee output, the tx carries its fee.
+    mempool[2].outputs.push(to_fee(0x22, 4));
+    let txs = pending_txs(&mempool, &order, &owner_tree());
+    let fees: Vec<Option<u64>> = txs.iter().map(|t| t.fee).collect();
+    assert_eq!(fees, vec![None, None, Some(4)]);
 }

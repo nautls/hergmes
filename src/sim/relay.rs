@@ -443,7 +443,7 @@ async fn keys(State(relay): Relay) -> Json<Value> {
 }
 
 /// A history entry as the history route writes an item: `txId`, then `height` and `timestamp`
-/// once included, then `delta`.
+/// once included, then `delta`, then `fee` if it pays one.
 fn history_item(entry: &HistoryEntry) -> Value {
     let mut item = json!({ "txId": entry.tx_id });
     if let Some(height) = entry.height {
@@ -451,6 +451,9 @@ fn history_item(entry: &HistoryEntry) -> Value {
         item["timestamp"] = json!(timestamp(height));
     }
     item["delta"] = json!(Pending(&entry.delta));
+    if let Some(fee) = entry.fee {
+        item["fee"] = json!(fee.to_string());
+    }
     item
 }
 
