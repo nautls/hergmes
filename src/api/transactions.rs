@@ -4,12 +4,13 @@
 //! A sent tx is not parsed. The relay checks only that the body is hex within the node's
 //! size limit and forwards it; the node validates everything. No key policy and no engine: a
 //! broadcast tx reaches the overlay at the next mempool poll, like any other, and only then
-//! can it be read back.
+//! can it be read back. A broadcast the node takes wakes the follower, so that poll comes
+//! early rather than at the next interval.
 
 use reqwest::StatusCode;
 
 use crate::{
-    adapters::EngineHandle,
+    adapters::{EngineHandle, Wake},
     api::{ApiError, http::DEFAULT_RETRY},
     clients::{NodeError, NodeSource},
     engine::{Query, Reply},
@@ -120,11 +121,28 @@ impl Refusal {
 
 pub struct Transactions<S> {
     source: S,
+    wake: Wake,
 }
 
 impl<S: NodeSource> Transactions<S> {
     pub fn new(source: S) -> Self {
-        Self { source }
+        Self { source, wake: Wake::default() }
+    }
+
+    /// Wakes the follower behind `wake` whenever the node takes a broadcast tx, so the
+    /// mempool poll that brings it to clients comes early.
+    ///
+    /// The node's answer comes after the tx is in the pool that `/transactions/unconfirmed`
+    /// lists and after `lastMemPoolUpdateTime` in `/info` has moved, so the early poll finds
+    /// the pool changed and fetches it with the tx in it. Node 6.0.8:
+    /// `ErgoBaseApiRoute.sendLocalTransactionRoute` answers once the view holder replies;
+    /// `ErgoNodeViewHolder.txModify` replies after `updateNodeView` has published
+    /// `ChangedMempool`, which the event stream hands at once to `ErgoReadersHolder` (read
+    /// by `TransactionsApiRoute.getMemPool`) and `ErgoStatsCollector` (read by
+    /// `InfoApiRoute`), so either answers a later request with the new pool.
+    pub fn waking(mut self, wake: Wake) -> Self {
+        self.wake = wake;
+        self
     }
 
     /// Hands the tx in `hex` to the node: validated and broadcast, or with `broadcast` false
@@ -153,7 +171,13 @@ impl<S: NodeSource> Transactions<S> {
             return Err(unparseable());
         }
         match self.source.submit_transaction(hex, broadcast).await {
-            Ok(id) => Ok(id),
+            Ok(id) => {
+                // A check leaves the pool as it was.
+                if broadcast {
+                    self.wake.wake();
+                }
+                Ok(id)
+            }
             // Every refusal is a `400` with the node's message (`sendLocalTransactionRoute`,
             // `validateTransactionAndProcess`), the client's own tx, so its text is passed on.
             Err(NodeError::Api { status: StatusCode::BAD_REQUEST, detail, .. }) => {

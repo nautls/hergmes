@@ -134,10 +134,11 @@ const { transactionId } = await relay.rest.submitTransaction(signedTx);
 ```
 
 `mempoolTransaction` answers a pending tx as Fleet's `SignedTransaction`, each input also the
-box it spends. A tx just sent is found once the relay's mempool poll sees it: usually within a
-second or two, longer around a new block. Until then, and once it is confirmed or dropped, it
-is `transaction_not_found`. For about a second after a chain reorganization the relay has no
-mempool view and answers `not_ready`, which the client retries.
+box it spends. A tx just sent is found once the relay's mempool poll sees it. A tx sent through
+the relay has that poll come right after the node takes it; others wait for the next. Usually
+within a second or two, longer around a new block. Until then, and once it is confirmed or
+dropped, it is `transaction_not_found`. For about a second after a chain reorganization the relay
+has no mempool view and answers `not_ready`, which the client retries.
 
 Every method takes a `signal` to cancel it. A response other than 2xx throws a `RelayError`
 with its `status`, `code`, `reason` (why the node refused a tx) and `retryAfter`. A `503` is

@@ -147,10 +147,11 @@ export class RestClient {
 
   /**
    * A pending tx, as the relay's mempool view has it. A tx just sent is found once the relay's
-   * mempool poll sees it: usually within a second or two, longer around a new block. Until
-   * then, and once a block confirms it or the node drops it, `transaction_not_found`. For about
-   * a second after a chain reorganization the relay has no mempool view and answers
-   * `not_ready`, which is retried.
+   * mempool poll sees it. A tx sent through the relay has that poll come right after the node
+   * takes it; others wait for the next. Usually within a second or two, longer around a new
+   * block. Until then, and once a block confirms it or the node drops it,
+   * `transaction_not_found`. For about a second after a chain reorganization the relay has no
+   * mempool view and answers `not_ready`, which is retried.
    */
   mempoolTransaction(txId: string, options: RequestOptions = {}): Promise<MempoolTransaction> {
     return this.#get(`v1/mempool/transactions/${encodeURIComponent(txId)}`, {}, options);

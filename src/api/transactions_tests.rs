@@ -184,3 +184,28 @@ async fn other_node_answers_map_as_on_every_route() {
     let error = transactions.submit(&signed_tx(), true).await.unwrap_err();
     assert_eq!(error.code(), "node_error");
 }
+
+/// Only a tx the node takes into its pool wakes the follower: not a check, which leaves the pool
+/// as it was, nor a refusal, nor a body refused before the node sees it.
+#[tokio::test]
+async fn only_a_broadcast_the_node_takes_wakes_the_follower() {
+    for (route, name, broadcast, woken) in [
+        ("/transactions/bytes", "tx_send_signed", true, true),
+        ("/transactions/checkBytes", "tx_check_signed", false, false),
+        ("/transactions/bytes", "tx_send_double_spend", true, false),
+        ("/transactions/bytes", "tx_send_invalid", true, false),
+    ] {
+        let (_server, transactions) = answering(route, recorded(name)).await;
+        let wake = Wake::default();
+        let transactions = transactions.waking(wake.clone());
+        let _ = transactions.submit(&signed_tx(), broadcast).await;
+        assert_eq!(wake.take(), woken, "{name}");
+    }
+
+    let (_server, transactions) =
+        answering("/transactions/bytes", recorded("tx_send_signed")).await;
+    let wake = Wake::default();
+    let transactions = transactions.waking(wake.clone());
+    assert_eq!(reason(transactions.submit("zz", true).await), "unparseable");
+    assert!(!wake.take());
+}
