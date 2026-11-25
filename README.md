@@ -76,7 +76,7 @@ in, or pass `--config <path>`. An unknown key stops the relay at startup.
 | `max_boxes_per_key`                | 16383          | Most boxes a key can hold to be tracked                               |
 | `max_tracked_units`                | 2000000        | Total tracking budget, about one unit per box (see [Sizing](#sizing)) |
 | `box_cache_mb`                     | 128            | Memory for cached full boxes, in MiB                                  |
-| `max_subscriptions_per_connection` | 100            | Most subscriptions per WebSocket connection                           |
+| `max_subscriptions_per_connection` | 200            | Most subscriptions per WebSocket connection                           |
 | `poll_interval_ms`                 | 1000           | How often the node is polled for a new block or mempool change        |
 | `mempool_refresh_ms`               | 10000          | Longest time between full mempool fetches                             |
 

@@ -32,7 +32,7 @@
 # allow_origins = ["*"]
 
 # Most subscriptions one WebSocket connection holds.
-# max_subscriptions_per_connection = 100
+# max_subscriptions_per_connection = 200
 
 # --- Keys ---
 

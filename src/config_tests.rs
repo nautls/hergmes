@@ -45,7 +45,7 @@ fn defaults(config: &Config) {
     assert_eq!(config.token_supply_limit, SUPPLY_LIMIT);
     assert_eq!(config.box_cache_bytes, 128 * 1024 * 1024);
     assert_eq!(config.listen_addr.to_string(), "127.0.0.1:8080", "loopback until chosen");
-    assert_eq!(config.ws.max_subscriptions, 100);
+    assert_eq!(config.ws.max_subscriptions, 200);
     assert_eq!(config.allow_origins, OriginPolicy::Any);
 }
 
