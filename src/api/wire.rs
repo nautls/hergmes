@@ -24,6 +24,7 @@ use crate::{
     types::{
         HexBytes,
         address::Network,
+        eip4::{Eip4, Standard},
         ergo::{HeaderId, NonMandatoryRegisters, TokenId, TokenMetadata, TxId, UTxO},
     },
 };
@@ -308,14 +309,30 @@ struct WireToken<'a>(&'a TokenMetadata);
 impl Serialize for WireToken<'_> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let t = self.0;
-        let mut s = serializer.serialize_struct("Token", 10)?;
+        let mut s = serializer.serialize_struct("Token", 5)?;
         s.serialize_field("tokenId", &t.id)?;
-        s.serialize_field("mintingBoxId", &t.minting_box_id)?;
+        s.serialize_field("mintingTxId", &t.minting_tx_id)?;
+        s.serialize_field("emission", &Amount(t.emission))?;
+        s.serialize_field("standard", t.standard.as_str())?;
+        match &t.standard {
+            Standard::None => {}
+            Standard::Eip4(eip4) => s.serialize_field("metadata", &WireEip4(eip4))?,
+        }
+        s.end()
+    }
+}
+
+/// What an EIP-4 mint says, under its token's `metadata`.
+struct WireEip4<'a>(&'a Eip4);
+
+impl Serialize for WireEip4<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let t = self.0;
+        let mut s = serializer.serialize_struct("Eip4", 7)?;
         s.serialize_field("name", &t.name)?;
         s.serialize_field("description", &t.description)?;
         s.serialize_field("decimals", &t.decimals)?;
-        s.serialize_field("emission", &Amount(t.emission))?;
-        // Each EIP-4 field is left out when absent, as most tokens have none.
+        // Each asset field is left out when absent, as most tokens have none.
         if let Some(asset) = &t.asset {
             s.serialize_field("type", asset.asset_type.as_str())?;
             if let Some(hash) = &asset.artwork_hash {

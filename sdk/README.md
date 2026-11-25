@@ -117,7 +117,10 @@ others; more than 100 ids take a request per 100, one after another.
 
 ```ts
 const { items } = await relay.rest.tokens(tokenIds);
-const decimals = new Map(items.map((t) => [t.tokenId, t.decimals]));
+// A token of no standard has no metadata, so its amounts have no decimals.
+const decimals = new Map(
+  items.map((t) => [t.tokenId, t.standard === "eip-4" ? t.metadata.decimals : 0]),
+);
 ```
 
 `submitTransaction` takes a signed tx in hex, or as Fleet's `SignedTransaction`, which the SDK

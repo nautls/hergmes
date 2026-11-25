@@ -14,7 +14,10 @@ use crate::{
     clients::NodeClient,
     fixtures::{self, load, sample},
     sim::{Chain, Endpoint, GENESIS_TOKENS, SimChain, SimConfig, token_id},
-    types::{address::Network, eip4::AssetType},
+    types::{
+        address::Network,
+        eip4::{Asset, AssetType, Eip4, Standard},
+    },
 };
 
 fn unknown() -> TokenId {
@@ -37,6 +40,13 @@ fn ids_of(tokens: &[Arc<TokenMetadata>]) -> Vec<TokenId> {
     tokens.iter().map(|t| t.id).collect()
 }
 
+fn eip4(token: &TokenMetadata) -> &Eip4 {
+    match &token.standard {
+        Standard::Eip4(eip4) => eip4,
+        Standard::None => panic!("{} follows EIP-4", token.id),
+    }
+}
+
 /// Every genesis token as the indexer lists it, in request order, duplicates once and the
 /// unknown id left out; ids in either case.
 #[tokio::test]
@@ -53,9 +63,22 @@ async fn known_tokens_are_served_in_request_order_once_each() {
     asked.push_str(&ids[0].to_string().to_uppercase());
 
     let served = tokens.metadata(Some(&asked)).await.unwrap();
-    let expected = sim.lock().tokens(&ids);
+    let expected: Vec<TokenMetadata> = {
+        let chain = sim.lock();
+        chain
+            .tokens(&ids)
+            .into_iter()
+            .map(|t| {
+                let minting = chain.indexed_box(&t.minting_box_id).unwrap();
+                TokenMetadata::minted(t, &minting.indexed.utxo)
+            })
+            .collect()
+    };
     assert_eq!(expected.len(), GENESIS_TOKENS.len());
     assert_eq!(served.iter().map(|t| (**t).clone()).collect::<Vec<_>>(), expected);
+    for token in &served {
+        assert!(!eip4(token).name.is_empty(), "a genesis token is EIP-4 by its name");
+    }
 }
 
 /// Tokens never change, so a token served once costs no node call again; an unknown id is
@@ -112,8 +135,7 @@ async fn a_token_unknown_before_its_mint_is_served_after() {
     let served = tokens.metadata(Some(&id.to_string())).await.unwrap();
     assert_eq!(served.len(), 1);
     assert_eq!(served[0].emission, 7);
-    assert_eq!(served[0].minting_box_id, tx.outputs[0].id);
-    assert_ne!(served[0].minting_box_id, id, "the minting box is not the token id");
+    assert_eq!(served[0].minting_tx_id, tx.id);
 }
 
 #[tokio::test]
@@ -187,8 +209,16 @@ async fn the_recorded_mints_are_served_with_their_assets() {
         serde_json::from_value(fixtures["tokens_eip4"]["body"].clone()).unwrap();
     let served = tokens.metadata(Some(&joined(&ids))).await.unwrap();
     assert_eq!(ids_of(&served), ids);
+    for (token, name) in served
+        .iter()
+        .zip(["minting_box_picture", "minting_box_plain"])
+    {
+        let minting: Value = load(name);
+        assert_eq!(token.minting_tx_id.to_string(), minting["transactionId"].as_str().unwrap());
+        assert_eq!(token.standard.as_str(), "eip-4", "{name}");
+    }
 
-    let picture = served[0]
+    let picture = eip4(&served[0])
         .asset
         .as_deref()
         .expect("the picture NFT has an asset");
@@ -208,15 +238,15 @@ async fn the_recorded_mints_are_served_with_their_assets() {
             .unwrap()
             .starts_with("https://")
     );
-    assert_eq!(served[1].asset, None, "the plain token has none");
+    assert_eq!(eip4(&served[1]).asset, None, "the plain token has none");
 
     tokens.metadata(Some(&joined(&ids))).await.unwrap();
 }
 
-/// A token whose minting box the indexer no longer knows (a reorg since its listing) is
-/// served as listed and not kept, so it is asked again.
+/// A token whose minting box the indexer no longer knows (a reorg since its listing) has no
+/// mint tx to serve: it is left out and not kept, so it is asked again.
 #[tokio::test]
-async fn a_token_whose_minting_box_is_unknown_is_served_but_not_kept() {
+async fn a_token_whose_minting_box_is_unknown_is_left_out_and_not_kept() {
     let server = MockServer::start().await;
     let tokens = node(&server).await;
     let nft = sample("nft");
@@ -229,9 +259,7 @@ async fn a_token_whose_minting_box_is_unknown_is_served_but_not_kept() {
     minting_boxes(&server, "box_by_id_unknown").await;
 
     for _ in 0..2 {
-        let served = tokens.metadata(Some(&nft)).await.unwrap();
-        assert_eq!(served[0].name.as_ref(), "Emission Contract NFT");
-        assert_eq!(served[0].asset, None);
+        assert!(tokens.metadata(Some(&nft)).await.unwrap().is_empty());
     }
 }
 
@@ -312,7 +340,7 @@ async fn only_missing_ids_reach_the_node() {
         .metadata(Some(&format!("{small},{nft},{small},{large}")))
         .await
         .unwrap();
-    let names: Vec<&str> = served.iter().map(|t| &*t.name).collect();
+    let names: Vec<&str> = served.iter().map(|t| &*eip4(t).name).collect();
     assert_eq!(names, ["ERGUSD-PT", "Emission Contract NFT", "Reemission Token"]);
 }
 
@@ -352,23 +380,29 @@ async fn a_503_fails_the_request_with_its_wait() {
 /// descriptions too.
 #[test]
 fn the_cache_stays_within_its_budget() {
-    let token = |n: u8, description: usize| TokenMetadata {
+    let with = |n: u8, description: usize, asset: Option<Asset>| TokenMetadata {
         id: crate::sim::testing::digest(n),
-        minting_box_id: crate::sim::testing::digest(n),
+        minting_tx_id: crate::sim::testing::digest(n),
         emission: 1,
-        name: "n".into(),
-        description: "d".repeat(description).into(),
-        decimals: 0,
-        asset: None,
+        standard: Standard::Eip4(Eip4 {
+            name: "n".into(),
+            description: "d".repeat(description).into(),
+            decimals: 0,
+            asset: asset.map(Box::new),
+        }),
     };
+    let token = |n, description| with(n, description, None);
     assert_eq!(weight(&token(0, 1000)) - weight(&token(0, 0)), 1000);
-    let mut nft = token(0, 0);
-    nft.asset = Some(Box::new(Asset {
-        asset_type: AssetType::NftPicture,
-        artwork_hash: None,
-        artwork_url: Some("u".repeat(1000).into()),
-        artwork_cover: None,
-    }));
+    let nft = with(
+        0,
+        0,
+        Some(Asset {
+            asset_type: AssetType::NftPicture,
+            artwork_hash: None,
+            artwork_url: Some("u".repeat(1000).into()),
+            artwork_cover: None,
+        }),
+    );
     assert!(weight(&nft) - weight(&token(0, 0)) > 1000, "an asset's links are weighed");
 
     let cache = cache(1 << 20);

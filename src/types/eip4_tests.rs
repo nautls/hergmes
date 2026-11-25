@@ -170,3 +170,94 @@ fn heap_size_counts_every_byte_held() {
     let asset = asset("0e020101", Some(&coll(&[7; 32])), Some(&r9)).unwrap();
     assert_eq!(asset.heap_size(), 3 + 2);
 }
+
+fn of_mint(registers: &NonMandatoryRegisters) -> Standard {
+    Standard::of_mint("n".into(), "d".into(), 2, registers)
+}
+
+/// Both recorded mints are EIP-4, with the indexer's fields and the picture's asset; a mint
+/// with nothing to read follows no standard, so the indexer's defaults are dropped.
+#[test]
+fn the_recorded_mints_are_eip4() {
+    let picture = minting_box("minting_box_picture");
+    assert_eq!(
+        of_mint(&picture),
+        Standard::Eip4(Eip4 {
+            name: "n".into(),
+            description: "d".into(),
+            decimals: 2,
+            asset: Asset::from_registers(&picture).map(Box::new),
+        })
+    );
+    let Standard::Eip4(plain) = of_mint(&minting_box("minting_box_plain")) else {
+        panic!("the plain mint is EIP-4");
+    };
+    assert_eq!(plain.asset, None);
+    let nothing = Standard::of_mint("".into(), "".into(), 0, &NonMandatoryRegisters::default());
+    assert_eq!(nothing, Standard::None);
+}
+
+/// The indexer's fields with `r6` as the minting box's only register.
+fn with_r6(name: &str, description: &str, decimals: i32, r6: Option<&str>) -> Standard {
+    let registers = NonMandatoryRegisters { r6: r6.map(hex), ..Default::default() };
+    Standard::of_mint(name.into(), description.into(), decimals, &registers)
+}
+
+/// Any one of a name, a description, decimals or an asset type is enough. Decimals of `0`
+/// count, as a decimal string or an `Int`; non-zero decimals the indexer read count whatever
+/// R6 holds, as a number in non-ASCII digits that this does not parse.
+#[test]
+fn any_one_field_is_eip4() {
+    let arabic_eight = coll("٨".as_bytes());
+    for (name, description, decimals, r6) in [
+        ("n", "", 0, None),
+        ("", "d", 0, None),
+        ("", "", 8, Some(arabic_eight.as_str())),
+        ("", "", 0, Some(coll(b"0").as_str())),
+        ("", "", 0, Some("0e022d30")),
+        ("", "", 0, Some("0400")),
+    ] {
+        let standard = with_r6(name, description, decimals, r6);
+        assert_eq!(standard.as_str(), "eip-4", "{name:?} {description:?} {decimals} {r6:?}");
+    }
+
+    let empty = coll(b"");
+    let picture = NonMandatoryRegisters {
+        r4: Some(hex(&empty)),
+        r5: Some(hex(&empty)),
+        r6: Some(hex(&empty)),
+        ..registers(Some("0e020101"), Some(&coll(&[7; 32])), Some(&coll(b"ipfs://a")))
+    };
+    let Standard::Eip4(nft) = Standard::of_mint("".into(), "".into(), 0, &picture) else {
+        panic!("an asset type alone is EIP-4");
+    };
+    assert_eq!(nft.asset.unwrap().asset_type, AssetType::NftPicture);
+}
+
+/// The indexer's defaults, with nothing in R6 that it reads as decimals: text that is no
+/// `Int`, or a constant of another type.
+#[test]
+fn nothing_the_indexer_reads_is_none() {
+    for r6 in [None, Some(coll(b"")), Some(coll(b"1.5")), Some(coll(b"99999999999"))]
+        .iter()
+        .map(Option::as_deref)
+        .chain([Some("0502")])
+    {
+        assert_eq!(with_r6("", "", 0, r6), Standard::None, "{r6:?}");
+    }
+}
+
+/// An EIP-4 token weighs its strings and its asset's links; none weighs nothing.
+#[test]
+fn standards_are_named_and_weighed() {
+    let r9 = coll(&[b'u'; 100]);
+    let nft = NonMandatoryRegisters {
+        r4: Some(hex(&coll(b"ab"))),
+        ..registers(Some("0e020101"), None, Some(&r9))
+    };
+    let eip4 = Standard::of_mint("ab".into(), "cde".into(), 0, &nft);
+    assert_eq!(eip4.as_str(), "eip-4");
+    assert_eq!(eip4.heap_size(), 2 + 3 + size_of::<Asset>() + 100);
+    assert_eq!(Standard::None.as_str(), "none");
+    assert_eq!(Standard::None.heap_size(), 0);
+}

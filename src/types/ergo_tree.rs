@@ -117,6 +117,20 @@ pub fn byte_coll(constant: &[u8]) -> Option<&[u8]> {
     Some(p.byte_coll_value(data)?.0)
 }
 
+/// The value of a constant that is an `Int`, as a register holds one, read as the node reads
+/// it (sigma-state 6.0.7, `CoreDataSerializer.deserialize`, through scorex-util 0.2.1,
+/// `VLQReader.getInt`): a VLQ of up to 64 bits, cut to its low 32 and zigzag-decoded, so a
+/// longer one is not refused. `None` as for [`byte_coll`].
+pub fn int(constant: &[u8]) -> Option<i32> {
+    let p = Parser::whole(constant)?;
+    if p.byte(0)? != INT {
+        return None;
+    }
+    // Truncated, as the node's `toInt`.
+    let zigzag = p.vlq(1)?.0 as u32;
+    Some((zigzag >> 1) as i32 ^ -((zigzag & 1) as i32))
+}
+
 /// The elements of a constant that is a `(Coll[Byte], Coll[Byte])`, written as a pair or as
 /// a 2-tuple. `None` as for [`byte_coll`].
 pub fn byte_coll_pair(constant: &[u8]) -> Option<(&[u8], &[u8])> {

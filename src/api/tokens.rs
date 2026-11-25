@@ -1,5 +1,5 @@
-//! The token metadata service: names, descriptions, decimals, emissions and EIP-4 asset types
-//! and artwork, for clients that show tokens.
+//! The token metadata service: names, descriptions, decimals, emissions, mint txs, standards
+//! and EIP-4 asset types and artwork, for clients that show tokens.
 //!
 //! A token id here is not a key: the read keeps no engine state and streams nothing, so it is
 //! outside the key policy and the supply limit, and a wallet can name any token it holds.
@@ -13,10 +13,7 @@ use crate::{
     adapters::cache::ENTRY,
     api::ApiError,
     clients::NodeSource,
-    types::{
-        eip4::Asset,
-        ergo::{TokenId, TokenMetadata},
-    },
+    types::ergo::{IndexedToken, TokenId, TokenMetadata},
 };
 
 /// The most ids a request names: 65 characters each with the comma, so 100 keep the URL
@@ -51,7 +48,8 @@ impl<S: NodeSource> Tokens<S> {
     }
 
     /// The metadata of the tokens named in `ids`, comma-separated, in their order and each
-    /// once; unknown tokens are left out. For the ids not kept, one node call, then one per
+    /// once; unknown tokens, and tokens whose minting box the indexer no longer knows, are
+    /// left out. For the ids not kept, one node call, then one per
     /// token found to read its minting box; none if every id is kept. A node failure fails
     /// the whole request.
     pub async fn metadata(&self, ids: Option<&str>) -> Result<Vec<Arc<TokenMetadata>>, ApiError> {
@@ -74,37 +72,33 @@ impl<S: NodeSource> Tokens<S> {
             // before it and a retry makes only the rest. The first failure stops the reads not
             // yet made, sparing a node that is failing.
             let mut reads = stream::iter(fetched)
-                .map(|token| self.with_asset(token))
+                .map(|token| self.minted(token))
                 .buffer_unordered(BOX_READS);
-            while let Some((token, complete)) = reads.try_next().await? {
-                let token = Arc::new(token);
-                if complete {
+            while let Some(token) = reads.try_next().await? {
+                if let Some(token) = token {
+                    let token = Arc::new(token);
                     self.cache.insert(token.id, token.clone());
+                    found.insert(token.id, token);
                 }
-                found.insert(token.id, token);
             }
         }
         Ok(ids.iter().filter_map(|id| found.remove(id)).collect())
     }
 
-    /// `token` with the asset its minting box describes, and whether the box was read. The
-    /// indexer lists a token only once it has indexed the mint, so a box it does not know was
-    /// lost to a reorg since: the token is served as listed but not kept, as for an unknown id.
-    async fn with_asset(
-        &self,
-        mut token: TokenMetadata,
-    ) -> Result<(TokenMetadata, bool), ApiError> {
+    /// `token` with what its minting box adds. The indexer lists a token only once it has
+    /// indexed the mint, so a box it does not know was lost to a reorg since, and with it the
+    /// mint tx: the token is left out and not kept, as for an unknown id.
+    async fn minted(&self, token: IndexedToken) -> Result<Option<TokenMetadata>, ApiError> {
         let minting = self
             .source
             .indexed_box(&token.minting_box_id)
             .await
             .map_err(|e| ApiError::from(&e))?;
         let Some(minting) = minting else {
-            tracing::debug!(token = %token.id, "minting box unknown, token not kept");
-            return Ok((token, false));
+            tracing::debug!(token = %token.id, "minting box unknown, token left out");
+            return Ok(None);
         };
-        token.asset = Asset::from_registers(&minting.indexed.utxo.registers).map(Box::new);
-        Ok((token, true))
+        Ok(Some(TokenMetadata::minted(token, &minting.indexed.utxo)))
     }
 }
 
@@ -138,14 +132,10 @@ fn cache(budget: u64) -> Cache<TokenId, Arc<TokenMetadata>> {
         .build()
 }
 
-/// A token's estimated size in memory: the struct, its strings, its asset and the entry's
+/// A token's estimated size in memory: the struct, what its standard holds and the entry's
 /// overhead, which is the box cache's (`ENTRY`): the same key size, `Arc` and moka bookkeeping.
 fn weight(t: &TokenMetadata) -> u32 {
-    let asset = t
-        .asset
-        .as_ref()
-        .map_or(0, |a| size_of::<Asset>() + a.heap_size());
-    let bytes = size_of::<TokenMetadata>() + t.name.len() + t.description.len() + asset + ENTRY;
+    let bytes = size_of::<TokenMetadata>() + t.standard.heap_size() + ENTRY;
     // A box is at most 4096 bytes serialized (`SigmaConstants.MaxBoxSize`), far below this.
     u32::try_from(bytes).unwrap_or(u32::MAX)
 }

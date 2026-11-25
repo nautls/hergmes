@@ -27,6 +27,7 @@ use hergmes::{
     runtime::{self, Handle},
     types::{
         address::Address,
+        eip4::Standard,
         ergo::{BoxId, TokenId, TxId},
     },
 };
@@ -327,11 +328,19 @@ async fn token_metadata_is_the_nodes_token_by_id() {
     for (token, id) in served.iter().zip(&ids) {
         let node = relay.get(&format!("/blockchain/token/byId/{id}")).await;
         assert_eq!(token.id.to_string(), *id);
-        assert_eq!(token.minting_box_id.to_string(), node["boxId"].as_str().unwrap());
+        let minting = relay
+            .get(&format!("/blockchain/box/byId/{}", node["boxId"].as_str().unwrap()))
+            .await;
+        assert_eq!(token.minting_tx_id.to_string(), minting["transactionId"].as_str().unwrap());
         assert_eq!(token.emission, node["emissionAmount"].as_u64().unwrap());
-        assert_eq!(*token.name, *node["name"].as_str().unwrap());
-        assert_eq!(*token.description, *node["description"].as_str().unwrap());
-        assert_eq!(i64::from(token.decimals), node["decimals"].as_i64().unwrap());
+        // Without a standard, the node's fields are its defaults.
+        let (name, description, decimals) = match &token.standard {
+            Standard::Eip4(eip4) => (&*eip4.name, &*eip4.description, eip4.decimals),
+            Standard::None => ("", "", 0),
+        };
+        assert_eq!(name, node["name"].as_str().unwrap());
+        assert_eq!(description, node["description"].as_str().unwrap());
+        assert_eq!(i64::from(decimals), node["decimals"].as_i64().unwrap());
     }
 }
 

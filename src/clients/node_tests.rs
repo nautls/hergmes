@@ -255,7 +255,7 @@ mod shapes {
         let requested: Vec<TokenId> =
             serde_json::from_value(manifest()["fixtures"]["tokens"]["body"].clone()).unwrap();
         assert_eq!(requested[2], digest(&"ab".repeat(32)));
-        let tokens: Vec<TokenMetadata> = load("tokens");
+        let tokens: Vec<IndexedToken> = load("tokens");
         let ids: Vec<TokenId> = tokens.iter().map(|t| t.id).collect();
         assert_eq!(ids, [requested[0], requested[1], requested[3]]);
         for (token, alone) in
@@ -263,7 +263,7 @@ mod shapes {
                 .iter()
                 .zip(["token_nft", "token_small_supply", "token_large_supply"])
         {
-            assert_eq!(*token, load::<TokenMetadata>(alone), "{alone}");
+            assert_eq!(*token, load::<IndexedToken>(alone), "{alone}");
         }
         let large = &tokens[2];
         assert!(large.emission > 1 << 53, "read exactly, past a JavaScript number");
@@ -716,7 +716,7 @@ mod source {
             .await;
 
         let tokens = node.tokens(&ids).await.unwrap();
-        assert_eq!(tokens, load::<Vec<TokenMetadata>>("tokens"));
+        assert_eq!(tokens, load::<Vec<IndexedToken>>("tokens"));
     }
 
     #[tokio::test]

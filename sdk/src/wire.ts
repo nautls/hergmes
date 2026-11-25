@@ -94,18 +94,37 @@ export interface HeadersPage {
 }
 
 /**
- * A token's metadata: `name`, `description` and `decimals` are what its minter wrote in the
- * minting box (EIP-4), so they say nothing about who issued it.
+ * A token's metadata, by the standard its mint follows. A standard's fields are under
+ * `metadata`, so another standard adds a variant and changes none; narrow on `standard`.
  */
-export interface TokenMetadata {
+export type TokenMetadata = TokenBase &
+  ({ standard: "none" } | { standard: "eip-4"; metadata: Eip4Metadata });
+
+/** The standard a token's mint follows. */
+export type TokenStandard = TokenMetadata["standard"];
+
+/** What every token has, whatever its standard. */
+export interface TokenBase {
   tokenId: string;
-  /** The first output of the minting tx holding the token; not the token id. */
-  mintingBoxId: string;
-  name: string;
-  description: string;
-  decimals: number;
+  /** The tx that minted the token. */
+  mintingTxId: string;
   /** Every unit minted. */
   emission: string;
+}
+
+/**
+ * What an EIP-4 mint says of its token: a token is `eip-4` if its minting box names it,
+ * describes it, gives its decimals (R4, R5, R6), even decimals of `0`, or its asset type
+ * (R7). These are what its minter wrote, so they say nothing about who issued it. A token of
+ * no standard has none, and its amounts have no decimals.
+ */
+export interface Eip4Metadata {
+  /** Empty if R4 is absent, empty or not text. */
+  name: string;
+  /** Empty if R5 is absent, empty or not text. */
+  description: string;
+  /** `0` if R6 is absent or neither an `Int` nor one written in decimal. */
+  decimals: number;
   /**
    * The minting box's EIP-4 asset type (R7). `nft` is an NFT of no registered subcategory.
    * Absent if R7 names no registered type.

@@ -484,6 +484,26 @@ fn reads_no_other_constant_as_byte_collections() {
     }
 }
 
+/// An `Int` register, zigzag-encoded: its extremes, past 32 bits cut to its low 32 as the
+/// node does, and nothing of another type, cut short or followed by bytes.
+#[test]
+fn reads_int_registers() {
+    for (constant, value) in [
+        ("0400", 0),
+        ("0401", -1),
+        ("0404", 2),
+        ("04feffffff0f", i32::MAX),
+        ("04ffffffff0f", i32::MIN),
+        ("0480808080808001", 0),
+        ("0482808080808001", 1),
+    ] {
+        assert_eq!(int(&h(constant)), Some(value), "{constant}");
+    }
+    for constant in ["0e0130", "0502", "04", "0480", "040200"] {
+        assert_eq!(int(&h(constant)), None, "{constant}");
+    }
+}
+
 /// No prefix of a recorded minting box's registers reads, and none panics.
 #[test]
 fn reads_no_truncated_register() {

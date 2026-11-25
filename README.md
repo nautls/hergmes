@@ -142,7 +142,7 @@ To track more, raise `max_tracked_units` and `box_cache_mb` together, then watch
 | `GET /v1/addresses/{address}/transactions`    | `limit`, `cursor` | Tx history, newest first, pending on top          |
 | `GET /v1/boxes/{boxId}`                       |                   | One box, if a tx can spend it now                 |
 | `GET /v1/headers`                             | `limit`           | The last block headers, newest first, for signing |
-| `GET /v1/tokens/metadata`                     | `ids` (required)  | Token EIP-4 metadata: name, decimals, emission…   |
+| `GET /v1/tokens/metadata`                     | `ids` (required)  | Mint tx, emission, standard, EIP-4 metadata       |
 | `POST /v1/transactions`                       | `broadcast`       | Sends a signed tx, given as hex in the body       |
 | `GET /v1/status`                              |                   | Version, network, tip and readiness               |
 
@@ -160,7 +160,9 @@ Parameters:
   the first page; `nextCursor: null` means there are no more (a short page can still have a
   cursor). All pages of one box walk show the same block as the first (`asOf`).
 - **`ids`** is a comma-separated list of up to 100 token ids:
-  `/v1/tokens/metadata?ids=<id1>,<id2>`.
+  `/v1/tokens/metadata?ids=<id1>,<id2>`. Each token has its `mintingTxId`, `emission` and the
+  `standard` its mint follows, `eip-4` or `none`; an `eip-4` token's name, description,
+  decimals and asset are under `metadata`.
 - **`broadcast=false`** makes the node only validate the tx, without sending it. Default `true`.
 
 Responses:
