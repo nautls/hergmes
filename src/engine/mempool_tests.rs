@@ -374,6 +374,49 @@ fn snapshot(txs: Vec<UnconfirmedTransaction>) -> Arc<[UnconfirmedTransaction]> {
     txs.into()
 }
 
+/// A tx is read by id only while it is valid at the tip: not one left out when its snapshot is
+/// installed, which the simulator never lists, nor one a stricter check, a block mining it or
+/// a block spending its input left out since.
+#[test]
+fn a_pool_tx_is_read_only_while_valid_at_the_tip() {
+    let mut mempool = Mempool::default();
+    assert_eq!(mempool.pool_tx(&digest(10)), None, "no snapshot");
+    let mined = pay(10, (1, OWNER), OWNER);
+    let other = pay(30, (2, OTHER), OTHER);
+    let spender = pay(50, (5, OWNER), OWNER);
+    // Box 3 is neither confirmed nor created in the pool.
+    let unresolved = pay(20, (3, OTHER), OTHER);
+    let txs = snapshot(vec![mined.clone(), unresolved, other.clone(), spender.clone()]);
+    let in_utxo_set = |ids: &'static [u8]| move |b: &UTxO| ids.iter().any(|&n| b.id == digest(n));
+    mempool.apply_snapshot(txs, at(1), Some(at(1)), in_utxo_set(&[1, 2, 5]));
+    assert_eq!(mempool.pool_tx(&digest(10)), Some(Some(mined.clone())));
+    assert_eq!(mempool.pool_tx(&digest(30)), Some(Some(other)));
+    assert_eq!(mempool.pool_tx(&digest(50)), Some(Some(spender.clone())));
+    assert_eq!(mempool.pool_tx(&digest(20)), Some(None), "left out at install");
+    assert_eq!(mempool.pool_tx(&digest(0xee)), Some(None), "never listed");
+
+    // Box 2 is no longer taken as confirmed.
+    mempool.redecide(in_utxo_set(&[1, 5]));
+    assert_eq!(mempool.pool_tx(&digest(30)), Some(None), "left out by a stricter check");
+    assert_eq!(mempool.pool_tx(&digest(10)), Some(Some(mined)));
+
+    // A block mines tx 10. Its input is left out of the spent boxes, so only its being mined
+    // takes it out.
+    let block = HashSet::from([digest(10)]);
+    mempool.block_applied(at(2), &block, &HashSet::new(), in_utxo_set(&[1, 5]));
+    assert_eq!(mempool.pool_tx(&digest(10)), Some(None), "mined by a block");
+    assert_eq!(mempool.pool_tx(&digest(50)), Some(Some(spender)));
+
+    // A block spends box 5, tx 50's input.
+    mempool.block_applied(
+        at(3),
+        &HashSet::new(),
+        &HashSet::from([digest(5)]),
+        in_utxo_set(&[1, 5]),
+    );
+    assert_eq!(mempool.pool_tx(&digest(50)), Some(None), "input spent by a block");
+}
+
 #[test]
 fn an_empty_overlay_is_not_sent_until_it_was_not_empty() {
     let mut mempool = Mempool::default();

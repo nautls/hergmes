@@ -2,7 +2,7 @@
 //! the engine's tip, and per tracked key the overlay hash and pending delta last sent.
 
 use std::{
-    collections::{BTreeMap, BTreeSet, HashSet},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     sync::Arc,
 };
 
@@ -28,6 +28,29 @@ struct Snapshot {
     /// The txs that can be valid at `tip`, in canonical order. Only shrinks until the next
     /// snapshot: a tx left out once never comes back.
     order: Vec<usize>,
+    /// The position in `txs` of each tx in `order`, for a read of one pool tx by id. Without
+    /// it a read scans the pool on the engine task, so repeated reads delay blocks and
+    /// snapshots behind them.
+    by_id: HashMap<TxId, usize>,
+}
+
+impl Snapshot {
+    fn new(txs: Arc<[UnconfirmedTransaction]>, tip: BlockRef, order: Vec<usize>) -> Self {
+        let by_id = index(&txs, &order);
+        Self { txs, observed: tip, tip, order, by_id }
+    }
+
+    /// Replaces `order` with `kept`, a subset of it, and the index with it if a tx left.
+    fn keep(&mut self, kept: Vec<usize>) {
+        if kept.len() < self.order.len() {
+            self.by_id = index(&self.txs, &kept);
+        }
+        self.order = kept;
+    }
+}
+
+fn index(txs: &[UnconfirmedTransaction], order: &[usize]) -> HashMap<TxId, usize> {
+    order.iter().map(|&i| (txs[i].id, i)).collect()
 }
 
 /// What a tracked key's subscribers have.
@@ -111,7 +134,7 @@ impl Mempool {
             left_out = txs.len() - order.len(),
             "Mempool snapshot installed"
         );
-        self.snapshot = Some(Snapshot { txs, observed: tip, tip, order });
+        self.snapshot = Some(Snapshot::new(txs, tip, order));
     }
 
     /// The engine applied a block and is now at `tip`. `mined` are the block's txs and `spent`
@@ -151,9 +174,10 @@ impl Mempool {
                 .copied()
                 .filter(|&i| !mined.contains(&s.txs[i].id));
             let before = s.order.len();
-            s.order = overlay::pending_order_among(&s.txs, candidates, |b| {
+            let kept = overlay::pending_order_among(&s.txs, candidates, |b| {
                 !spent.contains(&b.id) && is_confirmed(b)
             });
+            s.keep(kept);
             s.tip = tip;
             debug!(
                 height = tip.height,
@@ -193,9 +217,9 @@ impl Mempool {
         let Some(s) = &mut self.snapshot else {
             return Vec::new();
         };
-        let candidates = std::mem::take(&mut s.order);
-        let before = candidates.len();
-        s.order = overlay::pending_order_among(&s.txs, candidates, is_confirmed);
+        let before = s.order.len();
+        let kept = overlay::pending_order_among(&s.txs, s.order.iter().copied(), is_confirmed);
+        s.keep(kept);
         if s.order.len() < before {
             debug!(
                 left = before - s.order.len(),
@@ -234,17 +258,10 @@ impl Mempool {
     }
 
     /// Tx `id` if the snapshot in use has it among the txs valid at the tip; `None` without
-    /// a snapshot. A scan, as [`Mempool::pool_box`] is: a read of one tx is rare next to a
-    /// snapshot, and an index would be rebuilt with each.
+    /// a snapshot.
     pub fn pool_tx(&self, id: &TxId) -> Option<Option<UnconfirmedTransaction>> {
         let s = self.snapshot.as_ref()?;
-        Some(
-            s.order
-                .iter()
-                .map(|&i| &s.txs[i])
-                .find(|tx| tx.id == *id)
-                .cloned(),
-        )
+        Some(s.by_id.get(id).map(|&i| s.txs[i].clone()))
     }
 
     /// `key`'s overlay, tracked or not. Empty without a snapshot.

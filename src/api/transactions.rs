@@ -137,9 +137,10 @@ impl<S: NodeSource> Transactions<S> {
     /// the pool changed and fetches it with the tx in it. Node 6.0.8:
     /// `ErgoBaseApiRoute.sendLocalTransactionRoute` answers once the view holder replies;
     /// `ErgoNodeViewHolder.txModify` replies after `updateNodeView` has published
-    /// `ChangedMempool`, which the event stream hands at once to `ErgoReadersHolder` (read
-    /// by `TransactionsApiRoute.getMemPool`) and `ErgoStatsCollector` (read by
-    /// `InfoApiRoute`), so either answers a later request with the new pool.
+    /// `ChangedMempool`. Publishing puts it in the mailboxes of `ErgoReadersHolder` (asked by
+    /// `TransactionsApiRoute.getMemPool`) and `ErgoStatsCollector` (asked by `InfoApiRoute`)
+    /// before the reply is sent. An actor takes its messages in the order they arrived, so a
+    /// request made after the answer is handled after the new pool is in place.
     pub fn waking(mut self, wake: Wake) -> Self {
         self.wake = wake;
         self
