@@ -24,7 +24,7 @@ use crate::{
     sim::{
         Endpoint,
         ledger::{Entry, Ledger},
-        oracle::Oracle,
+        oracle::{FEE_CONTRACT, Oracle},
         rng::Rng,
         source::Hook,
     },
@@ -651,6 +651,7 @@ impl Chain {
                 }
             }
         }
+        pay_fees(&mut outputs, inputs[0].id);
         outputs
     }
 
@@ -1325,6 +1326,26 @@ fn check_balance(inputs: &[Arc<UTxO>], outputs: &[OutputSpec], mints: &[(TokenId
 
 /// Splits `total` into `parts` amounts. With `lumpy`, sometimes gives all of it to one part
 /// and spreads small totals unit by unit, so tokens get split and merged.
+/// Appends the outputs to the miners' fee contract that a quarter of the random txs have,
+/// taken from the first output's ERG: one, two to be summed, or one of zero value, which is a
+/// fee of zero and not none. Chosen by the first input's id, not by drawing from the rng, so
+/// a seed draws the same numbers as without fees (though the boxes they pick move with the
+/// box ids).
+fn pay_fees(outputs: &mut Vec<OutputSpec>, first: BoxId) {
+    let (fees, zero) = match first.0[0] % 16 {
+        0 => (1, true),
+        8 => (2, false),
+        4 | 12 => (1, false),
+        _ => return,
+    };
+    let tree = HexBytes::from(hex::decode(FEE_CONTRACT).expect("the fee contract is hex"));
+    for _ in 0..fees {
+        let value = if zero { 0 } else { outputs[0].value / 1000 };
+        outputs[0].value -= value;
+        outputs.push(OutputSpec { ergo_tree: tree.clone(), value, tokens: Vec::new() });
+    }
+}
+
 fn split(rng: &mut Rng, total: u64, parts: usize, lumpy: bool) -> Vec<u64> {
     let mut out = vec![0; parts];
     if lumpy && (parts == 1 || rng.chance(1, 3)) {
