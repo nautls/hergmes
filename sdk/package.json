@@ -1,6 +1,6 @@
 {
   "name": "@hergmes/sdk",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": false,
   "description": "Client for the hergmes relay: realtime, mempool-aware boxes and balances on Ergo.",
   "repository": {
