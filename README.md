@@ -145,6 +145,7 @@ To track more, raise `max_tracked_units` and `box_cache_mb` together, then watch
 | `GET /v1/parameters`                          |                   | The chain parameters, as in the node's `/info`    |
 | `GET /v1/tokens/metadata`                     | `ids` (required)  | Mint tx, emission, standard, EIP-4 metadata       |
 | `POST /v1/transactions`                       | `broadcast`       | Sends a signed tx, given as hex in the body       |
+| `GET /v1/mempool/transactions/{txId}`         |                   | A pending tx, as the relay's mempool view has it  |
 | `GET /v1/status`                              |                   | Version, network, tip and readiness               |
 
 Parameters:
@@ -172,6 +173,11 @@ Responses:
 - `/boxes/spendable` is a one-shot view for stateless clients: confirmed boxes minus those
   pending txs spend, plus those they create. To follow an address live, use `/boxes` and the
   WebSocket.
+- A pending tx is Fleet's `SignedTransaction`, each input also the box it spends. A tx just
+  sent is found once the relay's mempool poll sees it: usually within a second or two, longer
+  around a new block. Until then, and once it is confirmed or dropped, it is
+  `404 transaction_not_found`. For about a second after a chain reorganization the relay has
+  no mempool view, and answers `503 not_ready`.
 - A template is an ErgoTree's bytes after its header and constants, in hex. Only trees with
   segregated constants are supported; others are `422 unsupported_template`.
 - Errors are `{ "error": "<code>", "message": "..." }`; a `503` carries `Retry-After`. A

@@ -333,6 +333,7 @@ impl Engine {
             ),
             Query::Boxes(ids) => Reply::Boxes(self.ring_boxes(&ids)),
             Query::PoolBox(id) => Reply::PoolBox(self.mempool.pool_box(&id)),
+            Query::PoolTx(id) => Reply::PoolTx(self.mempool.pool_tx(&id)),
             Query::MempoolSnapshot => Reply::MempoolSnapshot(self.mempool.latest()),
             Query::CatchUp { key, from } => {
                 let mut outputs = self.catch_up(key, from);

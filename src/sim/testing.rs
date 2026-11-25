@@ -20,7 +20,10 @@ use crate::{
     sim::{Chain, SimConfig, SimOp, strategy},
     types::{
         Digest, HashDigest, HexBytes,
-        ergo::{BoxId, ErgoTree, NonMandatoryRegisters, Token, UTxO, UnconfirmedTransaction},
+        ergo::{
+            BoxId, ErgoTree, NonMandatoryRegisters, SpendingProof, Token, UTxO,
+            UnconfirmedTransaction,
+        },
     },
 };
 
@@ -144,5 +147,6 @@ pub fn utxo(n: u8, tx: u8, owner: u8, tokens: &[(u8, u64)]) -> UTxO {
 }
 
 pub fn tx(id: u8, inputs: Vec<UTxO>, outputs: Vec<UTxO>) -> UnconfirmedTransaction {
-    UnconfirmedTransaction { id: digest(id), inputs, outputs }
+    let proofs = vec![SpendingProof::default(); inputs.len()];
+    UnconfirmedTransaction { id: digest(id), inputs, proofs, data_inputs: Vec::new(), outputs }
 }

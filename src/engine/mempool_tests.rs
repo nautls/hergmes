@@ -478,7 +478,13 @@ fn a_long_overlay_is_sent_whole() {
         let mut output = utxo(0, 0, OWNER, &[]);
         output.id = Digest(blake2_of(n + 1_000_000));
         output.transaction_id = id;
-        txs.push(UnconfirmedTransaction { id, inputs: vec![from], outputs: vec![output.clone()] });
+        txs.push(UnconfirmedTransaction {
+            id,
+            inputs: vec![from],
+            proofs: vec![Default::default()],
+            data_inputs: Vec::new(),
+            outputs: vec![output.clone()],
+        });
         from = output;
     }
     let expected: Vec<TxId> = txs.iter().map(|tx| tx.id).collect();

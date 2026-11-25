@@ -6,7 +6,7 @@
  * Fleet as they are.
  */
 
-import type { BlockHeader, Box, TokenAmount } from "@fleet-sdk/common";
+import type { BlockHeader, Box, DataInput, ProverResult, TokenAmount } from "@fleet-sdk/common";
 
 /**
  * A key the relay tracks: an address (any encoding of its ErgoTree), a token id, or a template
@@ -154,6 +154,20 @@ export type AssetType =
 export interface TokenList {
   items: TokenMetadata[];
 }
+
+/**
+ * A pending tx, as the relay's mempool view has it: Fleet's `SignedTransaction`, so it goes to
+ * Fleet as it is, each input also the box it spends.
+ */
+export interface MempoolTransaction {
+  id: string;
+  inputs: MempoolInput[];
+  dataInputs: DataInput[];
+  outputs: Box<string>[];
+}
+
+/** A pending tx's input: the box it spends, with Fleet's `SignedInput` proof. */
+export type MempoolInput = Box<string> & { spendingProof: ProverResult };
 
 /** The id of a tx the node took, sent or only checked. */
 export interface Submitted {

@@ -119,6 +119,8 @@ fn engine(keys: usize, boxes_per_key: usize) {
         .map(|t| UnconfirmedTransaction {
             id: digest(u64::MAX - 2 - 3 * t),
             inputs: vec![plain_box(u64::MAX - 3 - 3 * t, &stranger)],
+            proofs: vec![Default::default()],
+            data_inputs: Vec::new(),
             outputs: vec![plain_box(u64::MAX - 4 - 3 * t, &stranger)],
         })
         .collect();

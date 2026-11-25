@@ -36,15 +36,15 @@ use crate::{
         pages,
         transactions::{self, MAX_HEX_CHARS},
         wire::{
-            BalanceBody, BoxBody, ErrorBody, HeadersBody, HistoryBody, PageBody, ParametersBody,
-            SpendableBody, StatusBody, SubmittedBody, TokensBody,
+            BalanceBody, BoxBody, ErrorBody, HeadersBody, HistoryBody, MempoolTransactionBody,
+            PageBody, ParametersBody, SpendableBody, StatusBody, SubmittedBody, TokensBody,
         },
     },
     clients::NodeSource,
     engine::TrackingKey,
     types::{
         address::Network,
-        ergo::{BoxId, Parameters},
+        ergo::{BoxId, Parameters, TxId},
     },
 };
 
@@ -115,6 +115,7 @@ where
             "/v1/transactions",
             post(submit_transaction::<S, E>).layer(DefaultBodyLimit::max(MAX_TX_BODY)),
         )
+        .route("/v1/mempool/transactions/{tx_id}", get(pending_transaction::<S, E>))
         .route("/v1/parameters", get(parameters::<S, E>))
         .route("/v1/status", get(status::<S, E>))
         .with_state(api)
@@ -286,6 +287,17 @@ async fn submit_transaction<S: NodeSource, E: EngineHandle>(
     Ok(Json(SubmittedBody { transaction_id: &id }).into_response())
 }
 
+/// Outside the key policy, like a box by id: a tx id is not a key.
+async fn pending_transaction<S: NodeSource, E: EngineHandle>(
+    State(api): State<Arc<Api<S, E>>>,
+    tx_id: Result<Path<String>, PathRejection>,
+) -> Result<Response, ApiError> {
+    let tx_id = tx_id.map_err(|_| ApiError::InvalidTransactionId)?;
+    let id: TxId = tx_id.parse().map_err(|_| ApiError::InvalidTransactionId)?;
+    let tx = transactions::pending(&api.engine, &id).await?;
+    Ok(Json(MempoolTransactionBody(&tx)).into_response())
+}
+
 /// Cheap enough for health checks: one engine query and no node call. `ready` is the relay
 /// having started: the engine has reached the node's tip once and the configured keys have
 /// settled. It stays true while the engine is behind, as it is for a moment after each
@@ -319,12 +331,15 @@ impl ApiError {
             | Self::InvalidTemplate
             | Self::InvalidIds
             | Self::InvalidBoxId
+            | Self::InvalidTransactionId
             | Self::InvalidBroadcast
             | Self::InvalidCursor(_)
             | Self::InvalidLimit { .. }
             | Self::TransactionRejected { .. } => StatusCode::BAD_REQUEST,
             Self::KeyNotAllowed | Self::OriginNotAllowed => StatusCode::FORBIDDEN,
-            Self::UnknownToken | Self::BoxNotFound => StatusCode::NOT_FOUND,
+            Self::UnknownToken | Self::BoxNotFound | Self::TransactionNotFound => {
+                StatusCode::NOT_FOUND
+            }
             Self::CursorExpired => StatusCode::GONE,
             Self::SupplyTooLarge { .. } | Self::TooManyBoxes { .. } | Self::UnsupportedTemplate => {
                 StatusCode::UNPROCESSABLE_ENTITY
@@ -351,6 +366,7 @@ impl ApiError {
             | Self::InvalidTemplate
             | Self::InvalidIds
             | Self::InvalidBoxId
+            | Self::InvalidTransactionId
             | Self::InvalidBroadcast
             | Self::InvalidCursor(_)
             | Self::InvalidLimit { .. }
@@ -359,6 +375,7 @@ impl ApiError {
             | Self::OriginNotAllowed
             | Self::UnknownToken
             | Self::BoxNotFound
+            | Self::TransactionNotFound
             | Self::CursorExpired
             | Self::SupplyTooLarge { .. }
             | Self::TooManyBoxes { .. }

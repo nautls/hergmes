@@ -47,6 +47,7 @@ fn every_error() -> Vec<(ApiError, StatusCode, Option<&'static str>)> {
         (ApiError::InvalidTemplate, S::BAD_REQUEST, None),
         (ApiError::InvalidIds, S::BAD_REQUEST, None),
         (ApiError::InvalidBoxId, S::BAD_REQUEST, None),
+        (ApiError::InvalidTransactionId, S::BAD_REQUEST, None),
         (ApiError::InvalidBroadcast, S::BAD_REQUEST, None),
         (
             ApiError::TransactionRejected {
@@ -61,6 +62,7 @@ fn every_error() -> Vec<(ApiError, StatusCode, Option<&'static str>)> {
         (ApiError::KeyNotAllowed, S::FORBIDDEN, None),
         (ApiError::UnknownToken, S::NOT_FOUND, None),
         (ApiError::BoxNotFound, S::NOT_FOUND, None),
+        (ApiError::TransactionNotFound, S::NOT_FOUND, None),
         (ApiError::CursorExpired, S::GONE, None),
         (ApiError::SupplyTooLarge { emission: 101, limit: 100 }, S::UNPROCESSABLE_ENTITY, None),
         (ApiError::TooManyBoxes { max: 5 }, S::UNPROCESSABLE_ENTITY, None),
@@ -122,7 +124,7 @@ async fn every_error_has_its_status_code_and_retry_after() {
 fn every_variant_is_in_the_table() {
     let codes: std::collections::BTreeSet<_> =
         every_error().iter().map(|(e, ..)| e.code()).collect();
-    assert_eq!(codes.len(), 22, "{codes:?}");
+    assert_eq!(codes.len(), 24, "{codes:?}");
 }
 
 #[test]
@@ -761,6 +763,64 @@ async fn a_box_by_id_is_served_alone_in_either_case() {
     }
     let unknown = format!("/v1/boxes/{}", "ab".repeat(32));
     assert_eq!(f.error(&unknown, StatusCode::NOT_FOUND).await, "box_not_found");
+}
+
+/// A pending tx is served whole from the engine's snapshot, in either case, until a block
+/// confirms it; before the engine has a snapshot, none can be said pending or not.
+#[tokio::test(start_paused = true)]
+async fn a_pending_tx_is_served_by_id_until_it_is_mined() {
+    let mut f = Fixture::new();
+    let tx = {
+        let mut chain = f.sim.lock();
+        let spent = crate::sim::testing::box_of(&chain, 0);
+        let to = chain.trees()[1].clone();
+        let tx = chain.transfer(&[spent], &to);
+        chain.submit(tx.clone());
+        tx
+    };
+    let uri = format!("/v1/mempool/transactions/{}", tx.id);
+    let response = f.get(&uri).await;
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(response.headers()[RETRY_AFTER], "1");
+    assert_eq!(body_json(response).await["error"], "not_ready");
+
+    f.tick();
+    for uri in
+        [uri.clone(), format!("/v1/mempool/transactions/{}", tx.id.to_string().to_uppercase())]
+    {
+        let body = f.ok(&uri).await;
+        assert_eq!(body["id"], tx.id.to_string());
+        assert_eq!(body["dataInputs"], serde_json::json!([]));
+        let inputs = body["inputs"].as_array().unwrap();
+        assert_eq!(inputs.len(), tx.inputs.len());
+        for (input, spent) in inputs.iter().zip(&tx.inputs) {
+            assert_eq!(input["boxId"], spent.id.to_string());
+            assert_eq!(input["value"], spent.value.to_string());
+            let proof = &input["spendingProof"];
+            assert_eq!(proof["proofBytes"], spent.id.to_string(), "the simulator's proof");
+            assert_eq!(proof["extension"], serde_json::json!({}));
+        }
+        let outputs = body["outputs"].as_array().unwrap();
+        let ids: Vec<String> = tx.outputs.iter().map(|o| o.id.to_string()).collect();
+        assert_eq!(
+            outputs
+                .iter()
+                .map(|o| o["boxId"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            ids
+        );
+        assert!(outputs.iter().all(|o| o.get("inclusionHeight").is_none()));
+    }
+    for bad in ["abcd", &format!("{}0", tx.id), "%FF"] {
+        let uri = format!("/v1/mempool/transactions/{bad}");
+        assert_eq!(f.error(&uri, StatusCode::BAD_REQUEST).await, "invalid_transaction_id");
+    }
+    let unknown = format!("/v1/mempool/transactions/{}", "ab".repeat(32));
+    assert_eq!(f.error(&unknown, StatusCode::NOT_FOUND).await, "transaction_not_found");
+
+    f.sim.lock().mine_txs(vec![tx]);
+    f.tick();
+    assert_eq!(f.error(&uri, StatusCode::NOT_FOUND).await, "transaction_not_found");
 }
 
 /// A box id is not a key: a box of an address the policy refuses is served.

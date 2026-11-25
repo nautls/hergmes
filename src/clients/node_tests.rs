@@ -187,7 +187,11 @@ mod shapes {
             output.transaction_id = digest(&format!("{:02x}", n + 1).repeat(32));
             MempoolTransactionResponse {
                 id: output.transaction_id,
-                inputs: vec![MempoolTransactionInput { utxo: Some(spent) }],
+                inputs: vec![MempoolTransactionInput {
+                    utxo: Some(spent),
+                    proof: Default::default(),
+                }],
+                data_inputs: Vec::new(),
                 outputs: vec![output],
             }
         };
@@ -385,6 +389,61 @@ mod shapes {
             assert_eq!(error.reason, "bad.request", "{name}");
             assert!(error.detail.is_some_and(|d| !d.is_empty()), "{name}");
         }
+    }
+
+    /// Each input keeps its proof, in input order, and data inputs their ids, as the node
+    /// listed them; a proof's extension ids are signed bytes. An input without a proof fails
+    /// the list: the node writes one for every input.
+    #[test]
+    fn mempool_keeps_proofs_and_data_inputs() {
+        let listed: Vec<Value> = load("mempool");
+        let txs = filter_out_unresolved(load("mempool"));
+        assert_eq!(txs.len(), listed.len());
+        let mut extended = 0;
+        for (tx, raw) in txs.iter().zip(&listed) {
+            let inputs = raw["inputs"].as_array().unwrap();
+            assert_eq!(tx.proofs.len(), inputs.len());
+            for (proof, input) in tx.proofs.iter().zip(inputs) {
+                let raw = &input["spendingProof"];
+                assert_eq!(proof.proof_bytes.to_string(), raw["proofBytes"].as_str().unwrap());
+                let extension = raw["extension"].as_object().unwrap();
+                assert_eq!(proof.extension.len(), extension.len());
+                for (id, value) in &proof.extension {
+                    assert_eq!(extension[&id.to_string()], value.to_string());
+                }
+                extended += usize::from(!extension.is_empty());
+            }
+            let data: Vec<String> = raw["dataInputs"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|d| d["boxId"].as_str().unwrap().to_owned())
+                .collect();
+            let ids: Vec<String> = tx.data_inputs.iter().map(|id| id.to_string()).collect();
+            assert_eq!(ids, data);
+        }
+        assert!(extended > 0, "the fixture has a context extension");
+        assert!(txs.iter().any(|tx| !tx.data_inputs.is_empty()), "and a data input");
+
+        let read = |proof: Value| {
+            let input = serde_json::json!({ "boxId": "ab".repeat(32), "spendingProof": proof });
+            serde_json::from_value::<MempoolTransactionInput>(input).map(|i| i.proof)
+        };
+        let proof = read(serde_json::json!({
+            "proofBytes": "",
+            "extension": { "-1": "0400", "0": "0402", "127": "" },
+        }))
+        .unwrap();
+        assert!(proof.proof_bytes.0.is_empty());
+        let ids: Vec<i8> = proof.extension.iter().map(|(id, _)| *id).collect();
+        assert_eq!(ids, [-1, 0, 127]);
+        assert!(read(serde_json::json!({ "proofBytes": "zz", "extension": {} })).is_err());
+        let mut tx = listed[0].clone();
+        tx["inputs"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("spendingProof");
+        assert!(serde_json::from_value::<MempoolTransactionResponse>(tx).is_err());
     }
 
     /// A pool tx's input is the box when the node resolved it, `None` when it sent only

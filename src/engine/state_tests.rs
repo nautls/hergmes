@@ -1664,6 +1664,26 @@ impl Harness {
             }
         }
 
+        // A tx is served if the reference order has it: a listed tx left out at the tip is
+        // not. Without a snapshot, no answer either way. Asked of every listed tx and an
+        // unknown one.
+        let listed = self.held.iter().flat_map(|txs| txs.iter().map(|tx| tx.id));
+        for id in listed.chain([Digest([0xee; 32])]) {
+            let Reply::PoolTx(answer) = self.engine.query(Query::PoolTx(id)) else {
+                panic!("a pool tx reply");
+            };
+            let expected = (self.held.as_ref())
+                .map(|_| order.iter().find(|tx| tx.id == id).map(|tx| (*tx).clone()));
+            assert_eq!(answer, expected, "pool tx {id}");
+            match answer {
+                Some(Some(_)) => self.seen.insert("pool tx served"),
+                Some(None) if id != Digest([0xee; 32]) => {
+                    self.seen.insert("pool tx left out at the tip")
+                }
+                _ => false,
+            };
+        }
+
         // Every live client holds the oracle's state at the tip.
         for client in self.clients.iter().filter(|c| c.live) {
             let (balance, overlay) = expected_for(self, &client.key, &utxo, &ids);
@@ -1846,6 +1866,8 @@ fn random_histories_reach_the_hard_engine_cases() {
         "pool box created and spent in the pool",
         "pool box spends a confirmed box",
         "pool box created",
+        "pool tx served",
+        "pool tx left out at the tip",
         "block leaves a key with boxes unchanged",
         "block changes a key with no overlay or balance after it",
         "change chained across unchanged blocks",

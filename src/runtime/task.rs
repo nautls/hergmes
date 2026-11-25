@@ -134,6 +134,7 @@ impl Message {
                 Query::Chain => "query_chain",
                 Query::Boxes(_) => "query_boxes",
                 Query::PoolBox(_) => "query_pool_box",
+                Query::PoolTx(_) => "query_pool_tx",
                 Query::MempoolSnapshot => "query_mempool",
                 Query::CatchUp { .. } => "query_catch_up",
                 Query::Stats => "query_stats",
