@@ -1,5 +1,5 @@
-//! What an EIP-4 minting box says beyond what the node's indexer reads: the asset type (R7)
-//! and, for an NFT, its artwork (R8 and R9).
+//! What an EIP-4 minting box says beyond what the node's indexer reads: whether it follows
+//! EIP-4 at all, the asset type (R7) and, for an NFT, its artwork (R8 and R9).
 //!
 //! The indexer reads only R4 to R6 into a token's name, description and decimals (node 6.0.8,
 //! `IndexedToken.fromBox`), so the rest comes from the minting box itself. Read as Nautilus
@@ -11,11 +11,94 @@
 //! (EIP-4, "Asset types"): an artwork collection leaves them empty, and file attachments hold
 //! a list of hashes and an EIP-29 attachment, an EIP since revoked.
 
+use std::mem::size_of;
+
 use crate::types::{
     Digest, HashDigest,
     ergo::NonMandatoryRegisters,
-    ergo_tree::{byte_coll, byte_coll_pair},
+    ergo_tree::{byte_coll, byte_coll_pair, int},
 };
+
+/// The standard a token's mint follows, by its minting box, and what the mint says under it.
+/// A standard's fields are its own, so another standard adds a variant and changes none.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Standard {
+    None,
+    Eip4(Eip4),
+}
+
+/// What an EIP-4 mint says of its token. `name`, `description` and `decimals` are as the
+/// indexer lists them, since it reads them from the same registers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Eip4 {
+    pub name: Box<str>,
+    pub description: Box<str>,
+    pub decimals: i32,
+    pub asset: Option<Box<Asset>>,
+}
+
+impl Standard {
+    /// The standard of a mint whose box holds `registers`, given the name, description and
+    /// decimals the indexer read from them (node 6.0.8, `IndexedToken.fromBox`). EIP-4 if the
+    /// mint names its token, describes it, gives its decimals or its asset type: the indexer
+    /// reads a name and a description from a non-empty `Coll[Byte]` R4 and R5 only, and
+    /// decimals from R6, but `0` decimals are also its default, so R6 is read here too.
+    pub fn of_mint(
+        name: Box<str>,
+        description: Box<str>,
+        decimals: i32,
+        registers: &NonMandatoryRegisters,
+    ) -> Self {
+        let asset = Asset::from_registers(registers).map(Box::new);
+        // Registers are densely packed, but R4 to R6 may hold nothing the indexer reads, so an
+        // asset type alone counts.
+        if name.is_empty()
+            && description.is_empty()
+            && decimals == 0
+            && asset.is_none()
+            && !gives_decimals(registers)
+        {
+            return Self::None;
+        }
+        Self::Eip4(Eip4 { name, description, decimals, asset })
+    }
+
+    /// The name clients read.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Eip4(_) => "eip-4",
+        }
+    }
+
+    /// The bytes this holds beyond its own size, for weighing a cache entry.
+    pub fn heap_size(&self) -> usize {
+        match self {
+            Self::None => 0,
+            Self::Eip4(eip4) => {
+                let asset = eip4
+                    .asset
+                    .as_ref()
+                    .map_or(0, |a| size_of::<Asset>() + a.heap_size());
+                eip4.name.len() + eip4.description.len() + asset
+            }
+        }
+    }
+}
+
+/// Whether R6 holds decimals as the indexer reads them (node 6.0.8, `IndexedToken.fromBox`):
+/// an `Int`, or a `Coll[Byte]` holding one in decimal, `0` included. Scala's `toInt` is
+/// Java's `Integer.parseInt`, which also takes non-ASCII digits that this does not; those
+/// decimals are non-zero but for a zero written in them, so the indexer's value catches the
+/// rest.
+fn gives_decimals(registers: &NonMandatoryRegisters) -> bool {
+    registers.r6.as_ref().is_some_and(|r6| {
+        byte_coll(&r6.0).map_or_else(
+            || int(&r6.0).is_some(),
+            |b| std::str::from_utf8(b).is_ok_and(|s| s.parse::<i32>().is_ok()),
+        )
+    })
+}
 
 /// The asset types EIP-4 registers ("Asset types"), each R7's category and subcategory.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

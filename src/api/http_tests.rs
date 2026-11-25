@@ -774,16 +774,24 @@ async fn token_metadata_is_served_for_any_token() {
         .await;
     let items = body["items"].as_array().unwrap();
     assert_eq!(items.len(), 2);
-    let expected = f.sim.lock().tokens(&[large]).remove(0);
+    let minting_tx_id = {
+        let chain = f.sim.lock();
+        let minting_box_id = chain.tokens(&[large]).remove(0).minting_box_id;
+        chain
+            .indexed_box(&minting_box_id)
+            .unwrap()
+            .indexed
+            .utxo
+            .transaction_id
+    };
     assert_eq!(
         items[0],
         serde_json::json!({
             "tokenId": large.to_string(),
-            "mintingBoxId": expected.minting_box_id.to_string(),
-            "name": "large",
-            "description": "",
-            "decimals": 0,
+            "mintingTxId": minting_tx_id.to_string(),
             "emission": "1000000",
+            "standard": "eip-4",
+            "metadata": { "name": "large", "description": "", "decimals": 0 },
         })
     );
     assert_eq!(items[1]["tokenId"], nft.to_string());

@@ -3,7 +3,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Deserializer, Serialize, de::Error};
 use serde_json::value::RawValue;
 
-use crate::types::{Digest, HashDigest, HexBytes, eip4::Asset};
+use crate::types::{Digest, HashDigest, HexBytes, eip4::Standard};
 
 pub type BoxId = HashDigest;
 pub type TxId = HashDigest;
@@ -309,7 +309,7 @@ pub struct TokenInfo {
 /// UTF-8, empty if absent or not bytes, and `decimals` is R6 as a decimal string or an `Int`, 0
 /// otherwise, so it can be negative. None of it changes once the mint is indexed.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-pub struct TokenMetadata {
+pub struct IndexedToken {
     pub id: TokenId,
     /// The first output of the mint tx holding the token. Not the token id, which is the mint
     /// tx's first input.
@@ -321,10 +321,37 @@ pub struct TokenMetadata {
     pub name: Box<str>,
     pub description: Box<str>,
     pub decimals: i32,
-    /// The asset type and artwork, which the indexer does not read: filled in from the minting
-    /// box.
-    #[serde(skip)]
-    pub asset: Option<Box<Asset>>,
+}
+
+/// A token as the relay serves it: the indexer's listing and what its minting box adds, the
+/// mint tx and the standard the mint follows. The listing's name, description and decimals
+/// are kept only under a standard: without one they are the indexer's defaults, not the
+/// minter's.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TokenMetadata {
+    pub id: TokenId,
+    /// The tx that minted the token, which a client looks up; the minting box is its first
+    /// output holding the token.
+    pub minting_tx_id: TxId,
+    pub emission: u64,
+    pub standard: Standard,
+}
+
+impl TokenMetadata {
+    /// `token` with what `minting`, its minting box, adds.
+    pub fn minted(token: IndexedToken, minting: &UTxO) -> Self {
+        Self {
+            id: token.id,
+            minting_tx_id: minting.transaction_id,
+            emission: token.emission,
+            standard: Standard::of_mint(
+                token.name,
+                token.description,
+                token.decimals,
+                &minting.registers,
+            ),
+        }
+    }
 }
 
 /// Response of `POST /blockchain/balance`.

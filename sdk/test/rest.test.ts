@@ -192,10 +192,14 @@ test("tokens' metadata, any supply, in the order asked", async () => {
   expect(items.map((t) => t.tokenId)).toEqual(known);
   for (const token of items) {
     expect(token.emission).toBe(emissions.get(token.tokenId));
-    expect(token.mintingBoxId).not.toBe(token.tokenId);
+    expect(token.mintingTxId).toMatch(/^[0-9a-f]{64}$/);
   }
-  const names = items.map((t) => t.name).filter((name) => name !== "");
+  // Only genesis tokens are named, so only they are EIP-4; any other has no metadata.
+  const names = items.flatMap((t) => (t.standard === "eip-4" ? [t.metadata.name] : []));
   expect(names.sort()).toEqual(["large", "nft-a", "nft-b", "over-101", "small-100", "small-5"]);
+  for (const token of items.filter((t) => t.standard === "none")) {
+    expect(token).not.toHaveProperty("metadata");
+  }
 });
 
 describe("errors", () => {

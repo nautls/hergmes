@@ -4,7 +4,7 @@ use crate::{
     clients::node::{IndexedHeightResponse, InfoResponse, NodeError},
     types::ergo::{
         AddressTransactions, Balance, BlockHeader, BoxById, BoxId, ErgoTree, HeaderId,
-        IndexedBlock, IndexedBox, TemplateHash, TokenId, TokenInfo, TokenMetadata, TxId, UTxO,
+        IndexedBlock, IndexedBox, IndexedToken, TemplateHash, TokenId, TokenInfo, TxId, UTxO,
         UnconfirmedTransaction,
     },
 };
@@ -86,7 +86,7 @@ pub trait NodeSource: Send + Sync {
     fn tokens(
         &self,
         ids: &[TokenId],
-    ) -> impl Future<Output = Result<Vec<TokenMetadata>, NodeError>> + Send;
+    ) -> impl Future<Output = Result<Vec<IndexedToken>, NodeError>> + Send;
 
     /// Unspent boxes from the UTXO set and the mempool. Missing ids are left out.
     fn boxes_with_pool(

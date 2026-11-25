@@ -10,8 +10,8 @@ use crate::{
         address::{self, Network, UnknownNetwork},
         ergo::{
             AddressTransactions, Balance, BalanceResponse, BlockHeader, BoxById, BoxId, ErgoTree,
-            HeaderId, IndexedBlock, IndexedBox, NodeBox, TemplateHash, TokenId, TokenInfo,
-            TokenMetadata, TxId, UTxO, UnconfirmedTransaction,
+            HeaderId, IndexedBlock, IndexedBox, IndexedToken, NodeBox, TemplateHash, TokenId,
+            TokenInfo, TxId, UTxO, UnconfirmedTransaction,
         },
     },
 };
@@ -327,7 +327,7 @@ impl NodeSource for NodeClient {
     }
 
     #[tracing::instrument(skip(self, ids), fields(count = ids.len()))]
-    async fn tokens(&self, ids: &[TokenId]) -> Result<Vec<TokenMetadata>, NodeError> {
+    async fn tokens(&self, ids: &[TokenId]) -> Result<Vec<IndexedToken>, NodeError> {
         fetch(self.post("blockchain/tokens").json(ids)).await
     }
 

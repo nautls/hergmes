@@ -16,7 +16,7 @@ use crate::{
     sim::{Chain, node_template_hash},
     types::ergo::{
         AddressTransactions, Balance, BlockHeader, BoxById, BoxId, ErgoTree, HeaderId,
-        IndexedBlock, IndexedBox, TemplateHash, TokenId, TokenInfo, TokenMetadata, TxId, UTxO,
+        IndexedBlock, IndexedBox, IndexedToken, TemplateHash, TokenId, TokenInfo, TxId, UTxO,
         UnconfirmedTransaction,
     },
 };
@@ -186,7 +186,7 @@ impl NodeSource for SimChain {
             .await
     }
 
-    async fn tokens(&self, ids: &[TokenId]) -> Result<Vec<TokenMetadata>, NodeError> {
+    async fn tokens(&self, ids: &[TokenId]) -> Result<Vec<IndexedToken>, NodeError> {
         self.serve(Endpoint::Tokens, |c| Ok(c.tokens(ids))).await
     }
 

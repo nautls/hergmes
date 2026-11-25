@@ -45,5 +45,8 @@ export type {
   Submitted,
   Spendable,
   TokenList,
+  TokenBase,
   TokenMetadata,
+  TokenStandard,
+  Eip4Metadata,
 } from "./wire.ts";
