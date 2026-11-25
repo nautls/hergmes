@@ -7,9 +7,10 @@ use super::*;
 use crate::{
     engine::{BlockRef, Config as EngineConfig, Engine, Query, Reply},
     sim::{
-        Chain, Endpoint, SimChain, SimConfig,
+        Chain, Endpoint, MAINNET_PARAMETERS, SimChain, SimConfig,
         testing::{new_chain, ready},
     },
+    types::ergo::Parameters,
 };
 
 fn engine() -> Mutex<Engine> {
@@ -87,6 +88,32 @@ fn started_once_a_tick_reaches_the_nodes_tip_and_stays_so() {
     let tick = ready(follower.tick(&engine, Instant::now())).unwrap();
     assert!(matches!(tick.blocks, Ok(Sync::WaitingForIndexer { .. })), "{tick:?}");
     assert!(*started.borrow(), "a block's indexer lag leaves it started");
+}
+
+#[test]
+fn a_tick_publishes_the_nodes_parameters_even_while_the_engine_is_behind() {
+    let sim = SimChain::new(new_chain());
+    let engine = engine();
+    let mut follower = Follower::new(sim.clone(), Config::default());
+    let mut parameters = follower.parameters();
+    assert_eq!(*parameters.borrow(), None, "none until the first read");
+
+    sim.lock().set_indexer_lag(1);
+    sim.lock().mine(0, 1, 1);
+    let tick = ready(follower.tick(&engine, Instant::now())).unwrap();
+    assert!(matches!(tick.blocks, Ok(Sync::WaitingForIndexer { .. })), "{tick:?}");
+    assert_eq!(*parameters.borrow_and_update(), Some(MAINNET_PARAMETERS));
+
+    // Unchanged: no one is told.
+    ready(follower.tick(&engine, Instant::now())).unwrap();
+    assert!(!parameters.has_changed().unwrap());
+
+    // A new epoch.
+    let next = Parameters { height: MAINNET_PARAMETERS.height + 1024, ..MAINNET_PARAMETERS };
+    sim.lock().set_parameters(next);
+    ready(follower.tick(&engine, Instant::now())).unwrap();
+    assert!(parameters.has_changed().unwrap());
+    assert_eq!(*parameters.borrow_and_update(), Some(next));
 }
 
 #[tokio::test(start_paused = true)]

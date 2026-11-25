@@ -25,7 +25,7 @@ use crate::{
         HexBytes,
         address::Network,
         eip4::{Eip4, Standard},
-        ergo::{HeaderId, NonMandatoryRegisters, TokenId, TokenMetadata, TxId, UTxO},
+        ergo::{HeaderId, NonMandatoryRegisters, Parameters, TokenId, TokenMetadata, TxId, UTxO},
     },
 };
 
@@ -373,6 +373,13 @@ impl Serialize for StatusBody<'_> {
         s.end()
     }
 }
+
+/// `GET /v1/parameters`: the node's chain parameters, under the node's own names, so a builder
+/// written against the node's `/info` reads them unchanged. One difference: an absent
+/// `subblocksPerBlock` is `null` here, where the node leaves it out.
+#[derive(Serialize)]
+#[serde(transparent)]
+pub struct ParametersBody<'a>(pub &'a Parameters);
 
 /// An error: the code for programs, the message for people. A refused tx also has the
 /// reason, from a fixed set like the code.

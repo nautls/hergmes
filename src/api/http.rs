@@ -36,13 +36,16 @@ use crate::{
         pages,
         transactions::{self, MAX_HEX_CHARS},
         wire::{
-            BalanceBody, BoxBody, ErrorBody, HeadersBody, HistoryBody, PageBody, SpendableBody,
-            StatusBody, SubmittedBody, TokensBody,
+            BalanceBody, BoxBody, ErrorBody, HeadersBody, HistoryBody, PageBody, ParametersBody,
+            SpendableBody, StatusBody, SubmittedBody, TokensBody,
         },
     },
     clients::NodeSource,
     engine::TrackingKey,
-    types::{address::Network, ergo::BoxId},
+    types::{
+        address::Network,
+        ergo::{BoxId, Parameters},
+    },
 };
 
 /// The most a tx body is read to: the longest tx, and room for whitespace around it, which
@@ -74,6 +77,8 @@ pub struct Api<S, E> {
     pub policy: KeyPolicy,
     /// Whether the follower has once brought the engine to the node's tip.
     pub started: watch::Receiver<bool>,
+    /// The chain's parameters as the node last reported them.
+    pub parameters: watch::Receiver<Option<Parameters>>,
     /// Counts the refusals sent to clients.
     pub metrics: Metrics,
 }
@@ -110,6 +115,7 @@ where
             "/v1/transactions",
             post(submit_transaction::<S, E>).layer(DefaultBodyLimit::max(MAX_TX_BODY)),
         )
+        .route("/v1/parameters", get(parameters::<S, E>))
         .route("/v1/status", get(status::<S, E>))
         .with_state(api)
         .layer(map_response_with_state(metrics, count_refusal))
@@ -291,6 +297,17 @@ async fn status<S: NodeSource, E: EngineHandle>(
     let tip = engine_tip(&api.engine).await?;
     let ready = tip.is_some() && *api.started.borrow() && api.pages.loads();
     Ok(Json(StatusBody { network: api.network, tip: tip.as_ref(), ready }).into_response())
+}
+
+/// What a tx builder needs to size fees, min box values and costs. Served from the follower's
+/// last `/info` read, with no node call of its own: they change only once per voting epoch,
+/// and the follower reads `/info` every tick. `not_ready` until the first read.
+async fn parameters<S: NodeSource, E: EngineHandle>(
+    State(api): State<Arc<Api<S, E>>>,
+) -> Result<Response, ApiError> {
+    let parameters =
+        (*api.parameters.borrow()).ok_or(ApiError::NotReady { retry_after: DEFAULT_RETRY })?;
+    Ok(Json(ParametersBody(&parameters)).into_response())
 }
 
 impl ApiError {

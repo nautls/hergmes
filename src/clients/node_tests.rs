@@ -77,13 +77,30 @@ mod shapes {
             raw["bestFullHeaderId"].as_str()
         );
         assert_eq!(info.full_height.map(u64::from), raw["fullHeight"].as_u64());
+        assert_eq!(serde_json::to_value(info.parameters).unwrap(), raw["parameters"]);
+    }
+
+    #[test]
+    fn parameters_before_subblocks_are_voted_in() {
+        // `subBlocksPerBlockOpt` is `None` until voted in, and the node drops null fields.
+        let mut raw: Value = load("info");
+        let fields = raw["parameters"].as_object_mut().unwrap();
+        fields.remove("subblocksPerBlock").unwrap();
+        let info: InfoResponse = serde_json::from_value(raw.clone()).unwrap();
+        assert_eq!(info.parameters.subblocks_per_block, None);
+        raw["parameters"]["subblocksPerBlock"] = Value::Null;
+        let written = serde_json::to_value(info.parameters).unwrap();
+        assert_eq!(written, raw["parameters"], "written as null");
     }
 
     #[test]
     fn info_before_the_first_full_block() {
         // The node drops null fields, so both are absent until a full block is applied.
-        let info: InfoResponse =
-            serde_json::from_str(r#"{"lastMemPoolUpdateTime": 1, "network": "mainnet"}"#).unwrap();
+        let mut raw: Value = load("info");
+        let fields = raw.as_object_mut().unwrap();
+        fields.remove("bestFullHeaderId");
+        fields.remove("fullHeight");
+        let info: InfoResponse = serde_json::from_value(raw).unwrap();
         assert_eq!((info.best_full_header_id, info.full_height), (None, None));
     }
 
@@ -494,12 +511,11 @@ mod source {
 
     #[tokio::test]
     async fn connect_rejects_an_unknown_network() {
+        let mut info: Value = load("info");
+        info["network"] = "devnet".into();
         let server = MockServer::start().await;
         Mock::given(path("/info"))
-            .respond_with(json(
-                200,
-                serde_json::json!({"lastMemPoolUpdateTime": 1, "network": "devnet"}),
-            ))
+            .respond_with(json(200, info))
             .mount(&server)
             .await;
         let result = NodeClient::connect(reqwest::Client::new(), &server.uri()).await;

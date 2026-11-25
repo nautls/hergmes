@@ -138,6 +138,7 @@ async fn run(flag: Option<PathBuf>) -> Result<(), AppError> {
 
     let follower = Follower::new(node.clone(), config.follower);
     let started = follower.started();
+    let parameters = follower.parameters();
     // For the loads that find the engine behind the node, so they don't wait for a tick.
     let wake = follower.waker();
     // Filled by the follower with the headers of the blocks it applies.
@@ -180,6 +181,7 @@ async fn run(flag: Option<PathBuf>) -> Result<(), AppError> {
         network: node.network(),
         policy,
         started,
+        parameters,
         metrics: counters.clone(),
     });
     info!(origins = %config.allow_origins, "Origin policy");

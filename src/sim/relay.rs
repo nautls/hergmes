@@ -167,6 +167,7 @@ impl SimRelay {
             network: NETWORK,
             policy: KeyPolicy::default(),
             started: follower.started(),
+            parameters: follower.parameters(),
             metrics: Default::default(),
         });
         let relay = Arc::new(Self {

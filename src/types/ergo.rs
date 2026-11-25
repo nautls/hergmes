@@ -374,6 +374,27 @@ pub struct TokenBalance {
     pub amount: u64,
 }
 
+/// The chain's parameters as `/info` reports them: what a tx builder needs to size fees,
+/// min box values and the cost limit. Voted by miners, they change only at the start of a
+/// voting epoch (1024 blocks: `chain.voting.votingLength` in node 6.0.8's
+/// `application.conf`), at `height`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Parameters {
+    /// The height of the epoch these took effect at.
+    pub height: u32,
+    pub block_version: u8,
+    pub storage_fee_factor: u32,
+    pub min_value_per_byte: u32,
+    pub max_block_size: u32,
+    pub max_block_cost: u32,
+    pub token_access_cost: u32,
+    pub input_cost: u32,
+    pub data_input_cost: u32,
+    pub output_cost: u32,
+    pub subblocks_per_block: Option<u32>,
+}
+
 #[cfg(test)]
 #[path = "ergo_tests.rs"]
 mod tests;

@@ -31,6 +31,7 @@ use crate::{
     },
     clients::{NodeError, NodeSource},
     engine::Event,
+    types::ergo::Parameters,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -96,6 +97,8 @@ pub struct Follower<S> {
     config: Config,
     /// Whether a tick has left the engine at the node's tip, for `/v1/status`.
     started: watch::Sender<bool>,
+    /// The chain's parameters from the last `/info` read, for `/v1/parameters`.
+    parameters: watch::Sender<Option<Parameters>>,
     wake: Wake,
 }
 
@@ -107,6 +110,7 @@ impl<S: NodeSource + Clone> Follower<S> {
             source,
             config,
             started: watch::Sender::new(false),
+            parameters: watch::Sender::new(None),
             wake: Wake::default(),
         }
     }
@@ -117,6 +121,14 @@ impl<S: NodeSource + Clone> Follower<S> {
     /// route, which makes no node call of its own.
     pub fn started(&self) -> watch::Receiver<bool> {
         self.started.subscribe()
+    }
+
+    /// The chain's parameters as the node last reported them; `None` until the first `/info`
+    /// read. They are the node's state, not the engine's, so a tick publishes them whether or
+    /// not the engine reaches the node's tip. Read by the parameters route, which makes no node
+    /// call of its own.
+    pub fn parameters(&self) -> watch::Receiver<Option<Parameters>> {
+        self.parameters.subscribe()
     }
 
     /// A handle that wakes this follower, for the readers that find the engine behind.
@@ -138,6 +150,9 @@ impl<S: NodeSource + Clone> Follower<S> {
         now: Instant,
     ) -> Result<Tick, AdapterError> {
         let info = self.source.info().await?;
+        self.parameters.send_if_modified(|parameters| {
+            parameters.replace(info.parameters) != Some(info.parameters)
+        });
         let blocks = match best_full_block(&info) {
             Some(tip) => match self.blocks.sync(engine, tip).await {
                 Ok(sync) => Ok(sync),

@@ -40,6 +40,7 @@ export type {
   HistoryItem as WireHistoryItem,
   HistoryPage,
   Key,
+  ChainParameters,
   PoolBox,
   Status,
   Submitted,

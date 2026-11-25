@@ -10,8 +10,8 @@ use crate::{
         address::{self, Network, UnknownNetwork},
         ergo::{
             AddressTransactions, Balance, BalanceResponse, BlockHeader, BoxById, BoxId, ErgoTree,
-            HeaderId, IndexedBlock, IndexedBox, IndexedToken, NodeBox, TemplateHash, TokenId,
-            TokenInfo, TxId, UTxO, UnconfirmedTransaction,
+            HeaderId, IndexedBlock, IndexedBox, IndexedToken, NodeBox, Parameters, TemplateHash,
+            TokenId, TokenInfo, TxId, UTxO, UnconfirmedTransaction,
         },
     },
 };
@@ -73,6 +73,10 @@ pub struct InfoResponse {
     pub best_full_header_id: Option<HeaderId>,
     #[serde(rename = "fullHeight")]
     pub full_height: Option<u32>,
+    /// The parameters of the node's current state: always sent (`NodeInfo.parameters` in
+    /// `ErgoStatsCollector.scala`, set from `stateContext.currentParameters` on every state
+    /// change).
+    pub parameters: Parameters,
 }
 
 /// A page of `/blockchain/box/byAddress`, read for its `total` alone: the relay asks for no

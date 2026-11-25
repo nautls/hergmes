@@ -28,6 +28,7 @@ use crate::{
         cursor::{CursorError, TxCursor},
     },
     engine::{Config, Engine},
+    fixtures,
     runtime::{Settled, settling},
     sim::{self, Chain, SimChain, SimConfig, testing::ready, token_id},
     types::{
@@ -181,6 +182,7 @@ impl Fixture {
             network: Network::Mainnet,
             policy,
             started: follower.started(),
+            parameters: follower.parameters(),
             metrics: Default::default(),
         });
         let router = router(api.clone());
@@ -256,6 +258,26 @@ async fn status_is_ready_once_the_engine_has_reached_the_nodes_tip() {
     let status = f.ok("/v1/status").await;
     assert_eq!(status["tip"]["height"], tip.height);
     assert_eq!(status["ready"], true, "a block's indexer lag leaves it ready");
+}
+
+#[tokio::test]
+async fn parameters_are_the_nodes_once_read_with_no_node_call_of_their_own() {
+    let mut f = Fixture::new();
+    let response = f.get("/v1/parameters").await;
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(response.headers()[RETRY_AFTER], "1");
+    assert_eq!(
+        f.error("/v1/parameters", StatusCode::SERVICE_UNAVAILABLE)
+            .await,
+        "not_ready"
+    );
+    assert!(f.sim.calls().is_empty(), "no node call");
+
+    f.tick();
+    let calls = f.sim.calls().len();
+    let raw: Value = fixtures::load("info");
+    assert_eq!(f.ok("/v1/parameters").await, raw["parameters"], "the node's shape");
+    assert_eq!(f.sim.calls().len(), calls, "no node call");
 }
 
 /// Until the configured keys settle, a key not tracked can't be loaded, so the relay is not
@@ -907,6 +929,7 @@ async fn a_tx_is_answered_with_its_id_or_the_nodes_refusal() {
         network: Network::Mainnet,
         policy: KeyPolicy::default(),
         started: f.follower.started(),
+        parameters: f.follower.parameters(),
         metrics: Default::default(),
     });
     let router = router(api);

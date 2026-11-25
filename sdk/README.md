@@ -103,6 +103,7 @@ the route's JSON as it came, amounts as base-10 strings:
 | Method                                 | Route                                         |
 | -------------------------------------- | --------------------------------------------- |
 | `status()`                             | `GET /v1/status`                              |
+| `parameters()`                         | `GET /v1/parameters`                          |
 | `boxes(key, { cursor, limit })`        | `GET /v1/{addresses,tokens}/{key}/boxes`      |
 | `spendable(address)`                   | `GET /v1/addresses/{address}/boxes/spendable` |
 | `balance(address)`                     | `GET /v1/addresses/{address}/balance`         |

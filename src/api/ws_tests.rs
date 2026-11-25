@@ -67,6 +67,7 @@ async fn server() -> Server {
         network: Network::Mainnet,
         policy: KeyPolicy::default(),
         started: follower.started(),
+        parameters: follower.parameters(),
         metrics: Default::default(),
     });
     Server { sim, router: router(api, Config::default()) }

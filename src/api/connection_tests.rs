@@ -81,6 +81,7 @@ impl Fixture {
             network: Network::Mainnet,
             policy: KeyPolicy::default(),
             started: follower.started(),
+            parameters: follower.parameters(),
             metrics: Default::default(),
         });
         let mut f = Self { sim, clock, engine, _task: task, follower, api };

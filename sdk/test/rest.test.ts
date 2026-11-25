@@ -90,6 +90,21 @@ describe(`the REST routes against the oracle (SEED=${String(SEED)})`, () => {
       const status = await client.status();
       expect(status, context).toMatchObject({ network: "mainnet", tip, ready: true });
 
+      const parameters = await client.parameters();
+      expect(parameters, context).toEqual({
+        height: 1914880,
+        blockVersion: 4,
+        storageFeeFactor: 1250000,
+        minValuePerByte: 360,
+        maxBlockSize: 1271009,
+        maxBlockCost: 8001091,
+        tokenAccessCost: 100,
+        inputCost: 2407,
+        dataInputCost: 100,
+        outputCost: 298,
+        subblocksPerBlock: 30,
+      });
+
       const headers = await client.headers();
       expect(headers.asOf, context).toEqual(tip);
       expect(headers.items[0]?.id, context).toBe(tip.headerId);
