@@ -85,6 +85,17 @@ test("more() appends older pages until the end, and reads one page at a time", a
   relay.close();
 });
 
+test("a fee is a bigint, and absent for a tx with no fee output", async () => {
+  const paid = { ...tx("c", 3), fee: "9007199254740993" };
+  const route = served(() => page([tx("p"), paid]));
+  const relay = new Relay("http://relay", { fetch: route.fetch });
+  const history = relay.history(address);
+  await history.more();
+  expect(history.state.items.map((i) => i.fee)).toEqual([undefined, 9007199254740993n]);
+  expect(history.state.items.map((i) => "fee" in i)).toEqual([false, true]);
+  relay.close();
+});
+
 test("empty pages with a cursor are read through; three in a row are an error", async () => {
   let empties = 2;
   let n = 0;

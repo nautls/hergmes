@@ -72,13 +72,15 @@ export interface Balance {
 
 /**
  * A tx in an address's history, with its signed net change to the address. A pending tx has
- * no `height` and no `timestamp`.
+ * no `height` and no `timestamp`. `fee` is what the tx pays the miners' fee contract, absent
+ * if it has no output to it.
  */
 export interface HistoryItem {
   txId: string;
   height?: number;
   timestamp?: number;
   delta: Assets;
+  fee?: string;
 }
 
 /** A page of an address's txs, newest first, pending on top; `nextCursor` `null` on the last. */

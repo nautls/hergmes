@@ -29,7 +29,7 @@ pub use chain::{
     SimConfig, SimOp, SimTx, node_template_hash, script_template, timestamp, token_id,
 };
 pub use oracle::{
-    HistoryEntry, Oracle, filter_overlay, net_change, overlay, pending_order, reference_delta,
-    totals,
+    FEE_CONTRACT, HistoryEntry, Oracle, fee, filter_overlay, net_change, overlay, pending_order,
+    reference_delta, totals,
 };
 pub use source::{Endpoint, Hook, SimChain};

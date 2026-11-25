@@ -102,6 +102,7 @@ function entry(item: HistoryItem | WireHistoryItem) {
     height: item.height,
     timestamp: item.timestamp,
     delta: { nanoErgs: String(delta.nanoErgs), tokens },
+    fee: item.fee === undefined ? undefined : String(item.fee),
   };
 }
 

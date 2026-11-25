@@ -228,7 +228,8 @@ fn assets<S: Serializer, T: Display + Copy>(
 
 /// `GET /v1/addresses/{address}/transactions`: one list, newest first, pending txs on top. A
 /// pending tx is told apart by having no `height` and no `timestamp`. `delta` is the tx's
-/// signed net change for the address, per asset. No `asOf`: the page is not pinned to a
+/// signed net change for the address, per asset, and `fee` what it pays the miners' fee
+/// contract, left out if it has no output to it. No `asOf`: the page is not pinned to a
 /// block, and each confirmed tx carries its own height.
 pub struct HistoryBody<'a>(pub &'a HistoryPage);
 
@@ -248,7 +249,7 @@ struct HistoryEntry<'a>(&'a HistoryItem);
 impl Serialize for HistoryEntry<'_> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let item = self.0;
-        let fields = if item.included.is_some() { 4 } else { 2 };
+        let fields = 2 + 2 * usize::from(item.included.is_some()) + usize::from(item.fee.is_some());
         let mut s = serializer.serialize_struct("HistoryItem", fields)?;
         s.serialize_field("txId", &item.tx_id)?;
         if let Some(included) = item.included {
@@ -256,6 +257,9 @@ impl Serialize for HistoryEntry<'_> {
             s.serialize_field("timestamp", &included.timestamp)?;
         }
         s.serialize_field("delta", &Pending(&item.delta))?;
+        if let Some(fee) = item.fee {
+            s.serialize_field("fee", &Amount(fee))?;
+        }
         s.end()
     }
 }

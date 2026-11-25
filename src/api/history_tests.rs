@@ -883,6 +883,7 @@ mod recorded {
     use crate::{
         clients::NodeClient,
         fixtures::{self, sample},
+        sim::FEE_CONTRACT,
         types::{HexBytes, address::Network},
     };
 
@@ -916,6 +917,17 @@ mod recorded {
             .map(|(id, a)| (id.parse().unwrap(), a))
             .collect();
         delta
+    }
+
+    /// A tx's fee from the raw JSON: its outputs to the miners' fee contract, summed.
+    fn raw_fee(tx: &Value) -> Option<u64> {
+        tx["outputs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|b| b["ergoTree"] == FEE_CONTRACT)
+            .map(|b| b["value"].as_u64().unwrap())
+            .reduce(|a, b| a + b)
     }
 
     async fn serve(offset: &str, limit: &str, name: &str, server: &MockServer) {
@@ -961,7 +973,11 @@ mod recorded {
             let timestamp = tx["timestamp"].as_u64().unwrap();
             assert_eq!(item.included, Some(Included { height, timestamp }));
             assert_eq!(item.delta, raw_delta(tx), "{}'s change", item.tx_id);
+            assert_eq!(item.fee, raw_fee(tx), "{}'s fee", item.tx_id);
         }
+        // The recorded history has txs with a fee output and one without.
+        assert!(first.items.iter().any(|i| i.fee.is_some()));
+        assert!(first.items.iter().any(|i| i.fee.is_none()));
         let cursor = TxCursor::decode(first.next_cursor.as_deref().unwrap(), &key).unwrap();
         assert_eq!(cursor, TxCursor { anchor: first.items[2].tx_id, pos: total - 3, total });
 
