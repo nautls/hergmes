@@ -2,7 +2,7 @@
  * The WebSocket's messages at `/v1/ws`, as JSON. Amounts are strings, as over REST.
  */
 
-import type { Assets, BlockRef, ConfirmedBox, Key, PoolBox } from "./wire.ts";
+import type { Assets, BlockRef, ChainParameters, ConfirmedBox, Key, PoolBox } from "./wire.ts";
 
 /** What a client sends. A subscribe with `from` follows the key's boxes; without, its balance. */
 export type ClientMessage =
@@ -47,9 +47,12 @@ export interface Delta<T extends "block" | "rollback"> {
   spent: Spend[];
 }
 
-/** What the relay sends. */
+/**
+ * What the relay sends. A `tip` carries `parameters` on a connection's first and on the next
+ * after they change.
+ */
 export type ServerMessage =
-  | { type: "tip"; height: number; headerId: string }
+  | { type: "tip"; height: number; headerId: string; parameters?: ChainParameters }
   | { type: "subscribed"; id?: number; key: Key }
   | Delta<"block">
   | Delta<"rollback">

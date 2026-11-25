@@ -5,9 +5,9 @@ use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
 use super::*;
 use crate::{
-    api::cursor::CursorError,
+    api::{cursor::CursorError, wire::ParametersBody},
     engine::{Balance, Spend, StoredBox, Totals, overlay::PendingDelta},
-    sim::testing::digest,
+    sim::{MAINNET_PARAMETERS, testing::digest},
     types::{
         HexBytes,
         ergo::{NonMandatoryRegisters, Token, UTxO},
@@ -365,8 +365,18 @@ fn rejections_carry_retry_after_only_when_it_is_worth_waiting() {
 #[test]
 fn the_tip_has_no_key() {
     let tip = BlockRef { height: 9, header_id: hex(3).parse().unwrap() };
-    let text = ServerMessage::Tip(tip).to_text();
+    let text = ServerMessage::Tip { tip, parameters: None }.to_text();
     assert_eq!(text, format!(r#"{{"type":"tip","height":9,"headerId":"{}"}}"#, hex(3)));
+}
+
+#[test]
+fn a_tip_carries_the_parameters_as_rest_serves_them() {
+    let tip = BlockRef { height: 9, header_id: hex(3).parse().unwrap() };
+    let text = ServerMessage::Tip { tip, parameters: Some(MAINNET_PARAMETERS) }.to_text();
+    let message: serde_json::Value = serde_json::from_str(&text).unwrap();
+    let rest = serde_json::to_value(ParametersBody(&MAINNET_PARAMETERS)).unwrap();
+    assert_eq!(message["parameters"], rest);
+    assert_eq!(message["height"], 9);
 }
 
 #[test]

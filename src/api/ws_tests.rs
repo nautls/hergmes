@@ -28,10 +28,11 @@ use crate::{
     adapters::{BoxCache, BoxFetcher, Follower, HeaderReader, Loader, TokenChecker},
     api::{
         Balances, Boxes, Headers, History, KeyPolicy, OriginPolicy, Pages, Tokens, Transactions,
+        wire::ParametersBody,
     },
     engine::{Config as EngineConfig, Engine},
     runtime::spawn,
-    sim::{Chain, SimChain, SimConfig},
+    sim::{Chain, MAINNET_PARAMETERS, SimChain, SimConfig},
     types::address::{self, Network},
 };
 
@@ -40,6 +41,9 @@ type Stream = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
 struct Server {
     sim: SimChain,
     router: Router,
+    /// Held, as `main` holds its own: a dropped follower closes the channels the connections
+    /// read the parameters from.
+    _follower: Follower<SimChain>,
 }
 
 async fn server() -> Server {
@@ -67,9 +71,10 @@ async fn server() -> Server {
         network: Network::Mainnet,
         policy: KeyPolicy::default(),
         started: follower.started(),
+        parameters: follower.parameters(),
         metrics: Default::default(),
     });
-    Server { sim, router: router(api, Config::default()) }
+    Server { sim, router: router(api, Config::default()), _follower: follower }
 }
 
 async fn listen(server: &Server) -> SocketAddr {
@@ -79,7 +84,7 @@ async fn listen(server: &Server) -> SocketAddr {
     addr
 }
 
-/// A connection, past its first message: the relay's tip.
+/// A connection, past its first message: the relay's tip, with the chain's parameters.
 async fn connect(server: &Server) -> Stream {
     let addr = listen(server).await;
     let (mut stream, _) = connect_async(format!("ws://{addr}/v1/ws")).await.unwrap();
@@ -87,7 +92,13 @@ async fn connect(server: &Server) -> Stream {
         panic!("a text message");
     };
     let tip = server.sim.lock().tip();
-    let expected = json!({ "type": "tip", "height": tip.height, "headerId": tip.header_id });
+    let parameters = ParametersBody(&MAINNET_PARAMETERS);
+    let expected = json!({
+        "type": "tip",
+        "height": tip.height,
+        "headerId": tip.header_id,
+        "parameters": parameters,
+    });
     assert_eq!(serde_json::from_str::<Value>(&text).unwrap(), expected);
     stream
 }

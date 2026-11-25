@@ -142,6 +142,7 @@ To track more, raise `max_tracked_units` and `box_cache_mb` together, then watch
 | `GET /v1/addresses/{address}/transactions`    | `limit`, `cursor` | Tx history, newest first, pending on top          |
 | `GET /v1/boxes/{boxId}`                       |                   | One box, if a tx can spend it now                 |
 | `GET /v1/headers`                             | `limit`           | The last block headers, newest first, for signing |
+| `GET /v1/parameters`                          |                   | The chain parameters, as in the node's `/info`    |
 | `GET /v1/tokens/metadata`                     | `ids` (required)  | Mint tx, emission, standard, EIP-4 metadata       |
 | `POST /v1/transactions`                       | `broadcast`       | Sends a signed tx, given as hex in the body       |
 | `GET /v1/status`                              |                   | Version, network, tip and readiness               |
@@ -193,7 +194,8 @@ Responses:
 
 The server sends:
 
-- `tip` on connect and whenever the tip changes;
+- `tip` on connect and whenever the tip changes, with the chain's `parameters` (as on
+  `/v1/parameters`) on the first and whenever they change;
 - `subscribed`, `rejected` or `resync_required` in answer to a subscribe, echoing its `id`;
 - `block` and `rollback` when a block changes the key's boxes, then `mempool` and `balance`
   updates.

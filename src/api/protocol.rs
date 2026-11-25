@@ -17,7 +17,10 @@ use crate::{
         wire::{AsOf, Confirmed, Pending, WireBox},
     },
     engine::{BlockRef, Output, PendingTx, ResyncReason, TrackingKey},
-    types::{address::Network, ergo::BoxId},
+    types::{
+        address::Network,
+        ergo::{BoxId, Parameters},
+    },
 };
 
 /// A key as the client wrote it: `{ "address": ... }`, `{ "tokenId": ... }` or
@@ -122,7 +125,14 @@ impl Reject {
 pub enum ServerMessage<'a> {
     /// The relay's tip, the best full block: to every connection, when it opens and whenever
     /// the tip changes. The only message with no key.
-    Tip(BlockRef),
+    ///
+    /// `parameters`, the chain's parameters as on `/v1/parameters`, ride on a connection's
+    /// first tip and on the next tip after they change: they change once a voting epoch at
+    /// most, so repeating them every block would only cost every connection bandwidth.
+    Tip {
+        tip: BlockRef,
+        parameters: Option<Parameters>,
+    },
     /// A subscribe took effect: what follows for the key belongs to it. It marks where the
     /// new subscription starts, since after a replace or an unsubscribe the old one's
     /// messages may still be on their way, and every message names only the key.
@@ -188,10 +198,14 @@ impl Serialize for ServerMessage<'_> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         match self {
             Self::Output { key, output } => serialize_output(serializer, Some(key), output),
-            Self::Tip(tip) => {
-                let mut s = start(serializer, "Tip", "tip", None, None, 2)?;
+            Self::Tip { tip, parameters } => {
+                let fields = 2 + usize::from(parameters.is_some());
+                let mut s = start(serializer, "Tip", "tip", None, None, fields)?;
                 s.serialize_field("height", &tip.height)?;
                 s.serialize_field("headerId", &tip.header_id)?;
+                if let Some(parameters) = parameters {
+                    s.serialize_field("parameters", parameters)?;
+                }
                 s.end()
             }
             Self::Subscribed { key, id } => {

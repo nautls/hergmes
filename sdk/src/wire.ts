@@ -159,6 +159,26 @@ export interface Submitted {
 }
 
 /**
+ * The chain's parameters as the relay's node reports them in `/info`, under the node's names:
+ * what a tx builder needs to size fees, min box values and costs. Miners vote them; they change
+ * only at the start of a voting epoch, at `height`. `subblocksPerBlock` is `null` until it is
+ * voted in, where the node leaves it out.
+ */
+export interface ChainParameters {
+  height: number;
+  blockVersion: number;
+  storageFeeFactor: number;
+  minValuePerByte: number;
+  maxBlockSize: number;
+  maxBlockCost: number;
+  tokenAccessCost: number;
+  inputCost: number;
+  dataInputCost: number;
+  outputCost: number;
+  subblocksPerBlock: number | null;
+}
+
+/**
  * The relay's state. `tip` is `null` until it has applied a block; `ready` is whether it has
  * started: it has reached the node's tip once and its configured keys have loaded. It stays
  * true while the relay is behind, as it is for a moment after each block, so a load can

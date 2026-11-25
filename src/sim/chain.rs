@@ -33,8 +33,8 @@ use crate::{
         ergo::{
             AddressTransaction, AddressTransactions, Balance, BlockHeader, BoxAssets, BoxById,
             BoxId, ErgoTree, GENESIS_PARENT_ID, HeaderId, IndexedBlock, IndexedBox, IndexedToken,
-            IndexedTransaction, NonMandatoryRegisters, Token, TokenBalance, TokenId, TokenInfo,
-            TxId, UTxO, UnconfirmedTransaction,
+            IndexedTransaction, NonMandatoryRegisters, Parameters, Token, TokenBalance, TokenId,
+            TokenInfo, TxId, UTxO, UnconfirmedTransaction,
         },
         ergo_tree,
     },
@@ -243,6 +243,21 @@ mod decimal {
     }
 }
 
+/// Mainnet's parameters, as recorded in `tests/fixtures/info.json`.
+pub const MAINNET_PARAMETERS: Parameters = Parameters {
+    height: 1_914_880,
+    block_version: 4,
+    storage_fee_factor: 1_250_000,
+    min_value_per_byte: 360,
+    max_block_size: 1_271_009,
+    max_block_cost: 8_001_091,
+    token_access_cost: 100,
+    input_cost: 2407,
+    data_input_cost: 100,
+    output_cost: 298,
+    subblocks_per_block: Some(30),
+};
+
 /// The simulated node and indexer. Driven directly with `&mut self`; [`SimChain`] shares it
 /// with adapters through [`NodeSource`].
 ///
@@ -286,6 +301,8 @@ pub struct Chain {
     /// back.
     replaced: Vec<Arc<SimTx>>,
     mempool_clock: u64,
+    /// What `/info` reports as the chain's parameters; mainnet's unless a test sets them.
+    parameters: Parameters,
     /// Every box ever built, so tests can name inputs by id.
     boxes: HashMap<BoxId, Arc<UTxO>>,
     /// Every token ever minted, in a block or in the mempool.
@@ -319,6 +336,7 @@ impl Chain {
             rechecking: HashSet::new(),
             replaced: Vec::new(),
             mempool_clock: 1_700_000_000_000,
+            parameters: MAINNET_PARAMETERS,
             boxes: HashMap::new(),
             known_tokens: BTreeMap::new(),
             nonce: 0,
@@ -1040,7 +1058,13 @@ impl Chain {
             network: "mainnet".to_string(),
             best_full_header_id: Some(tip.header_id),
             full_height: Some(tip.height),
+            parameters: self.parameters,
         }
+    }
+
+    /// Changes the parameters `/info` reports, as a new voting epoch would.
+    pub fn set_parameters(&mut self, parameters: Parameters) {
+        self.parameters = parameters;
     }
 
     pub fn indexed_height(&self) -> IndexedHeightResponse {

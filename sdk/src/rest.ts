@@ -7,6 +7,7 @@ import type {
   HeadersPage,
   HistoryPage,
   Key,
+  ChainParameters,
   PoolBox,
   Status,
   Submitted,
@@ -83,6 +84,11 @@ export class RestClient {
   /** The relay's version, network, tip, and whether it is ready. */
   status(options: RequestOptions = {}): Promise<Status> {
     return this.#get("v1/status", {}, options);
+  }
+
+  /** The chain's parameters, for building txs. */
+  parameters(options: RequestOptions = {}): Promise<ChainParameters> {
+    return this.#get("v1/parameters", {}, options);
   }
 
   /** A page of a key's unspent boxes, in `(inclusionHeight, boxId)` order. */
